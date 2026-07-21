@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} — manuscriptor</title>
+  <style>{{ styles_css | safe }}</style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row">
+      <h1 class="doc-title">{{ title }}</h1>
+      <div class="topbar-stats">
+        <span class="stat">{{ n_pairs }} cite-instances</span>
+        <span class="badge badge-verbatim">{{ n_verbatim }} verbatim</span>
+        <span class="badge badge-paraphrase">{{ n_paraphrase }} paraphrase</span>
+        <span class="badge badge-missing">{{ n_missing }} missing</span>
+      </div>
+    </div>
+    <div class="topbar-row">
+      <input type="search" id="filter-input" placeholder="Filter citations by key, author, or title…" autocomplete="off">
+      <div class="topbar-meta">
+        <span>{{ generated_at }}</span>
+        <span class="meta-sep">·</span>
+        <a href="#about-tool">about this tool</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="split">
+    <article class="manuscript" id="manuscript">
+      {{ manuscript_html | safe }}
+
+      <section id="about-tool" class="about">
+        <h2>About this view</h2>
+        <p>
+          Each citation in this manuscript is linked to verbatim quotes extracted from
+          the cited paper's fulltext. Click any citation to open the evidence panel.
+        </p>
+        <ul>
+          <li><span class="badge badge-verbatim">verbatim</span> the quoted passage is an exact substring of the cited paper.</li>
+          <li><span class="badge badge-paraphrase">paraphrase</span> the model reported a supporting passage, but the exact text could not be matched in the cited paper. Treat with care.</li>
+          <li><span class="badge badge-missing">missing</span> no supporting passage was found, or the cited paper has no indexed fulltext in the local library.</li>
+        </ul>
+        <p class="caveat">
+          This is a review aid. The verbatim check catches hallucinated quotes but does not
+          guarantee that a verbatim quote is used in a context that supports the claim.
+          Read the cited paper before relying on any claim flagged here.
+        </p>
+      </section>
+    </article>
+
+    <aside class="panel" id="evidence-panel">
+      <div class="panel-placeholder">
+        <p>Click any citation in the manuscript to see the supporting evidence.</p>
+        <p class="hint">Citation borders show the strongest evidence status across the cited papers.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    window.CITE_EVIDENCE = {
+      title: {{ title_json | safe }},
+      claims: {{ claims_json | safe }},
+      citations_by_key: {{ citations_by_key_json | safe }},
+      evidence_by_pair: {{ evidence_by_pair_json | safe }}
+    };
+  </script>
+  <script>{{ viewer_js | safe }}</script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "manuscriptor"
+version = "0.1.0"
+description = "A live manuscript editor: LaTeX rendered to an addressable, commentable page backed by its own sources"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Benjamin Daniels", email = "bdaniels@g.harvard.edu" }]
+license = { text = "MIT" }
+dependencies = [
+    "pylatexenc>=2.10",
+    "bibtexparser>=1.4",
+    "anthropic>=0.40",
+    "jinja2>=3.1",
+    "pdfminer.six>=20231228",
+    "pyzotero>=1.5",
+    "requests>=2.31",
+    "watchdog>=4.0",
+    "websockets>=12.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+manuscriptor = "manuscriptor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["manuscriptor*"]
+
+[tool.setuptools.package-data]
+manuscriptor = ["templates/*.j2", "templates/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
