@@ -212,6 +212,7 @@
     sent: {},               // block id -> the text last sent, to confirm against
     blockState: {},         // block id -> queued|working|done|locked
     caret: null,            // {id, start, end, scrollTop}
+    back: [],               // where a detour came from, newest last
     sock: null,
     sockState: 'connecting',
     saveTimer: null,
@@ -219,7 +220,7 @@
   };
 
   var appEl, railEl, docEl, inspEl, docInner, ibodyEl, tabsEl,
-      eyebrowEl, ititleEl, isubEl, jumpBtn, liveEl, liveTextEl, metaEl,
+      eyebrowEl, ititleEl, isubEl, jumpBtn, backBtn, headSaveEl, liveEl, liveTextEl, metaEl,
       outlineEl, pathEl, hueWheel;
 
   var anchorEl = null, io = null, warnedBareId = false;
@@ -443,10 +444,37 @@
     return S.sel.kind + ':' + S.sel.key;
   }
 
+  // Opening a citation's evidence or a value's code from a paragraph is a
+  // detour. Remember where it started, or the only way back is to find the
+  // paragraph again in the manuscript.
+  function selectDetour(kind, key, blockId) {
+    if (S.sel && (S.sel.kind !== kind || S.sel.key !== key)) {
+      S.back.push({ kind: S.sel.kind, key: S.sel.key, blockId: S.sel.blockId, tab: S.tab });
+      if (S.back.length > 12) S.back.shift();
+    }
+    select(kind, key, blockId);
+  }
+
+  function goBack() {
+    var prev = S.back.pop();
+    if (prev) select(prev.kind, prev.key, prev.blockId, prev.tab, { fromBack: true });
+  }
+
+  function backLabel() {
+    var prev = S.back[S.back.length - 1];
+    if (!prev) return '';
+    if (prev.kind === 'block') {
+      var b = S.blocks[prev.key];
+      return b ? (b.parent_heading || 'the paragraph') : 'the paragraph';
+    }
+    return prev.key;
+  }
+
   function select(kind, key, blockId, tab, opts) {
     var els = document.querySelectorAll('.sel');
     for (var i = 0; i < els.length; i++) els[i].classList.remove('sel');
 
+    if (kind === 'block' && !(opts && opts.fromBack)) S.back.length = 0;
     S.sel = { kind: kind, key: key, blockId: blockId || null };
     S.tab = tab === undefined ? (S.tabMemory[selKey()] || 0) : tab;
 
@@ -473,10 +501,23 @@
     S.tab = Math.min(S.tab, view.tabs.length - 1);
     S.tabMemory[selKey()] = S.tab;
 
+    if (backBtn) {
+      var label = backLabel();
+      backBtn.hidden = !label;
+      backBtn.innerHTML = label ? '\u2190 <span>' + esc(label) + '</span>' : '';
+    }
+
     eyebrowEl.innerHTML = esc(view.eyebrow) +
       (view.chip ? ' <span class="chip ' + esc(view.chip[0]) + '">' + esc(view.chip[1]) + '</span>' : '');
     ititleEl.textContent = view.title;
     isubEl.textContent = view.sub;
+
+    // The save state belongs beside what is being saved, not at the far end of
+    // a panel the paragraph may have scrolled past.
+    if (headSaveEl) {
+      headSaveEl.innerHTML =
+        (S.sel.kind === 'block' && S.blocks[S.sel.key]) ? saveStateHtml(S.sel.key, S.blocks[S.sel.key]) : '';
+    }
 
     tabsEl.innerHTML = '';
     view.tabs.forEach(function (t, i) {
@@ -546,12 +587,11 @@
     };
   }
 
+  // The section, and only the section. The paragraph's own first line used to
+  // be appended here, which repeated back to the reader the words already open
+  // in the editor below it.
   function titleFor(b) {
-    var head = b.parent_heading ? b.parent_heading : 'Manuscript';
-    var text = String(b.source || '').replace(/\\[a-zA-Z]+\**(\[[^\]]*\])?(\{[^}]*\})?/g, ' ')
-      .replace(/[{}]/g, '').replace(/\s+/g, ' ').trim();
-    if (!text) return head;
-    return head + ' — ' + (text.length > 46 ? text.slice(0, 46) + '…' : text);
+    return b.parent_heading ? b.parent_heading : 'Manuscript';
   }
 
   function sourceTab(id, b) {
@@ -584,8 +624,9 @@
         ' survive' + (includes.length === 1 ? 's' : '') + ' your edit. The values shown in the page are read from those files.</p>'
       : '';
 
-    return card(fileLine(b), 'editable',
+    return card('', 'editable',
       '<textarea class="src" spellcheck="false" data-role="src" data-block="' + esc(id) + '">' + esc(text) + '</textarea>' +
+      '<div class="insbars">' +
       '<div class="insbar"><span>At cursor</span>' +
       '<button class="ins" type="button" data-open="insert:cite">Citation</button>' +
       '<button class="ins" type="button" data-open="insert:value">Number</button>' +
@@ -594,8 +635,8 @@
       '<div class="insbar"><span>After this ¶</span>' +
       '<button class="ins" type="button" data-open="insert:exhibit">Exhibit</button>' +
       '<button class="ins" type="button" data-open="insert:paragraph">New paragraph</button>' +
-      '</div>' + incl, true) +
-      card('', '', saveBox(id, b), true);
+      '</div></div>' + incl, true) +
+      '';
   }
 
   // The editor should open showing the whole paragraph rather than a 7rem
@@ -652,8 +693,9 @@
   }
 
   function renderSaveBox(id) {
-    var box = ibodyEl.querySelector('[data-role="savebox"]');
-    if (box) box.innerHTML = saveStateHtml(id, S.blocks[id]);
+    if (headSaveEl && S.sel && S.sel.kind === 'block' && S.sel.key === id) {
+      headSaveEl.innerHTML = saveStateHtml(id, S.blocks[id]);
+    }
   }
 
   function chatTab(id, chat) {
@@ -1228,9 +1270,9 @@
     var kind = parts[0];
     var rest = parts.slice(1).join(':');
     if (kind === 'block') { select('block', normId(rest), normId(rest)); return; }
-    if (kind === 'cite') { select('cite', rest, S.sel && S.sel.blockId); return; }
-    if (kind === 'value') { select('value', rest, S.sel && S.sel.blockId); return; }
-    select('panel', key, S.sel && S.sel.blockId);
+    if (kind === 'cite') { selectDetour('cite', rest, S.sel && S.sel.blockId); return; }
+    if (kind === 'value') { selectDetour('value', rest, S.sel && S.sel.blockId); return; }
+    selectDetour('panel', key, S.sel && S.sel.blockId);
   }
 
   function onClick(e) {
@@ -1286,7 +1328,7 @@
     if (cite) {
       e.stopPropagation();
       var host = cite.closest('[data-mx]');
-      select('cite', cite.getAttribute('data-key'), host ? host.getAttribute('data-mx') : null);
+      selectDetour('cite', cite.getAttribute('data-key'), host ? host.getAttribute('data-mx') : null);
       return;
     }
 
@@ -1294,7 +1336,7 @@
     if (val) {
       e.stopPropagation();
       var vhost = val.closest('[data-mx]');
-      select('value', val.getAttribute('data-key'), vhost ? vhost.getAttribute('data-mx') : null);
+      selectDetour('value', val.getAttribute('data-key'), vhost ? vhost.getAttribute('data-mx') : null);
       return;
     }
 
@@ -1380,6 +1422,9 @@
     ititleEl = document.getElementById('ititle');
     isubEl = document.getElementById('isub');
     jumpBtn = document.getElementById('jump');
+    backBtn = document.getElementById('back');
+    headSaveEl = document.getElementById('headsave');
+    if (backBtn) backBtn.addEventListener('click', goBack);
     liveEl = document.getElementById('live');
     liveTextEl = document.getElementById('live-text');
     metaEl = document.getElementById('toolbar-meta');

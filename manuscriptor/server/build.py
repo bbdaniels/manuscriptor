@@ -98,7 +98,7 @@ def build(
         "title": _title(main_tex, post["html"]),
         "path": str(main_tex),
         "html": post["html"],
-        "blocks": {b.id: _block_record(b, post["html"], produced) for b in bl},
+        "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir) for b in bl},
         "outline": _outline(bl),
         "chats": chat.by_block(log),
         "todos": [],
@@ -141,14 +141,30 @@ def _keep_out_of_git(out: Path) -> None:
             pass
 
 
+def _rel(path, root) -> str:
+    """A path the reader can hold in their head.
+
+    The title bar already names the manuscript, so repeating its whole absolute
+    path on every block turns the one useful part, which file and which line,
+    into something to read past.
+    """
+    p = Path(path)
+    if root is None:
+        return str(p)
+    try:
+        return str(p.relative_to(Path(root)))
+    except ValueError:
+        return str(p)
+
+
 # ----------------------------------------------------------------- internals
 
 
-def _block_record(b, html: str, produced: dict) -> dict:
+def _block_record(b, html: str, produced: dict, root: Path | None = None) -> dict:
     return {
         "id": b.id,
         "kind": b.kind,
-        "file": str(b.file),
+        "file": _rel(b.file, root),
         "line_start": b.line_start,
         "line_end": b.line_end,
         "source": b.source_text,

@@ -430,6 +430,20 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 /* The insert bars belong to the editor and must stay reachable however long
    the paragraph is, so they sit at the foot of the panel rather than at the
    end of a scroll. */
-.insp-body .insbar { position: sticky; bottom: 0; z-index: 2;
-  background: var(--surface); }
-.insp-body .insbar + .insbar { bottom: 2.1rem; }
+.insp-body .insbars { position: sticky; bottom: 0; z-index: 2;
+  background: var(--surface); border-top: 1px solid var(--rule); }
+.insp-body .insbars .insbar { border-top: 0; }
+.insp-body .insbars .insbar + .insbar { border-top: 1px solid var(--rule); }
+
+/* Going into a citation's evidence or a value's code is a detour, and a detour
+   needs a way back. Without it the only route to the paragraph is finding it
+   again in the manuscript. */
+.back { font: inherit; font-size: .7rem; padding: .15rem .4rem .15rem .25rem;
+  margin-bottom: .35rem; border-radius: 4px; border: 1px solid var(--rule);
+  background: var(--surface); color: var(--muted); cursor: pointer;
+  display: inline-flex; align-items: center; gap: .25rem; max-width: 100%; }
+.back[hidden] { display: none; }
+.back:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#headsave:empty { display: none; }
+#headsave .savestate { padding: .4rem 0 0; }
