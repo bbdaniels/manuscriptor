@@ -402,10 +402,14 @@
     };
   }
 
-  function restoreUI(ui) {
+  // `keepDoc` false means the caller is deliberately navigating, so the
+  // document's scroll position is the one thing NOT to put back. Without it a
+  // jump-to-section scrolls and is then immediately undone by the re-render
+  // that follows it, which looks exactly like a dead link.
+  function restoreUI(ui, keepDoc) {
     if (!ui) return;
     if (railEl) railEl.scrollTop = ui.rail;
-    if (docEl) docEl.scrollTop = ui.doc;
+    if (docEl && keepDoc !== false) docEl.scrollTop = ui.doc;
     if (ibodyEl) ibodyEl.scrollTop = ui.insp;
     if (ui.field && ui.field.role) {
       var f = ibodyEl.querySelector('[data-role="' + ui.field.role + '"]');
@@ -439,7 +443,7 @@
     return S.sel.kind + ':' + S.sel.key;
   }
 
-  function select(kind, key, blockId, tab) {
+  function select(kind, key, blockId, tab, opts) {
     var els = document.querySelectorAll('.sel');
     for (var i = 0; i < els.length; i++) els[i].classList.remove('sel');
 
@@ -453,10 +457,10 @@
     if (jumpBtn) jumpBtn.hidden = true;
     if (io && anchorEl) io.observe(anchorEl);
 
-    renderInspector();
+    renderInspector(opts && opts.keepDoc);
   }
 
-  function renderInspector() {
+  function renderInspector(keepDoc) {
     if (!S.sel) return;
     var ui = captureUI();
     var view = null;
@@ -485,10 +489,13 @@
     });
 
     ibodyEl.innerHTML = '<div data-role="banners"></div>' + view.tabs[S.tab].body;
+    // Measured against the panel's siblings, so it has to run once more after
+    // layout settles or a long block sizes itself against a half-built card.
+    requestAnimationFrame(autosizeAll);
     renderBanners();
 
     wireInspector();
-    restoreUI(ui);
+    restoreUI(ui, keepDoc);
   }
 
   /* The banners live in their own container so they can be refreshed without
@@ -583,12 +590,36 @@
       '<button class="ins" type="button" data-open="insert:cite">Citation</button>' +
       '<button class="ins" type="button" data-open="insert:value">Number</button>' +
       '<button class="ins" type="button" data-act="ins:footnote">Footnote</button>' +
-      '<em>inserted into this paragraph</em></div>' +
+      '</div>' +
       '<div class="insbar"><span>After this ¶</span>' +
       '<button class="ins" type="button" data-open="insert:exhibit">Exhibit</button>' +
       '<button class="ins" type="button" data-open="insert:paragraph">New paragraph</button>' +
-      '<em>a new block, not an edit to this one</em></div>' + incl, true) +
+      '</div>' + incl, true) +
       card('', '', saveBox(id, b), true);
+  }
+
+  // The editor should open showing the whole paragraph rather than a 7rem
+  // porthole the author has to drag open. But a long block must not push the
+  // insert bar past the bottom of the panel, so growth stops at whatever room
+  // the inspector actually has once the rest of the card is accounted for.
+  function autosize(el) {
+    if (!el) return;
+    var panel = el.closest('.insp-body') || el.parentElement;
+    var others = 0;
+    if (panel) {
+      for (var i = 0; i < panel.children.length; i++) {
+        var c = panel.children[i];
+        if (!c.contains(el)) others += c.offsetHeight;
+      }
+    }
+    var room = panel ? panel.clientHeight - others - 150 : 400;
+    el.style.height = 'auto';
+    el.style.height = Math.max(96, Math.min(el.scrollHeight + 2, Math.max(160, room))) + 'px';
+  }
+
+  function autosizeAll() {
+    var el = document.querySelector('.insp-body textarea.src');
+    if (el) autosize(el);
   }
 
   function saveStateHtml(id, b) {
@@ -867,12 +898,16 @@
     if (src) {
       var id = src.getAttribute('data-block');
 
+      // Open showing the whole paragraph, not a porthole to drag open.
+      autosize(src);
+
       if (S.caret && S.caret.id === id) {
         try { src.setSelectionRange(S.caret.start, S.caret.end); } catch (e) { /* ignore */ }
         src.scrollTop = S.caret.scrollTop;
       }
 
       src.addEventListener('input', function () {
+        autosize(src);
         setDraft(id, src.value);
         rememberCaret(id, src);
         S.save[id] = { state: 'typing' };
@@ -1206,9 +1241,12 @@
     if (goto_) {
       e.preventDefault();
       var gid = normId(goto_.getAttribute('data-goto'));
-      var gel = blockEl(gid);
-      if (gel) gel.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
-      if (S.blocks[gid]) select('block', gid, gid);
+      if (S.blocks[gid]) select('block', gid, gid, null, { keepDoc: false });
+      // After the render, not before it, or the restore lands on top of us.
+      requestAnimationFrame(function () {
+        var gel = blockEl(gid);
+        if (gel) gel.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+      });
       return;
     }
 

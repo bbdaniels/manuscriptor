@@ -191,15 +191,29 @@ def _all_cites(html: str) -> list[str]:
     return keys
 
 
+_LEVELS = {
+    "part": 1, "chapter": 1, "section": 1,
+    "subsection": 2, "subsubsection": 3, "paragraph": 4, "subparagraph": 4,
+}
+_SECTION_CMD_RE = re.compile(r"\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?")
+
+
 def _outline(bl) -> list[dict]:
+    """The rail's nav. Depth comes from the sectioning command, not a guess.
+
+    Every entry was previously emitted at level 1, which flattened a paper with
+    three levels of heading into an undifferentiated list.
+    """
     out = []
     for b in bl:
         if b.kind != "heading":
             continue
+        cmd = _SECTION_CMD_RE.search(b.source_text)
+        level = _LEVELS.get(cmd.group(1), 1) if cmd else 1
         text = re.sub(r"\\[a-zA-Z]+\*?", "", b.source_text)
         text = text.replace("{", "").replace("}", "").strip()
         if text:
-            out.append({"level": 1, "text": re.sub(r"\s+", " ", text)[:70], "id": b.id})
+            out.append({"level": level, "text": re.sub(r"\s+", " ", text)[:70], "id": b.id})
     return out
 
 

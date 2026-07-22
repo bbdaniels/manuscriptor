@@ -116,7 +116,10 @@ body {
 .outline a { display: flex; justify-content: space-between; gap: .4rem; font-size: .8rem; color: var(--muted); text-decoration: none; padding: .24rem .4rem; border-radius: 4px; cursor: pointer; }
 .outline a:hover { background: var(--accent-soft); color: var(--ink); }
 .outline a.on { background: var(--accent-soft); color: var(--ink); font-weight: 500; }
-.outline a.lvl2 { padding-left: 1rem; font-size: .76rem; }
+.outline a.lvl1 { font-weight: 500; }
+.outline a.lvl2 { padding-left: 1.05rem; font-size: .76rem; }
+.outline a.lvl3 { padding-left: 1.9rem; font-size: .74rem; }
+.outline a.lvl4 { padding-left: 2.6rem; font-size: .72rem; font-style: italic; }
 .outline a.lvl3 { padding-left: 1.6rem; font-size: .74rem; }
 .outline .n { font-family: var(--mono); font-size: .68rem; color: var(--faint); font-variant-numeric: tabular-nums; }
 .todo { display: flex; flex-direction: column; gap: .3rem; }
@@ -227,7 +230,7 @@ pre { margin: 0; font-family: var(--mono); font-size: .72rem; line-height: 1.55;
 pre .k { color: var(--accent); } pre .s { color: var(--verbatim); } pre .c { color: var(--faint); font-style: italic; }
 pre .hl { background: var(--computed-soft); border-left: 2px solid var(--computed); display: block; margin-left: -.7rem; padding-left: calc(.7rem - 2px); }
 
-.src { font: inherit; font-family: var(--mono); font-size: .74rem; line-height: 1.6; padding: .7rem; background: var(--sunken); border: 0; width: 100%; display: block; color: var(--ink); resize: vertical; min-height: 7rem; }
+.src { font: inherit; font-family: var(--mono); font-size: .74rem; line-height: 1.6; padding: .7rem; background: var(--sunken); border: 0; width: 100%; display: block; color: var(--ink); resize: vertical; min-height: 6rem; max-height: none; overflow-y: auto; }
 .src:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
 .src[readonly] { color: var(--muted); }
 .inputtok { background: var(--computed-soft); color: var(--computed); border-radius: 2px; padding: 0 .15em; }

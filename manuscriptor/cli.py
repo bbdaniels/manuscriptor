@@ -103,7 +103,38 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_proc(args: argparse.Namespace) -> int:
-    sys.exit(_NOT_YET.format(milestone="M5, drain"))
+    """Present pending chats to whoever is going to act on them.
+
+    Nothing here calls a model. The server has no knowledge of Claude and Claude
+    never talks to the server; they share a filesystem. This prints the work.
+    """
+    from manuscriptor.server import drain
+
+    d = Path(args.manuscript).resolve()
+
+    if args.wait:
+        # Runs as a backgrounded Claude Code job: this process exiting is the
+        # wake signal, so the drain fires on a comment hitting disk rather than
+        # on anyone asking for it.
+        woke = drain.wait(d, timeout=args.timeout)
+        if not woke:
+            print("no new comments")
+            return 1
+        print("new comment on disk")
+        return 0
+
+    items = drain.collect(d, main=args.main, bib=args.bib)
+    print(drain.as_json(items) if args.json else drain.as_text(items))
+    return 0
+
+
+def cmd_state(args: argparse.Namespace) -> int:
+    """Record what happened to a chat. A new record, never a rewrite."""
+    from manuscriptor.server import drain
+
+    rec = drain.mark(Path(args.manuscript).resolve(), args.chat_id, args.state)
+    print(f"{rec['id']} -> {rec['state']}")
+    return 0
 
 
 def cmd_evidence(args: argparse.Namespace) -> int:
@@ -193,9 +224,21 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--bib", help="Bibliography filename")
     p_build.set_defaults(func=cmd_build)
 
-    p_proc = sub.add_parser("proc", help="Drain pending comments once. Manual fallback for the live watcher.")
+    p_proc = sub.add_parser("proc", help="Show pending comments with the context needed to answer them.")
     p_proc.add_argument("manuscript", help="Path to the manuscript directory")
+    p_proc.add_argument("--wait", action="store_true",
+                        help="Block until a new comment lands, then exit. Run backgrounded so the exit wakes the session.")
+    p_proc.add_argument("--timeout", type=float, default=None, help="Give up waiting after N seconds")
+    p_proc.add_argument("--json", action="store_true", help="Machine-readable output")
+    p_proc.add_argument("--main", help="Main .tex filename")
+    p_proc.add_argument("--bib", help="Bibliography filename")
     p_proc.set_defaults(func=cmd_proc)
+
+    p_state = sub.add_parser("state", help="Mark a chat queued, working, done or orphaned.")
+    p_state.add_argument("manuscript", help="Path to the manuscript directory")
+    p_state.add_argument("chat_id", help="The chat id, e.g. c-0007")
+    p_state.add_argument("state", choices=["queued", "working", "done", "orphaned"])
+    p_state.set_defaults(func=cmd_state)
 
     p_ev = sub.add_parser(
         "evidence",
