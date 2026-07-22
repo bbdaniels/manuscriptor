@@ -16,6 +16,8 @@ The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edi
 | `manuscriptor evidence` | **works** (absorbed from cite-evidence) |
 | `manuscriptor repair` / `clean` | **works** |
 | `manuscriptor proc` | **works**, the queue a drain reads |
+| `manuscriptor compile` | **works**, `--pdf` and `--docx` |
+| `manuscriptor import` | **works**, reviewer PDFs and tracked changes |
 | `manuscriptor state` | **works**, records what happened |
 | `Manuscriptor.app` | **works**, `shell/build.sh` |
 
@@ -41,8 +43,18 @@ work is safe by construction rather than by remembering.
 repo. Break it however you like and `git -C ~/Projects/manuscriptor-demo
 checkout .` puts it back.
 
-Not yet built: descriptions for computed values, the insert flows beyond a
-footnote, and reading in coauthor markup.
+Everything on the original list is built. The honest limits, all documented in
+the guide: value descriptions depend on how your analysis code names its
+outputs (96 of 128 fragments on qutub-india, 66 of them saying more than where
+the number came from); sixteen blocks in estonia-ecm cannot be anchored; and
+qutub-india does not render at all, because it does not compile.
+
+The thing no amount of testing substitutes for is an afternoon of real writing
+in it.
+
+**If you are here to write a paper, read
+[docs/writing-in-manuscriptor.md](docs/writing-in-manuscriptor.md).** This file
+is about the code.
 
 The design lives in the Obsidian vault at `Manuscriptor/plans/2026-07-22 - Phase 1 Design.md`, with verified findings and decision rationale in `Manuscriptor/Technical Notes.md`. Read those before implementing a milestone.
 
@@ -76,6 +88,10 @@ manuscriptor/
   templates/     page template, styles, viewer
 shell/           standalone Manuscriptor.app        (late, off the critical path)
 ```
+
+Client features register through `MSViewer.extend` from their own file under
+`templates/static/ext/`, so adding one is a new file rather than an edit to
+`viewer.js`. `templates/ext.py` picks them up automatically.
 
 `source/` is the load-bearing package. Everything else depends on its mapping being exact, so keep it small and test it hard.
 
