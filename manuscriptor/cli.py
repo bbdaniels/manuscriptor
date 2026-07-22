@@ -325,6 +325,37 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compile(args: argparse.Namespace) -> int:
+    """Compile the manuscript to PDF or to Word.
+
+    A subprocess, not a model call: `pdflatex` three times around a `bibtex`,
+    or the `pandoc-docx` skill's scripts in the order it documents. Each step
+    prints as it finishes, because the whole thing takes tens of seconds.
+    """
+    from manuscriptor.server import compile as compile_mod
+
+    d = Path(args.manuscript).resolve()
+    kind = "docx" if args.docx else "pdf"
+    print(f"compiling {d} to {kind}")
+
+    def say(step):
+        mark = " " if step.ok else "!"
+        print(f"  {mark} {step.name:<24s} {step.seconds:5.1f}s"
+              + (f"   {step.detail}" if step.detail else ""))
+
+    fn = compile_mod.compile_docx if args.docx else compile_mod.compile_pdf
+    res = fn(d, main=args.main, bib=args.bib, on_step=say)
+    for note in res.notes:
+        print(f"  note: {note}")
+    if not res.ok:
+        print(f"failed after {res.seconds:.1f}s\n{res.error}")
+        if res.log:
+            print(f"log: {res.log}")
+        return 1
+    print(f"done in {res.seconds:.1f}s -> {res.output}")
+    return 0
+
+
 def cmd_proc(args: argparse.Namespace) -> int:
     """Present pending chats to whoever is going to act on them.
 
@@ -349,6 +380,61 @@ def cmd_proc(args: argparse.Namespace) -> int:
     items = drain.collect(d, main=args.main, bib=args.bib)
     print(drain.as_json(items) if args.json else drain.as_text(items))
     return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    """Read a marked-up PDF or .docx into the comment log.
+
+    Segments the manuscript rather than building it: the importer needs block ids
+    and their text, and pandoc has nothing to say about either. Provenance is
+    applied anyway so the block table matches what a running server holds, since
+    it changes `kind` without touching an id.
+    """
+    from manuscriptor.server import importer, producers
+    from manuscriptor.source.blocks import segment
+    from manuscriptor.source.flatten import flatten
+
+    d = Path(args.manuscript).resolve()
+    path = Path(args.file).resolve()
+    if not path.exists():
+        sys.exit(f"no such file: {path}")
+
+    from manuscriptor.server.build import find_main_tex
+
+    main_tex = find_main_tex(d, args.main)
+    blocks = producers.apply(
+        segment(flatten(main_tex)), producers.scan(d), root_file=main_tex
+    )
+
+    try:
+        report = importer.ingest(path.read_bytes(), path.name,
+                                 blocks=blocks, log=d / "comments.jsonl")
+    except importer.Unreadable as exc:
+        sys.exit(str(exc))
+
+    print(f"{report['marks']} marks in {report['file']} · {report['anchored']} anchored · "
+          f"{report['unplaced']} in the tray"
+          + (f" · {report['already']} already read in" if report["already"] else ""))
+    for it in report["items"]:
+        if it["already"]:
+            continue
+        head = f"  {it['id']}  {it['kind']:9s} {it['author']} ({it['where']})"
+        if it["block"]:
+            print(f"{head} -> {it['block']}")
+        else:
+            print(f"{head} -> tray: {it['reason']}")
+        if it["marked"]:
+            print(f"        \"{_clip(it['marked'])}\"")
+    waiting = importer.tray(d / "comments.jsonl")
+    if waiting:
+        print(f"\n{len(waiting)} waiting in the tray. Place them in the page, "
+              f"or in a session with `manuscriptor state`.")
+    return 0
+
+
+def _clip(text: str, n: int = 90) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat[:n] + "…" if len(flat) > n else flat
 
 
 def cmd_state(args: argparse.Namespace) -> int:
@@ -452,6 +538,15 @@ def main(argv: list[str] | None = None) -> int:
     p_build.add_argument("--bib", help="Bibliography filename")
     p_build.set_defaults(func=cmd_build)
 
+    p_comp = sub.add_parser("compile", help="Compile the manuscript to PDF (default) or to Word.")
+    p_comp.add_argument("manuscript", help="Path to the manuscript directory")
+    fmt = p_comp.add_mutually_exclusive_group()
+    fmt.add_argument("--pdf", action="store_true", help="LaTeX to PDF: three passes around a bibtex (default)")
+    fmt.add_argument("--docx", action="store_true", help="LaTeX to Word, through the pandoc-docx skill")
+    p_comp.add_argument("--main", help="Main .tex filename")
+    p_comp.add_argument("--bib", help="Bibliography filename")
+    p_comp.set_defaults(func=cmd_compile)
+
     p_proc = sub.add_parser("proc", help="Show pending comments with the context needed to answer them.")
     p_proc.add_argument("manuscript", help="Path to the manuscript directory")
     p_proc.add_argument("--wait", action="store_true",
@@ -461,6 +556,16 @@ def main(argv: list[str] | None = None) -> int:
     p_proc.add_argument("--main", help="Main .tex filename")
     p_proc.add_argument("--bib", help="Bibliography filename")
     p_proc.set_defaults(func=cmd_proc)
+
+    p_import = sub.add_parser(
+        "import",
+        help="Read a marked-up PDF or .docx of tracked changes into the comment log. "
+             "Anchored by the text that was marked, never by the page number.")
+    p_import.add_argument("manuscript", help="Path to the manuscript directory")
+    p_import.add_argument("file", help="The marked-up .pdf or .docx")
+    p_import.add_argument("--main", help="Main .tex filename")
+    p_import.add_argument("--bib", help="Bibliography filename")
+    p_import.set_defaults(func=cmd_import)
 
     p_state = sub.add_parser("state", help="Mark a chat queued, working, done or orphaned.")
     p_state.add_argument("manuscript", help="Path to the manuscript directory")

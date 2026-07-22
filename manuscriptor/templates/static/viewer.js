@@ -210,6 +210,10 @@
 
   function tickerText(e) {
     e = e || {};
+    // An extension says a whole sentence; the agent loop supplies parts. Both
+    // have to render, and the contract said `notify(text)` while this read
+    // fields that a string does not have.
+    if (e.text) return String(e.text);
     var label = e.section || e.where || 'the manuscript';
     var what;
     if (e.kind === 'patch') {
@@ -1891,7 +1895,7 @@
     block: function (id) { return S.blocks[normId(id)] || null; },
     selection: function () { return S.sel ? { kind: S.sel.kind, key: S.sel.key, blockId: S.sel.blockId } : null; },
     ms: function () { return S.ms; },
-    notify: function (text) { pushTicker({ text: text, at: Date.now() }); },
+    notify: function (text) { pushTicker({ text: String(text), when: Date.now() }); },
     refresh: function () { if (S.sel) renderInspector(); }
   };
 

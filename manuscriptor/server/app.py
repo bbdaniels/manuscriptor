@@ -34,6 +34,8 @@ from manuscriptor.templates.ext import load as _extensions
 
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
+from manuscriptor.server import compile as compile_mod
+from manuscriptor.source import insert as insert_mod
 from manuscriptor.source import splice as splice_mod
 
 HOLDER = "author"
@@ -344,8 +346,81 @@ def make_app(session: Session) -> web.Application:
             session.clients.discard(ws)
         return ws
 
+    async def import_handler(request):
+        """Outside markup, coming in. One route, three actions.
+
+        A POST for all three because two of them write, and a marked-up file
+        arrives as bytes rather than as a path: the author picks a referee report
+        in a file dialog, and a server that asked him to type its path would be
+        asking him to do the browser's job. Nothing is written to the manuscript
+        directory but the comment log; the upload is parsed in memory and
+        dropped.
+
+        The page is not told the result over the websocket. The log grows, the
+        watcher notices, and every attached client gets the same `chat`, `state`
+        and `queue` frames a comment typed by hand produces -- which is the whole
+        claim of this feature, that an imported comment is an ordinary one.
+        """
+        from manuscriptor.server import importer
+
+        blocks = session.build.blocks if session.build is not None else ()
+
+        if request.content_type.startswith("multipart/"):
+            if session.read_only:
+                return web.json_response(
+                    {"error": "This manuscript is open read-only, so the comment log is not written."},
+                    status=403)
+            reader = await request.multipart()
+            part = await reader.next()
+            while part is not None and part.name != "file":
+                part = await reader.next()
+            if part is None:
+                return web.json_response({"error": "no file in the upload"}, status=400)
+            name = part.filename or "markup"
+            data = await part.read(decode=False)
+            try:
+                report = await asyncio.to_thread(
+                    importer.ingest, data, name, blocks=blocks, log=session.log)
+            except importer.Unreadable as exc:
+                return web.json_response({"error": str(exc)}, status=415)
+            return web.json_response(dict(report, tray=importer.tray(session.log, blocks)))
+
+        try:
+            data = await request.json()
+        except json.JSONDecodeError:
+            return web.json_response({"error": "expected JSON or a multipart upload"}, status=400)
+
+        action = data.get("action")
+        if action == "place":
+            if session.read_only:
+                return web.json_response(
+                    {"error": "This manuscript is open read-only, so the comment log is not written."},
+                    status=403)
+            try:
+                placed = importer.place_mark(
+                    session.log, data.get("import", ""), data.get("block", ""), blocks=blocks)
+            except (KeyError, ValueError) as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response(
+                dict(placed, tray=importer.tray(session.log, blocks),
+                     marks=importer.anchored_marks(session.log, blocks)))
+
+        return web.json_response({
+            "tray": importer.tray(session.log, blocks),
+            "marks": importer.anchored_marks(session.log, blocks),
+            "read_only": session.read_only,
+        })
+
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
+    app.router.add_post("/import", import_handler)
+    # A compile is a subprocess, so it is the server's to run. Progress goes
+    # back over the websocket above, not down a second channel.
+    app.router.add_post("/compile", compile_mod.route(session))
+    # An insertion is a coordinated write across three or four files, so it is a
+    # request with a body and an answer rather than a frame. The block write
+    # inside it still goes through splice, like every other write.
+    app.router.add_post("/insert", insert_mod.route(session))
 
     out = session.dir / "build" / "manuscriptor"
     if out.is_dir():

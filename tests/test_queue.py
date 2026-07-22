@@ -661,3 +661,23 @@ def test_the_agent_log_is_invisible_to_the_manuscript_repository(tmp_path):
     log = cli.agent_log_path(tmp_path)
     assert log.is_relative_to(tmp_path / "build" / "manuscriptor")
     assert (log.parent / ".gitignore").read_text(encoding="utf-8").strip() == "*"
+
+
+def test_an_extension_can_say_a_whole_sentence_in_the_ticker():
+    """The extension contract offered notify(text) while the ticker renderer
+    read section/where/kind/state and a `when` timestamp, so anything an
+    extension announced rendered as "the manuscript · undefined" at the wrong
+    age. Caught by the first feature that tried to use it."""
+    from pathlib import Path
+
+    js = Path(__file__).resolve().parent.parent / "manuscriptor/templates/static/viewer.js"
+    src = js.read_text(encoding="utf-8")
+
+    fn = src[src.index("function tickerText"):]
+    fn = fn[: fn.index("\n  }")]
+    assert "if (e.text) return" in fn, "a plain sentence must render as itself"
+
+    notify = src[src.index("notify: function"):]
+    notify = notify[: notify.index("\n")]
+    assert "when:" in notify, "and carry the field the renderer actually reads"
+    assert "at:" not in notify

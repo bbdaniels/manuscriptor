@@ -18,7 +18,7 @@ from pathlib import Path
 from manuscriptor.render import pandoc, postprocess, refs
 from manuscriptor.source import anchors, blocks as blocks_mod
 from manuscriptor.source.flatten import flatten
-from manuscriptor.server import chat, producers
+from manuscriptor.server import chat, manifest, producers
 
 
 @dataclass
@@ -94,13 +94,19 @@ def build(
     )
 
     by_id = {b.id: b for b in bl}
+    # What each computed value IS, derived from the code that writes it and
+    # cached in the build directory. Nothing here calls a model.
+    values = manifest.describe(
+        manuscript_dir, [inc.target for b in bl for inc in b.includes], cache_dir=out
+    )
     log = manuscript_dir / "comments.jsonl"
     blob = {
         "title": _title(main_tex, post["html"]),
         "path": str(main_tex),
         "read_only": False,
         "html": post["html"],
-        "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir) for b in bl},
+        "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir, values)
+                   for b in bl},
         "outline": _outline(bl),
         "chats": reanchor_chats(chat.by_block(log), bl, chat.read_chats(log)),
         # The standing agent state, so a page loading mid-run does not open on
@@ -362,7 +368,9 @@ def _rel(path, root) -> str:
 # ----------------------------------------------------------------- internals
 
 
-def _block_record(b, html: str, produced: dict, root: Path | None = None) -> dict:
+def _block_record(b, html: str, produced: dict, root: Path | None = None,
+                  values: dict | None = None) -> dict:
+    values = values or {}
     return {
         "id": b.id,
         "kind": b.kind,
@@ -385,7 +393,7 @@ def _block_record(b, html: str, produced: dict, root: Path | None = None) -> dic
                 "key": Path(inc.target).stem,
                 "path": str(inc.target),
                 "producer": str(produced[inc.target]) if inc.target in produced else None,
-                "description": None,
+                "description": (values.get(Path(inc.target).stem) or {}).get("description"),
             }
             for inc in b.includes
         ],

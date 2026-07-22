@@ -15,6 +15,13 @@ dependencies = [
     "bibtexparser>=1.4",
     "anthropic>=0.40",
     "jinja2>=3.1",
+    # Reads annotations out of a marked-up PDF: quadpoints back to the text a
+    # referee actually highlighted, with line wrapping and hyphenation handled.
+    # Chosen over pypdf and PyMuPDF because it sits on pdfminer.six, which is
+    # already a dependency here, so it adds no new transitive tree at all -- and
+    # because the author's own pdf-comments skill already standardises on it and
+    # records what a hand-rolled extraction gets wrong.
+    "pdfannots>=0.4",
     "pdfminer.six>=20231228",
     "pyzotero>=1.5",
     "requests>=2.31",
