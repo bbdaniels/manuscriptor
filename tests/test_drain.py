@@ -164,3 +164,133 @@ def test_nothing_pending_says_so(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     assert drain.collect(tmp_path) == []
     assert "No pending" in drain.as_text([])
+
+
+# ------------------------------------------- the agent's half reaching the page
+
+
+def test_the_server_reports_what_the_agent_did(tmp_path):
+    """The loop's missing link.
+
+    The agent marks a comment working and then done by appending to
+    comments.jsonl. Nothing watched that file, so an open page never learned:
+    the margin sat on `queued` forever and the author had no sign anything was
+    happening. This is what closes the loop.
+    """
+    import asyncio
+
+    d, bid = setup(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(d)
+    sent = []
+    s.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
+
+    drain.mark(d, "c-0001", "working")
+    asyncio.run(s.on_log_change())
+    states = [m for m in sent if m["type"] == "state"]
+    assert states and states[-1]["state"] == "working"
+    assert states[-1]["block"] == bid
+
+    drain.mark(d, "c-0001", "done")
+    asyncio.run(s.on_log_change())
+    assert [m for m in sent if m["type"] == "state"][-1]["state"] == "done"
+
+
+def test_a_new_comment_from_elsewhere_reaches_the_page(tmp_path):
+    """Two clients, or a comment written by a script, must both show up."""
+    import asyncio
+
+    d, bid = setup(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(d)
+    asyncio.run(s.on_log_change())          # baseline
+    sent = []
+    s.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
+
+    chat.append(d / "comments.jsonl",
+                {"id": "c-0002", "kind": "comment", "block": bid, "body": "and another thing"})
+    asyncio.run(s.on_log_change())
+    msgs = [m for m in sent if m["type"] == "chat"]
+    assert msgs and msgs[-1]["message"]["body"] == "and another thing"
+
+
+def test_nothing_is_broadcast_when_nothing_changed(tmp_path):
+    import asyncio
+
+    d, _ = setup(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = []
+    s.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
+    asyncio.run(s.on_log_change())
+    assert sent == []
+
+
+def test_a_chat_follows_its_block_through_an_edit(tmp_path):
+    """The margin pin disappeared after the agent's own edit.
+
+    Editing a paragraph changes its content-derived id, so a chat keyed to the
+    id it was written against matches no element on the page and its pin simply
+    vanishes: the author sees their comment evaporate at the exact moment it was
+    answered. The drain re-anchors for the agent; the blob has to as well.
+    """
+    d, bid = setup(tmp_path)
+    src = (d / "main.tex").read_text(encoding="utf-8")
+    (d / "main.tex").write_text(src.replace("drove it.", "drove it, we now think."), encoding="utf-8")
+
+    blob = build_mod.build(d).blob
+    assert bid not in blob["blocks"], "the fixture must actually change the id"
+    keys = list(blob["chats"].keys())
+    assert keys, "the chat must survive the edit"
+    assert keys[0] in blob["blocks"], "and be keyed to a block the page can address"
+
+
+def test_the_blob_carries_the_current_state(tmp_path):
+    """A page loading after the agent finished must not see a stale state."""
+    import asyncio
+
+    d, _ = setup(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(d)
+    drain.mark(d, "c-0001", "done")
+    asyncio.run(s.on_log_change())
+    states = [m["state"] for msgs in s.blob["chats"].values() for m in msgs]
+    assert states == ["done"], states
+
+
+def test_a_state_frame_is_addressed_to_the_block_that_now_exists(tmp_path):
+    """The last link, and the subtlest.
+
+    Answering a comment edits the paragraph, which changes its id. A state frame
+    addressed to the id in the log therefore names a block the page no longer
+    has, and the margin freezes on the previous state: the pin sat on `working`
+    forever because `done` was addressed to a block renamed by the very edit
+    being reported.
+    """
+    import asyncio
+
+    d, bid = setup(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+
+    src = (d / "main.tex").read_text(encoding="utf-8")
+    (d / "main.tex").write_text(src.replace("drove it.", "drove it, we now think."), encoding="utf-8")
+    asyncio.run(s.on_change())
+
+    sent = []
+    s.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
+    drain.mark(d, "c-0001", "done")
+    asyncio.run(s.on_log_change())
+
+    states = [m for m in sent if m["type"] == "state"]
+    assert states, "a state change must be reported"
+    assert states[-1]["state"] == "done"
+    assert states[-1]["block"] != bid, "the id changed with the edit"
+    assert states[-1]["block"] in {b.id for b in s.build.blocks}, "and must name a live block"

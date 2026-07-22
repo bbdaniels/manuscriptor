@@ -1130,6 +1130,38 @@
 
   // ---------------------------------------------------------------- patching
 
+  // Editing a paragraph changes its content-derived id, so the server sends the
+  // old-to-new mapping with the patch. Ignoring it left the page unable to find
+  // the element to replace: the new markup was appended at the end and the
+  // stale paragraph stayed put, so the author's own edit duplicated the
+  // paragraph in front of them. Everything keyed to the id moves with it.
+  function applyRenames(renamed) {
+    if (!renamed) return;
+    Object.keys(renamed).forEach(function (rawOld) {
+      var from = normId(rawOld), to = normId(renamed[rawOld]);
+      if (!to || from === to) return;
+
+      var el = blockEl(from);
+      if (el) el.setAttribute('data-mx', to);
+
+      ['blocks', 'chats', 'drafts', 'blockState', 'save'].forEach(function (bag) {
+        var store = S[bag];
+        if (store && Object.prototype.hasOwnProperty.call(store, from)) {
+          store[to] = store[from];
+          delete store[from];
+        }
+      });
+      if (S.focusedBlock === from) S.focusedBlock = to;
+      if (S.caret && S.caret.id === from) S.caret.id = to;
+      if (S.sel && S.sel.blockId === from) S.sel.blockId = to;
+      if (S.sel && S.sel.kind === 'block' && S.sel.key === from) S.sel.key = to;
+      S.back.forEach(function (b) {
+        if (b.blockId === from) b.blockId = to;
+        if (b.kind === 'block' && b.key === from) b.key = to;
+      });
+    });
+  }
+
   function applyBlockHtml(id, html) {
     var old = blockEl(id);
     var node = nodeFromHtml(html);
@@ -1146,6 +1178,7 @@
      into and takes the caret with it. */
   function onPatch(msg) {
     var ui = captureUI();
+    applyRenames(msg.renamed);
     var blocks = msg.blocks || {};
     var touched = {};
 
@@ -1265,7 +1298,22 @@
       }
       case 'chat': {
         var cid = normId(msg.block);
-        (S.chats[cid] = S.chats[cid] || []).push(msg.message || {});
+        var incoming = msg.message || {};
+        // The same message arrives up to three times: added optimistically on
+        // send, echoed by the server, and broadcast again when the log changes.
+        // Identity is the message id, so anything already held wins.
+        var bag = (S.chats[cid] = S.chats[cid] || []);
+        var at = -1;
+        for (var q = 0; q < bag.length; q++) {
+          if (!bag[q]) continue;
+          // The server's copy, or the optimistic one it is the answer to. The
+          // local placeholder carries a `local-` id and the same body, and the
+          // comment appeared twice until it was claimed here.
+          var isSame = (incoming.id && bag[q].id === incoming.id) ||
+            (String(bag[q].id || '').indexOf('local-') === 0 && bag[q].body === incoming.body);
+          if (isSame) { at = q; break; }
+        }
+        if (at >= 0) bag[at] = incoming; else bag.push(incoming);
         hydrate();
         if (S.sel && S.sel.blockId === cid) renderInspector();
         break;

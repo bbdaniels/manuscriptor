@@ -49,6 +49,7 @@ class Session:
         self.log = self.dir / "comments.jsonl"
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
+        self.seen_chats: dict[str, dict] = {}
         self.build = None
         self.rebuild()
 
@@ -82,6 +83,52 @@ class Session:
             patch = _diff(previous, self.build) if previous else None
         if patch:
             await self.broadcast(patch)
+
+    async def on_log_change(self) -> None:
+        """Tell the page what the agent did.
+
+        The agent works by appending to `comments.jsonl`: a state record when it
+        picks a comment up, another when it finishes. Nothing watched that file,
+        so an open page never learned. The margin sat on `queued` for the whole
+        run and the author had no sign anything was happening, which is exactly
+        the "you have to see it working" requirement failing in the one place it
+        matters.
+
+        Only differences are broadcast. Re-reading a log that has not changed
+        must not repaint the margin.
+        """
+        # Re-anchored FIRST. A comment is keyed to the block id it was written
+        # against, and answering it changes that id, so a frame addressed to the
+        # original id lands on a block the page no longer has. The margin then
+        # freezes on whatever state it saw last, which is exactly what happened:
+        # the pin sat on `working` forever because `done` was addressed to a
+        # block that had been renamed by the very edit being reported.
+        anchored = build_mod.reanchor_chats(
+            chat.by_block(self.log), self.build.blocks, chat.read_chats(self.log)
+        ) if self.build is not None else chat.by_block(self.log)
+
+        current = {}
+        for block_id, msgs in anchored.items():
+            for m in msgs:
+                current[m["id"]] = dict(m, block=block_id)
+
+        for cid, msg in current.items():
+            was = self.seen_chats.get(cid)
+            if was is None:
+                await self.broadcast({
+                    "type": "chat", "block": msg["block"],
+                    "message": {k: v for k, v in msg.items() if k != "block"},
+                })
+            if not was or was.get("state") != msg.get("state"):
+                await self.broadcast({
+                    "type": "state", "block": msg["block"], "state": msg["state"],
+                })
+        # Connected clients got the frames above. Anyone loading afterwards
+        # reads the blob, so it has to carry the same state rather than the one
+        # frozen at the last .tex rebuild.
+        if self.build is not None:
+            self.build.blob["chats"] = anchored
+        self.seen_chats = current
 
     async def on_edit(self, block_id: str, source: str) -> dict:
         """Splice one block back to disk. The watcher handles the redraw."""
@@ -295,10 +342,14 @@ def serve(
         url = f"http://127.0.0.1:{actual}/"
 
         loop = asyncio.get_running_loop()
-        stop = watch_tree(
-            session.dir,
-            lambda _paths: asyncio.run_coroutine_threadsafe(session.on_change(), loop),
-        )
+        def changed(paths):
+            # The comment log is not source. Re-rendering the manuscript because
+            # a comment arrived would be a second of work to repaint a pin.
+            log_only = all(p.name == "comments.jsonl" for p in paths)
+            coro = session.on_log_change() if log_only else session.on_change()
+            asyncio.run_coroutine_threadsafe(coro, loop)
+
+        stop = watch_tree(session.dir, changed)
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "

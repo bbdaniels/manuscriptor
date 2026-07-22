@@ -25,7 +25,7 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-WATCHED = {".tex", ".bib", ".aux"}
+WATCHED = {".tex", ".bib", ".aux", ".jsonl"}
 
 # Never redraw because of our own output, or because git touched something.
 IGNORED_DIRS = {".git", "build", "__pycache__", ".venv", "node_modules", "renv"}

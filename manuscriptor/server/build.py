@@ -101,7 +101,7 @@ def build(
         "html": post["html"],
         "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir) for b in bl},
         "outline": _outline(bl),
-        "chats": chat.by_block(log),
+        "chats": reanchor_chats(chat.by_block(log), bl, chat.read_chats(log)),
         "todos": [],
         "activity": [],
         "stats": {
@@ -140,6 +140,38 @@ def _keep_out_of_git(out: Path) -> None:
             marker.write_text("*\n", encoding="utf-8")
         except OSError:
             pass
+
+
+def reanchor_chats(by_block: dict, blocks, chats) -> dict:
+    """Move each chat onto the block its paragraph has become.
+
+    A chat is keyed to the block id it was written against, and ids are derived
+    from content, so answering a comment changes the id and the chat is left
+    pointing at a block that no longer exists. On the page that reads as the
+    comment vanishing at the exact moment it was addressed.
+
+    Re-found by the quote recorded with the comment, which is what the quote is
+    for. A chat whose paragraph is genuinely gone keeps its original key and is
+    simply not shown against any block, rather than being attached to the wrong
+    one.
+    """
+    present = {blk.id for blk in blocks}
+    quotes = {c.id: c.quote for c in chats}
+    out: dict[str, list] = {}
+    for block_id, msgs in by_block.items():
+        target = block_id
+        if block_id not in present:
+            quote = next((quotes.get(m["id"], "") for m in msgs if quotes.get(m["id"])), "")
+            if quote:
+                head = quote[:60]
+                match = next((blk.id for blk in blocks if blk.source_text.startswith(head)), None)
+                if match is None:
+                    part = quote[:40]
+                    match = next((blk.id for blk in blocks if part and part in blk.source_text), None)
+                if match:
+                    target = match
+        out.setdefault(target, []).extend(msgs)
+    return out
 
 
 def _rel(path, root) -> str:
