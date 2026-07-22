@@ -404,3 +404,44 @@ def test_sym_definition_is_removed_once_expanded():
     )
     assert "\\sym" not in out
     assert "**" in out
+
+
+# ------------------------------------------------ anchors on their own content
+
+
+def test_an_empty_anchor_is_hoisted_onto_what_it_anchors():
+    """Pandoc emits a marker before a heading or a float as its own empty
+    paragraph. 123 of them in estonia-ecm, each an empty block sitting in the
+    manuscript. The anchor belongs on the thing it anchors."""
+    from manuscriptor.render.postprocess import _hoist_empty_anchors
+
+    out = _hoist_empty_anchors('<p data-mx="b-1"></p>\n<h1 id="intro">Introduction</h1>')
+    assert "<p data-mx" not in out, "the empty paragraph must go"
+    assert '<h1 id="intro" data-mx="b-1">' in out or 'data-mx="b-1"' in out.split("<h1")[1]
+    assert "Introduction" in out
+
+
+def test_it_works_for_floats_and_paragraphs_too():
+    from manuscriptor.render.postprocess import _hoist_empty_anchors
+
+    for tag, close in (("figure", "figure"), ("p", "p"), ("div", "div")):
+        out = _hoist_empty_anchors(f'<p data-mx="b-2"></p><{tag} class="x">c</{close}>')
+        assert out.count("data-mx") == 1, out
+        assert f"<{tag}" in out and 'data-mx="b-2"' in out
+        assert not out.startswith("<p data-mx")
+
+
+def test_an_anchor_is_never_overwritten():
+    """If the next element already carries a block id, the empty paragraph stays
+    rather than two blocks fighting over one element."""
+    from manuscriptor.render.postprocess import _hoist_empty_anchors
+
+    src = '<p data-mx="b-1"></p><p data-mx="b-2">text</p>'
+    assert _hoist_empty_anchors(src) == src
+
+
+def test_a_non_empty_anchor_is_left_alone():
+    from manuscriptor.render.postprocess import _hoist_empty_anchors
+
+    src = '<p data-mx="b-1">real prose</p><h1>H</h1>'
+    assert _hoist_empty_anchors(src) == src

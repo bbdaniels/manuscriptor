@@ -67,6 +67,45 @@ def _simple_math_to_html(html: str) -> str:
     )
 
 
+_EMPTY_ANCHOR_RE = re.compile(
+    r'<p\s+data-mx="([^"]+)"\s*>\s*</p>\s*(<([a-zA-Z][-\w]*)\b([^>]*)>)'
+)
+
+
+def _hoist_empty_anchors(html: str) -> str:
+    """Move a marker that landed in its own empty paragraph onto what it anchors.
+
+    A marker placed before a heading or a float comes out of pandoc as its own
+    empty `<p>`, which is how it was designed to work: the orphan paragraph is a
+    usable anchor. But it is also a visibly empty block sitting in the
+    manuscript, and there are 123 of them in estonia-ecm, mostly before section
+    headings.
+
+    Hoisting fixes both halves. The empty block disappears, and the heading,
+    figure or table becomes directly clickable, which is what a reader would
+    expect to be able to select anyway.
+
+    An element that already carries a block id is never overwritten; in that
+    case the empty paragraph stays, because two blocks fighting over one element
+    is worse than one empty line.
+    """
+
+    def one(m: re.Match) -> str:
+        block_id, open_tag, attrs = m.group(1), m.group(2), m.group(4)
+        if "data-mx=" in attrs:
+            return m.group(0)
+        return open_tag[:-1].rstrip() + f' data-mx="{block_id}">'
+
+    # Repeated, because a single pass consumes the following tag as part of its
+    # match: two empty anchors in a row would leave the second one behind.
+    for _ in range(6):
+        out = _EMPTY_ANCHOR_RE.sub(one, html)
+        if out == html:
+            return out
+        html = out
+    return html
+
+
 _TABLE_OPEN_RE = re.compile(r"<table\b")
 
 
@@ -100,6 +139,7 @@ def postprocess(
     ids = [_block_id(b) for b in blocks]
 
     html, reported = _harvest(html)
+    html = _hoist_empty_anchors(html)
     html, unresolved = resolve(html, labels)
     html = _tag_citations(html)
     assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir))

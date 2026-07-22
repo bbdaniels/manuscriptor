@@ -407,3 +407,29 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
   margin: 0; padding: 0; }
 .doc math[display="inline"] mfrac { font-size: 1.06em; }
 .doc math[display="block"] { display: block; margin: .9rem 0; text-align: center; }
+
+/* A block that renders nothing (\clearpage, \maketitle, a run of them before a
+   section) still needs its anchor in the DOM so the margin can address it and
+   the anchor audit passes. It must not occupy a line in the manuscript. */
+.doc p[data-mx]:empty { height: 0; min-height: 0; margin: 0; padding: 0;
+  border: 0; overflow: hidden; }
+.doc p[data-mx]:empty:hover { background: none; }
+
+/* ---------- collapsible navigation ---------- */
+.outline .sec { display: flex; align-items: center; gap: .1rem; }
+.outline .sec > a { flex: 1; min-width: 0; }
+.twist { flex: none; width: 1.1rem; height: 1.1rem; padding: 0; border: 0;
+  background: none; color: var(--faint); cursor: pointer; font-size: .62rem;
+  line-height: 1; display: grid; place-items: center; border-radius: 3px; }
+.twist:hover { background: var(--accent-soft); color: var(--accent); }
+.twist svg { width: .55rem; height: .55rem; transition: transform .12s ease; }
+@media (prefers-reduced-motion: reduce) { .twist svg { transition: none; } }
+.twist[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.outline a[data-under].is-hidden { display: none; }
+
+/* The insert bars belong to the editor and must stay reachable however long
+   the paragraph is, so they sit at the foot of the panel rather than at the
+   end of a scroll. */
+.insp-body .insbar { position: sticky; bottom: 0; z-index: 2;
+  background: var(--surface); }
+.insp-body .insbar + .insbar { bottom: 2.1rem; }

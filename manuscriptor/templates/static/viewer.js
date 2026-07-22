@@ -582,7 +582,7 @@
       ? '<p class="meta" style="padding:.5rem .7rem .6rem">You are holding the unflattened source, so ' +
         includes.map(function (i) { return '<span class="inputtok">' + esc(i.directive) + '</span>'; }).join(' ') +
         ' survive' + (includes.length === 1 ? 's' : '') + ' your edit. The values shown in the page are read from those files.</p>'
-      : '<p class="meta" style="padding:.5rem .7rem .6rem">This is the source as it sits in the file, not the flattened render.</p>';
+      : '';
 
     return card(fileLine(b), 'editable',
       '<textarea class="src" spellcheck="false" data-role="src" data-block="' + esc(id) + '">' + esc(text) + '</textarea>' +
@@ -1237,6 +1237,20 @@
     var skin = e.target.closest('.skinctl .tb[data-skin]');
     if (skin) { applySkin(skin.getAttribute('data-skin')); return; }
 
+    // A section's subsections fold away. The state lives on the button, so a
+    // patch that rebuilds the rail cannot silently reopen what was closed.
+    var twist = e.target.closest('[data-twist]');
+    if (twist) {
+      e.preventDefault();
+      var top = twist.getAttribute('data-twist');
+      var open = twist.getAttribute('aria-expanded') !== 'false';
+      twist.setAttribute('aria-expanded', open ? 'false' : 'true');
+      twist.setAttribute('aria-label', open ? 'Expand this section' : 'Collapse this section');
+      var kids = document.querySelectorAll('.outline a[data-under="' + top + '"]');
+      for (var k = 0; k < kids.length; k++) kids[k].classList.toggle('is-hidden', open);
+      return;
+    }
+
     var goto_ = e.target.closest('[data-goto]');
     if (goto_) {
       e.preventDefault();
@@ -1340,7 +1354,20 @@
 
   // -------------------------------------------------------------------- boot
 
+  // A disclosure control on a section with nothing under it is a control that
+  // does nothing. Hidden rather than removed, so the rail's alignment holds.
+  function hideChildlessTwists() {
+    var ts = document.querySelectorAll('.twist');
+    for (var i = 0; i < ts.length; i++) {
+      var top = ts[i].getAttribute('data-twist');
+      if (!document.querySelector('.outline a[data-under="' + top + '"]')) {
+        ts[i].style.visibility = 'hidden';
+      }
+    }
+  }
+
   function boot() {
+    hideChildlessTwists();
     appEl = document.getElementById('app');
     if (!appEl) return;
     railEl = document.getElementById('rail');
