@@ -49,6 +49,7 @@ class _Handler(FileSystemEventHandler):
             return
         # An atomic splice writes a dotfile then renames; the rename is the event
         # that matters and the temp file must never trigger a render of its own.
+        # Our own lock sidecar and atomic-write temp files are not source.
         if path.name.startswith("."):
             return
         with self.guard:

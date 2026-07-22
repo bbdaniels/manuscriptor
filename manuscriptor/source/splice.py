@@ -17,8 +17,12 @@ between identical candidates.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import os
+import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 from manuscriptor.source.blocks import base_id, block_id
@@ -38,6 +42,31 @@ class NotEditable(Exception):
 
 _LOCKS: dict[str, str] = {}
 _GUARD = threading.Lock()
+
+# One lock per file, held across read-locate-write.
+#
+# splice reads the whole file, replaces a byte range, and writes the whole file
+# back. Two writers on two different paragraphs of one file lose an edit: A
+# reads, B reads, A writes, B writes, and A's work is gone because B's copy
+# predates it. Measured before this existed: eight concurrent splices, two
+# survivors.
+#
+# Serializing the writers would fix it and throw away the parallelism. The
+# critical section is a file read and a file write, microseconds, so agents can
+# think concurrently and only their writes take turns. The second re-reads after
+# the first wrote and finds its own block by content, which is how _locate
+# already works.
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _file_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _FILE_LOCKS_GUARD:
+        lock = _FILE_LOCKS.get(key)
+        if lock is None:
+            lock = _FILE_LOCKS[key] = threading.Lock()
+        return lock
 
 
 def splice(block, new_source: str, *, root, holder: str | None = None) -> None:
@@ -67,27 +96,37 @@ def splice(block, new_source: str, *, root, holder: str | None = None) -> None:
     if owner is not None and owner != holder:
         raise BlockLocked(f"block {block.id} is held by {owner!r}")
 
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise StaleBlock(f"cannot read {path}: {exc}") from exc
+    # Two locks, because there are two kinds of contention. The threading lock
+    # covers writers inside this process, a parallel drain being the obvious
+    # one. The advisory file lock covers writers in OTHER processes: the server
+    # splicing the author's edit while a Claude session splices its own is two
+    # processes, and a threading lock is blind to that.
+    #
+    # It cannot cover an editor that does not take it. Claude's ordinary file
+    # edits do not, so that pairing is still protected only by the staleness
+    # check below and by the block lock the margin shows.
+    with _file_lock(path), _across_processes(path):
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise StaleBlock(f"cannot read {path}: {exc}") from exc
 
-    text = raw.decode("utf-8")
-    crlf = "\r\n" in text
-    if crlf:
-        text = text.replace("\r\n", "\n")
+        text = raw.decode("utf-8")
+        crlf = "\r\n" in text
+        if crlf:
+            text = text.replace("\r\n", "\n")
 
-    at = _locate(text, block)
-    if at is None:
-        raise StaleBlock(
-            f"block {block.id} no longer matches the bytes in {path}; "
-            "something else rewrote it first"
-        )
+        at = _locate(text, block)
+        if at is None:
+            raise StaleBlock(
+                f"block {block.id} no longer matches the bytes in {path}; "
+                "something else rewrote it first"
+            )
 
-    updated = text[:at] + new_source + text[at + len(block.source_text) :]
-    if crlf:
-        updated = updated.replace("\n", "\r\n")
-    _atomic_write(path, updated.encode("utf-8"))
+        updated = text[:at] + new_source + text[at + len(block.source_text) :]
+        if crlf:
+            updated = updated.replace("\n", "\r\n")
+        _atomic_write(path, updated.encode("utf-8"))
 
 
 def lock(block_id: str, holder: str) -> None:
@@ -112,6 +151,40 @@ def holder_of(block_id: str) -> str | None:
 
 
 # ----------------------------------------------------------------- internals
+
+
+_LOCK_DIR = Path(tempfile.gettempdir()) / "manuscriptor-locks"
+
+
+@contextmanager
+def _across_processes(path: Path):
+    """An advisory lock, held on a sidecar outside the manuscript.
+
+    Not beside the file it guards. Lock files cannot be safely deleted on
+    release, so one kept next to the manuscript would accumulate there and show
+    up in the author's working tree. Serving a paper must never leave litter in
+    it.
+    """
+    try:
+        _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        yield
+        return
+    key = hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:16]
+    guard = _LOCK_DIR / f"{key}.lock"
+    fh = None
+    try:
+        fh = open(guard, "a+")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    except OSError:
+        yield          # a read-only directory must not stop an edit landing
+    finally:
+        if fh is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
 
 def _locate(text: str, block) -> int | None:
@@ -151,7 +224,9 @@ def _atomic_write(path: Path, payload: bytes) -> None:
     Same directory, so the rename is atomic on one filesystem; a crash leaves
     either the old file or the new one, never half a manuscript.
     """
-    tmp = path.with_name(f".{path.name}.mxtmp{os.getpid()}")
+    # The pid alone is not unique: two threads in one process collide on the
+    # same temp name and one deletes the other's file mid-write.
+    tmp = path.with_name(f".{path.name}.mxtmp{os.getpid()}.{threading.get_ident()}")
     try:
         with open(tmp, "wb") as fh:
             fh.write(payload)

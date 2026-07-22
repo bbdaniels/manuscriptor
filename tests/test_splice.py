@@ -271,3 +271,116 @@ def test_splice_uses_rename_not_truncation(tmp_path, monkeypatch):
     splice(block, "Rewritten opener.", root=tmp_path)
     assert seen and seen[0][1] == str(main)
     assert Path(seen[0][0]).parent == main.parent
+
+
+# ------------------------------------------------------- concurrent splices
+
+
+def test_two_blocks_in_one_file_can_be_spliced_at_once(tmp_path):
+    """The race that nearly cost a parallel drain its edits.
+
+    splice reads the whole file, replaces a byte range, and writes the whole
+    file back. Two agents editing two different paragraphs: A reads, B reads,
+    A writes, B writes, and A's work is gone because B's copy predates it.
+
+    Serializing the agents would fix it and waste the parallelism. Holding a
+    lock across read-locate-write costs microseconds and lets both land: the
+    second re-reads after the first wrote and finds its own block by content,
+    which is how splice already locates.
+    """
+    import threading
+
+    main = manuscript(
+        tmp_path,
+        "\\documentclass{article}\n\\begin{document}\n"
+        "First paragraph, long enough to be a real block of prose in this test.\n\n"
+        "Second paragraph, equally real, and the one edited concurrently.\n\n"
+        "Third paragraph, present so neither edit is at the end of the file.\n"
+        "\\end{document}\n",
+    )
+    blocks = [b for b in blocks_of(main) if b.kind == "paragraph" and b.editable]
+    assert len(blocks) >= 2
+
+    start = threading.Barrier(2)
+    errors = []
+
+    def edit(block, marker):
+        try:
+            start.wait(timeout=5)
+            splice(block, block.source_text + " " + marker, root=tmp_path)
+        except Exception as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=edit, args=(blocks[0], "EDIT-A")),
+        threading.Thread(target=edit, args=(blocks[1], "EDIT-B")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    text = main.read_text(encoding="utf-8")
+    assert not errors, errors
+    assert "EDIT-A" in text, "the first edit was overwritten"
+    assert "EDIT-B" in text, "the second edit was overwritten"
+
+
+def test_many_concurrent_splices_all_land(tmp_path):
+    import threading
+
+    paras = "\n\n".join(f"Paragraph number {i}, long enough to stand as its own block." for i in range(8))
+    main = manuscript(tmp_path, "\\documentclass{article}\n\\begin{document}\n" + paras + "\n\\end{document}\n")
+    blocks = [b for b in blocks_of(main) if b.kind == "paragraph" and b.editable][:8]
+
+    start = threading.Barrier(len(blocks))
+
+    def edit(block, n):
+        start.wait(timeout=5)
+        splice(block, block.source_text + f" MARK{n}", root=tmp_path)
+
+    threads = [threading.Thread(target=edit, args=(b, i)) for i, b in enumerate(blocks)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    text = main.read_text(encoding="utf-8")
+    landed = [i for i in range(len(blocks)) if f"MARK{i}" in text]
+    assert len(landed) == len(blocks), f"only {len(landed)} of {len(blocks)} edits survived"
+
+
+def test_concurrent_splices_from_separate_processes_all_land(tmp_path):
+    """The threading lock is blind across processes, and the server splicing an
+    author's edit while a Claude session splices its own is exactly that."""
+    import subprocess
+    import sys
+    import textwrap
+
+    paras = "\n\n".join(f"Paragraph number {i}, long enough to stand as its own block." for i in range(6))
+    main = manuscript(tmp_path, "\\documentclass{article}\n\\begin{document}\n" + paras + "\n\\end{document}\n")
+
+    script = textwrap.dedent("""
+        import sys, time
+        from pathlib import Path
+        from manuscriptor.source.blocks import segment
+        from manuscriptor.source.flatten import flatten
+        from manuscriptor.source.splice import splice
+        root, n, at = Path(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
+        blocks = [b for b in segment(flatten(root / "main.tex")) if b.kind == "paragraph"]
+        time.sleep(max(0.0, at - time.time()))
+        splice(blocks[n], blocks[n].source_text + f" PROC{n}", root=root)
+    """)
+    runner = tmp_path / "one.py"
+    runner.write_text(script, encoding="utf-8")
+
+    import time
+    go = time.time() + 1.2
+    procs = [subprocess.Popen([sys.executable, str(runner), str(tmp_path), str(i), str(go)])
+             for i in range(6)]
+    for p in procs:
+        p.wait(timeout=30)
+
+    text = main.read_text(encoding="utf-8")
+    landed = [i for i in range(6) if f"PROC{i}" in text]
+    assert len(landed) == 6, f"only {len(landed)} of 6 survived: {landed}"
