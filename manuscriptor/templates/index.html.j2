@@ -85,12 +85,12 @@
           {%- if h.get('level', 1) == 1 %}
           {%- set ns.top = h.get('id', '') %}
           <div class="sec">
-            <button class="twist" type="button" data-twist="{{ ns.top }}" aria-expanded="true"
-                    aria-label="Collapse this section"><svg viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5 L4 5.5 L7 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+            <button class="twist" type="button" data-twist="{{ ns.top }}" aria-expanded="false"
+                    aria-label="Expand this section"><svg viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5 L4 5.5 L7 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
             <a data-goto="{{ h.get('id', '') }}" class="lvl1" tabindex="0">{{ h.get('text', '') }}</a>
           </div>
           {%- else %}
-          <a data-goto="{{ h.get('id', '') }}" data-under="{{ ns.top }}" class="lvl{{ h.get('level', 1) }}" tabindex="0">{{ h.get('text', '') }}</a>
+          <a data-goto="{{ h.get('id', '') }}" data-under="{{ ns.top }}" class="lvl{{ h.get('level', 1) }} is-hidden" tabindex="0">{{ h.get('text', '') }}</a>
           {%- endif %}
           {%- endfor %}
         </div>
