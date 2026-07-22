@@ -137,3 +137,21 @@ def test_the_session_exposes_its_blob_as_data_not_a_call(tmp_path):
 
     blob = Session(tmp_path).blob
     assert isinstance(blob, dict) and blob["blocks"]
+
+
+def test_insert_at_cursor_refuses_an_unplaced_caret():
+    """A textarea that has never been focused reports selectionStart 0, so an
+    insert with no cursor silently prepended to the start of the paragraph.
+    That is how two empty footnotes reached a real manuscript.
+
+    The rule is checked here against the shipped viewer source rather than a
+    browser: the guard must exist and must not be a comment.
+    """
+    from pathlib import Path
+
+    js = Path(__file__).resolve().parent.parent / "manuscriptor/templates/static/viewer.js"
+    src = js.read_text(encoding="utf-8")
+    fn = src[src.index("function insertAtCursor"):]
+    fn = fn[: fn.index("\n  }")]
+    assert "caretKnown" in fn, "insertAtCursor must not trust an unplaced caret"
+    assert "src.value.length" in fn, "and must fall back to the end, never the start"

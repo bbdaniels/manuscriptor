@@ -28,6 +28,17 @@ A live manuscript editor. LaTeX renders to a page where every block is addressab
 
 **The build directory writes its own `.gitignore`.** The default output sits inside the manuscript directory, which is nearly always a git working tree the author cares about. Serving a paper must never make `git status` grow.
 
+## Never drive the editor against a real manuscript
+
+`serve` is read-write. Automated interaction against a live manuscript WILL
+eventually write to it: on 2026-07-22 a browser-driven verification pass left
+`\footnote{}\footnote{}` at the start of a paragraph in estonia-ecm's main.tex.
+It was recoverable only because that file happened to be clean in git.
+
+Copy the manuscript to a scratch directory and point `serve` at the copy for any
+test that clicks, types, or dispatches events. The real manuscript may be served
+for reading and screenshots, and nothing else.
+
 ## Testing
 
 Watch every guard fail before trusting it. A test that has never failed proves nothing, and a skipped test is not a pass. The tests that matter most: flatten resolves nested includes with exact offsets; block ids survive an edit above them; sentinels round-trip through pandoc into the correct position; a splice to block N changes only block N's bytes; a comment on block 40 still resolves after block 3 is rewritten.

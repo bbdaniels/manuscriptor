@@ -1110,7 +1110,15 @@
     var src = ibodyEl.querySelector('textarea.src[data-role="src"]');
     if (!src) return;
     var id = src.getAttribute('data-block');
-    var out = spliceAt(src.value, src.selectionStart, snippet);
+    // A textarea that has never been focused reports selectionStart 0, which is
+    // indistinguishable from a caret deliberately placed at the start. Inserting
+    // on that reading silently prepends to the paragraph, and that is how two
+    // empty footnotes reached a real manuscript. With no caret of its own, the
+    // end of the block is the only honest guess.
+    var caretKnown = document.activeElement === src ||
+      (S.caret && S.caret.id === id);
+    var at = caretKnown ? src.selectionStart : src.value.length;
+    var out = spliceAt(src.value, at, snippet);
     src.value = out.text;
     var caret = out.caret - (back || 0);
     try { src.setSelectionRange(caret, caret); } catch (e) { /* ignore */ }
