@@ -179,6 +179,7 @@ def normalize_for_pandoc(source: str) -> str:
     """
     declared = _declared_column_types(source)
     source = _strip_newcolumntypes(source)
+    source = _expand_sym(source)
     source = _unwrap_text_outside_math(source)
     source = _flatten_stacked_cells(source)
     source = _strip_rules(source)
@@ -189,6 +190,31 @@ def normalize_for_pandoc(source: str) -> str:
         source = _unwrap_environment(source, name, args)
     source = _plain_multicolumn_specs(source, declared)
     return _plain_table_specs(source, declared)
+
+
+_SYM_DEF_RE = re.compile(r"\\def\\sym\s*#1\s*\{[^\n]*\^\{#1\}[^\n]*\}[ \t]*\n?")
+_SYM_CALL_RE = re.compile(r"\\sym\s*\{([^{}]*)\}")
+
+
+def _expand_sym(source: str) -> str:
+    """Expand esttab's significance macro, which pandoc cannot evaluate.
+
+    esttab writes `\\def\\sym#1{\\ifmmode^{#1}\\else\\(^{#1}\\)\\fi}` and then calls
+    `\\sym{***}` on every significant coefficient. The definition is a TeX
+    conditional, and pandoc does not evaluate conditionals, so a literal caret
+    reaches the reader and the stars break across lines. estonia-qbs uses it 55
+    times, estonia-ecm in most of its table files.
+
+    Both branches of that conditional mean the same thing, a superscript, so the
+    call becomes `$^{...}$` and the definition is dropped.
+
+    Only expanded when the document actually defines `\\sym`. Expanding a macro
+    the manuscript never declared would be inventing a meaning for it.
+    """
+    if not _SYM_DEF_RE.search(source):
+        return source
+    source = _SYM_DEF_RE.sub("", source)
+    return _SYM_CALL_RE.sub(lambda m: "$^{" + m.group(1) + "}$", source)
 
 
 _TEXT_RE = re.compile(r"\\text\s*(?=\{)")

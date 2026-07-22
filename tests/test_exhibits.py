@@ -13,15 +13,26 @@ import re
 from manuscriptor.render.pandoc import normalize_for_pandoc, render_document
 
 
+# MathML carries the original LaTeX in an <annotation> for copy-paste and
+# accessibility tools. Browsers never display it. A regex that strips tags does
+# sweep it in, which made an earlier pass of these tests report raw TeX on a
+# page that showed none. Read what the reader sees.
+_ANNOTATION_RE = re.compile(r"<annotation\b.*?</annotation>", re.S)
+
+
+def visible(html: str) -> str:
+    return re.sub(r"<[^>]+>", "", _ANNOTATION_RE.sub("", html))
+
+
 def cells(html: str) -> list[str]:
     return [
-        re.sub(r"<[^>]+>", "", c).strip()
+        visible(c).strip()
         for c in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", html, re.S)
     ]
 
 
 def rows(html: str) -> list[str]:
-    return [re.sub(r"<[^>]+>", "", r).strip() for r in re.findall(r"<tr[^>]*>.*?</tr>", html, re.S)]
+    return [visible(r).strip() for r in re.findall(r"<tr[^>]*>.*?</tr>", html, re.S)]
 
 
 def doc(body: str) -> str:
@@ -349,3 +360,47 @@ def test_real_math_is_left_for_mathjax():
 
     src = '<span class="math inline">\\(\\frac{\\alpha}{\\beta_i}\\)</span>'
     assert _simple_math_to_html(src) == src
+
+
+# ----------------------------------------------------------------- \sym stars
+
+
+def test_sym_significance_markers_render(tmp_path):
+    """esttab defines `\\def\\sym#1{\\ifmmode^{#1}\\else\\(^{#1}\\)\\fi}` and calls it
+    for every significance marker. Pandoc cannot evaluate the `\\ifmmode`
+    conditional, so a literal `^` reaches the reader and the stars break across
+    lines. estonia-qbs uses it 55 times."""
+    html = render_document(
+        doc(
+            "\\def\\sym#1{\\ifmmode^{#1}\\else\\(^{#1}\\)\\fi}\n"
+            "\\begin{tabular}{lc}\n"
+            "Shadow Signal & -0.0104\\sym{*} \\\\\n"
+            "Weight shift & -0.0785\\sym{***} \\\\\n"
+            "\\end{tabular}\n"
+        ),
+        cwd=tmp_path,
+        bib=None,
+    )
+    text = " ".join(cells(html))
+    assert "^" not in text, f"a literal caret reached the page: {text!r}"
+    assert "sym" not in text.lower()
+    assert "-0.0104" in text and "-0.0785" in text
+    assert "<sup>" in html or "<msup" in html, "the stars must be superscripts"
+
+
+def test_sym_is_expanded_only_when_the_manuscript_defines_it():
+    """Expanding a macro the document never declared would be inventing meaning."""
+    from manuscriptor.render.pandoc import normalize_for_pandoc
+
+    undefined = "A & 1\\sym{*} \\\\\n"
+    assert normalize_for_pandoc(undefined) == undefined
+
+
+def test_sym_definition_is_removed_once_expanded():
+    from manuscriptor.render.pandoc import normalize_for_pandoc
+
+    out = normalize_for_pandoc(
+        "\\def\\sym#1{\\ifmmode^{#1}\\else\\(^{#1}\\)\\fi}\nA & 1\\sym{**} \\\\\n"
+    )
+    assert "\\sym" not in out
+    assert "**" in out
