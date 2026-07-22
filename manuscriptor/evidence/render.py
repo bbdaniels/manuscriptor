@@ -11,7 +11,6 @@ import shutil
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
-from typing import Any
 
 from jinja2 import Template
 

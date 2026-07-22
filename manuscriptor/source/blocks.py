@@ -170,7 +170,6 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
     # Built once. qutub-india resolves 369 segments, and rebuilding this index
     # per block would make segmentation quadratic in the number of fragments.
     piece_starts = [p.flat_start for p in pieces]
-    root_file = _root_file(flat, texts)
 
     tokens = _tokenize(flat.text, 0, len(flat.text))
     body_start, body_end = _body_bounds(flat.text, tokens)

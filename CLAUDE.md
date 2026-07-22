@@ -8,6 +8,8 @@ Read `Manuscriptor/Tasks.md` at session start. The design is `Manuscriptor/plans
 
 A live manuscript editor. LaTeX renders to a page where every block is addressable back to its source bytes, so a margin comment or a direct edit resolves to a real byte range rather than to a page number and a highlighted phrase.
 
+`manuscriptor serve <dir>` works end to end today. The drain (`proc` and the wake job) is the piece still missing, so chats land in `comments.jsonl` and nothing reads them.
+
 ## Invariants
 
 **Context wide, unit narrow.** A worker may read as widely as it needs and may only ever write one block. This is what makes running edits live acceptable. Do not add a code path that writes more than one block per operation.
@@ -19,6 +21,12 @@ A live manuscript editor. LaTeX renders to a page where every block is addressab
 **Block identity is content derived, never positional.** Line numbers move the moment anything above them changes.
 
 **Never hand-edit a generated block.** A file written by analysis code (`tables/*.tex` produced by an R or Stata script) must refuse edits and name its producer instead. Editing it would hardcode a result, which violates the standing rule against typing numbers into LaTeX.
+
+**Provenance is decided in `server/producers.py` and nowhere else.** Never infer "generated" from a path or a directory name. That guess once marked 74% of the reference manuscript uneditable, because its hand-written prose appendices are also not the root file. `segment()` decides only whether a block can be spliced as one byte range; that is a different question and the two must not be folded together again.
+
+**Ids are content-derived, so an edit renames its own block.** Anything comparing block ids across two builds must go through `rematch` and carry the rename onward, or drafts and chats keyed to the old id are silently orphaned. This bug has already been introduced once, in the server's patch diff.
+
+**The build directory writes its own `.gitignore`.** The default output sits inside the manuscript directory, which is nearly always a git working tree the author cares about. Serving a paper must never make `git status` grow.
 
 ## Testing
 

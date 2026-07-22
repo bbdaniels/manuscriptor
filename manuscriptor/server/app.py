@@ -50,6 +50,10 @@ class Session:
         self.build = None
         self.rebuild()
 
+    @property
+    def blob(self) -> dict:
+        return self.build.blob
+
     def rebuild(self):
         previous = self.build
         self.build = build_mod.build(self.dir, main=self.main, bib=self.bib)
@@ -308,10 +312,3 @@ def serve(
         asyncio.run(run())
     except KeyboardInterrupt:
         pass
-
-
-def _session_blob(self) -> dict:
-    return self.build.blob
-
-
-Session.blob = _session_blob

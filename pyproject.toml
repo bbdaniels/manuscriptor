@@ -37,3 +37,7 @@ manuscriptor = ["templates/*.j2", "templates/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+exclude = ["docs"]

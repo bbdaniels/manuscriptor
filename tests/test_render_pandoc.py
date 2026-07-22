@@ -185,11 +185,11 @@ def test_newcolumntype_is_a_hard_parse_failure_before_normalizing():
 
 
 def test_newcolumntype_is_removed(tmp_path):
-    src = f"""\\documentclass{{article}}
-\\begin{{document}}
-\\newcolumntype{{m}}[1]{{>{{\\centering\\arraybackslash}}p{{#1}}}}
+    src = """\\documentclass{article}
+\\begin{document}
+\\newcolumntype{m}[1]{>{\\centering\\arraybackslash}p{#1}}
 Prose after the declaration.
-\\end{{document}}
+\\end{document}
 """
     html = render_document(src, cwd=tmp_path, bib=None)
     assert "Prose after the declaration." in html

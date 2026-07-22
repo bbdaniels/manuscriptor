@@ -6,16 +6,24 @@ Replaces the tex → PDF → markup → extraction loop, and eventually Overleaf
 
 ## Status
 
-Scaffolded. The citation-evidence pipeline works today; everything else lands with its milestone.
+The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edit it, and watch the change land on disk and redraw the page. Verified in a browser against estonia-ecm: 368 anchored blocks, 268 tests.
 
 | | |
 |---|---|
+| `manuscriptor serve` | **works** |
+| `manuscriptor build` | **works**, static anchored page |
+| `manuscriptor blocks` | **works**, the block table |
 | `manuscriptor evidence` | **works** (absorbed from cite-evidence) |
 | `manuscriptor repair` / `clean` | **works** |
-| `manuscriptor blocks` | M1, flatten and segment |
-| `manuscriptor build` | M2, render |
-| `manuscriptor serve` | M3, serve and watch |
-| `manuscriptor proc` | M5, drain |
+| `manuscriptor proc` | M5, the drain, not yet built |
+
+```bash
+manuscriptor serve ~/Projects/estonia-ecm/latex
+```
+
+Not yet built: the drain (`proc` and the wake job), so chats land in
+`comments.jsonl` and nothing reads them; descriptions for computed values; the
+insert flows beyond a footnote; reading in coauthor markup; the native shell.
 
 The design lives in the Obsidian vault at `Manuscriptor/plans/2026-07-22 - Phase 1 Design.md`, with verified findings and decision rationale in `Manuscriptor/Technical Notes.md`. Read those before implementing a milestone.
 
@@ -51,6 +59,13 @@ shell/           standalone Manuscriptor.app        (late, off the critical path
 ```
 
 `source/` is the load-bearing package. Everything else depends on its mapping being exact, so keep it small and test it hard.
+
+`server/producers.py` answers one question: is this `.tex` file written by
+analysis code? A producer scan is definitive and names the owning script; a
+content test covers the files no scan can claim, because manuscripts name their
+outputs inconsistently (estonia-ecm by basename, qutub-india by concatenation).
+Nothing else may decide it from a path. Guessing "generated means not the root
+file" once marked 74% of the reference manuscript uneditable.
 
 ## Relationship to cite-evidence
 

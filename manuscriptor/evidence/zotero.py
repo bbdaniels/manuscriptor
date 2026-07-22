@@ -7,7 +7,6 @@ attach, etc.) live in `repair.py` and are invoked only by the explicit
 from __future__ import annotations
 
 import re
-import time
 from dataclasses import dataclass
 from typing import Optional
 

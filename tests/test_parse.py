@@ -1,8 +1,6 @@
 """Unit tests for Stage 01 — parse."""
 from __future__ import annotations
 
-import json
-import tempfile
 from pathlib import Path
 
 from manuscriptor.evidence.parse import (

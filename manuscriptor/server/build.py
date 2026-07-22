@@ -34,7 +34,6 @@ class Build:
 
 _DATA_MX_RE = re.compile(r'<([a-zA-Z][-\w]*)([^>]*?)\sdata-mx="([^"]+)"([^>]*)>')
 _CITE_RE = re.compile(r'data-cites="([^"]+)"')
-_VALUE_INPUT_RE = re.compile(r"\\(?:input|include)\s*\{([^}]*)\}")
 
 
 def find_main_tex(manuscript_dir: Path, main: str | None = None) -> Path:
@@ -72,6 +71,7 @@ def build(
     bib_path = find_bib(manuscript_dir, bib)
     out = Path(output_dir).resolve() if output_dir else manuscript_dir / "build" / "manuscriptor"
     out.mkdir(parents=True, exist_ok=True)
+    _keep_out_of_git(out)
 
     flat = flatten(main_tex)
     produced = producers.scan(manuscript_dir)
@@ -119,6 +119,22 @@ def build(
         root=manuscript_dir,
         main_tex=main_tex,
     )
+
+
+def _keep_out_of_git(out: Path) -> None:
+    """Make the build directory invisible to the manuscript's repository.
+
+    The default output lives inside the manuscript directory, which is almost
+    always a git working tree the author cares about. Serving a paper should
+    never be the reason `git status` grows a page of untracked files, and the
+    author should not have to know to add the entry themselves.
+    """
+    marker = out / ".gitignore"
+    if not marker.exists():
+        try:
+            marker.write_text("*\n", encoding="utf-8")
+        except OSError:
+            pass
 
 
 # ----------------------------------------------------------------- internals
