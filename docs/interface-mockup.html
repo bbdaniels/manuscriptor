@@ -1,9 +1,11 @@
 <title>Manuscriptor — planned interface</title>
 <style>
   :root {
-    --ground:#F4F5F7; --surface:#FFFFFF; --sunken:#ECEEF1;
-    --ink:#151A20; --muted:#626C79; --faint:#8B94A0; --rule:#DCE1E7;
-    --accent:#2B5278; --accent-soft:#E4EBF3;
+    --h:214; --sat:1;
+    --ground:hsl(var(--h) 14% 96%); --surface:#FFFFFF; --sunken:hsl(var(--h) 15% 93%);
+    --ink:hsl(var(--h) 20% 10%); --muted:hsl(var(--h) 11% 43%); --faint:hsl(var(--h) 11% 59%);
+    --rule:hsl(var(--h) 17% 88%);
+    --accent:hsl(var(--h) calc(47% * var(--sat)) 32%); --accent-soft:hsl(var(--h) calc(38% * var(--sat)) 92%);
     --verbatim:#2E7D5B; --paraphrase:#A97410; --missing:#B24239; --computed:#6A55A0;
     --computed-soft:#EDE9F6;
     --serif: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
@@ -13,26 +15,29 @@
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --ground:#131619; --surface:#1A1E23; --sunken:#22272D;
-      --ink:#E3E7EB; --muted:#8A949F; --faint:#6B747E; --rule:#2A3038;
-      --accent:#83AACE; --accent-soft:#1E2A36;
+      --ground:hsl(var(--h) 15% 9%); --surface:hsl(var(--h) 15% 12%); --sunken:hsl(var(--h) 14% 15%);
+      --ink:hsl(var(--h) 13% 90%); --muted:hsl(var(--h) 9% 58%); --faint:hsl(var(--h) 9% 45%);
+      --rule:hsl(var(--h) 15% 20%);
+      --accent:hsl(var(--h) calc(45% * var(--sat)) 66%); --accent-soft:hsl(var(--h) calc(30% * var(--sat)) 17%);
       --verbatim:#5FBE90; --paraphrase:#D9A441; --missing:#E0776C; --computed:#A996DC;
       --computed-soft:#241F33;
       --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
     }
   }
   :root[data-theme="dark"] {
-    --ground:#131619; --surface:#1A1E23; --sunken:#22272D;
-    --ink:#E3E7EB; --muted:#8A949F; --faint:#6B747E; --rule:#2A3038;
-    --accent:#83AACE; --accent-soft:#1E2A36;
+    --ground:hsl(var(--h) 15% 9%); --surface:hsl(var(--h) 15% 12%); --sunken:hsl(var(--h) 14% 15%);
+    --ink:hsl(var(--h) 13% 90%); --muted:hsl(var(--h) 9% 58%); --faint:hsl(var(--h) 9% 45%);
+    --rule:hsl(var(--h) 15% 20%);
+    --accent:hsl(var(--h) calc(45% * var(--sat)) 66%); --accent-soft:hsl(var(--h) calc(30% * var(--sat)) 17%);
     --verbatim:#5FBE90; --paraphrase:#D9A441; --missing:#E0776C; --computed:#A996DC;
     --computed-soft:#241F33;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
   }
   :root[data-theme="light"] {
-    --ground:#F4F5F7; --surface:#FFFFFF; --sunken:#ECEEF1;
-    --ink:#151A20; --muted:#626C79; --faint:#8B94A0; --rule:#DCE1E7;
-    --accent:#2B5278; --accent-soft:#E4EBF3;
+    --ground:hsl(var(--h) 14% 96%); --surface:#FFFFFF; --sunken:hsl(var(--h) 15% 93%);
+    --ink:hsl(var(--h) 20% 10%); --muted:hsl(var(--h) 11% 43%); --faint:hsl(var(--h) 11% 59%);
+    --rule:hsl(var(--h) 17% 88%);
+    --accent:hsl(var(--h) calc(47% * var(--sat)) 32%); --accent-soft:hsl(var(--h) calc(38% * var(--sat)) 92%);
     --verbatim:#2E7D5B; --paraphrase:#A97410; --missing:#B24239; --computed:#6A55A0;
     --computed-soft:#EDE9F6;
     --shadow: 0 1px 2px rgba(20,26,33,.06), 0 8px 24px rgba(20,26,33,.06);
@@ -247,7 +252,6 @@
      below deliberately do NOT rotate with it: green, amber and red mean
      something here, so they cannot be part of the decoration. */
   .app[data-skin="glass"] {
-    --h:214; --sat:1;
     --ground:hsl(var(--h) calc(40% * var(--sat)) 15%); --surface:hsl(var(--h) calc(38% * var(--sat)) 20%); --sunken:hsl(var(--h) calc(42% * var(--sat)) 13%);
     --ink:hsl(var(--h) calc(30% * var(--sat)) 94%); --muted:hsl(var(--h) calc(22% * var(--sat)) 72%); --faint:hsl(var(--h) calc(18% * var(--sat)) 55%);
     --rule:hsl(var(--h) calc(30% * var(--sat)) 29%);
@@ -346,7 +350,7 @@
     <span class="grp">
       <button class="tb accent" type="button" data-open="import:reviewer">Read in comments…</button>
     </span>
-    <span class="skinctl"><button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button><button class="tb" type="button" data-skin="glass" aria-pressed="false">Glass</button><span class="hues" hidden><input type="color" class="wheel" value="#5597DB" aria-label="custom space colour" hidden></span></span><span class="tb-meta">saved 2s ago · main.pdf 41pp</span>
+    <span class="skinctl"><button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button><button class="tb" type="button" data-skin="glass" aria-pressed="false">Glass</button><span class="hues"><input type="color" class="wheel" value="#5597DB" aria-label="custom space colour" hidden></span></span><span class="tb-meta">saved 2s ago · main.pdf 41pp</span>
   </div>
 
   <div class="cols">
@@ -996,15 +1000,15 @@
       document.querySelectorAll('.skinctl .tb').forEach(function (o) { o.setAttribute('aria-pressed', 'false'); });
       b.setAttribute('aria-pressed', 'true');
       app.dataset.skin = b.dataset.skin;
-      hues.hidden = b.dataset.skin !== 'glass';
     });
   });
 
   wheel.hidden = false;
   wheel.addEventListener('input', function () {
     var hs = hexToHS(wheel.value);
-    app.style.setProperty('--h', hs.h);
-    app.style.setProperty('--sat', hs.s.toFixed(2));
+    var root = document.documentElement;
+    root.style.setProperty('--h', hs.h);
+    root.style.setProperty('--sat', hs.s.toFixed(2));
   });
 
   // A picked colour carries its saturation as well as its hue, so a muted slate
