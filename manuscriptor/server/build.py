@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from manuscriptor.render import pandoc, postprocess, refs
@@ -71,7 +72,7 @@ def build(
     bib_path = find_bib(manuscript_dir, bib)
     out = Path(output_dir).resolve() if output_dir else manuscript_dir / "build" / "manuscriptor"
     out.mkdir(parents=True, exist_ok=True)
-    _keep_out_of_git(out)
+    keep_out_of_git(out)
 
     flat = flatten(main_tex)
     produced = producers.scan(manuscript_dir)
@@ -102,6 +103,10 @@ def build(
         "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir) for b in bl},
         "outline": _outline(bl),
         "chats": reanchor_chats(chat.by_block(log), bl, chat.read_chats(log)),
+        # The standing agent state, so a page loading mid-run does not open on
+        # "idle" while a session is halfway through the author's third comment.
+        "queue": queue_view(log, bl, root=manuscript_dir),
+        "ticker": ticker_view(log, bl, root=manuscript_dir),
         "todos": [],
         "activity": [],
         "stats": {
@@ -126,7 +131,7 @@ def build(
     )
 
 
-def _keep_out_of_git(out: Path) -> None:
+def keep_out_of_git(out: Path) -> None:
     """Make the build directory invisible to the manuscript's repository.
 
     The default output lives inside the manuscript directory, which is almost
@@ -172,6 +177,170 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
                     target = match
         out.setdefault(target, []).extend(msgs)
     return out
+
+
+# --------------------------------------------------------------- the queue
+#
+# The margin shows one pin per comment, which answers "is anything happening on
+# THIS paragraph" and nothing else. The author reading page four has no way to
+# know that three comments are waiting and one is being worked. That is the
+# queue: the same records, read as a list rather than as marks on the page.
+#
+# It carries no knowledge of Claude. It reads `comments.jsonl` and the block map
+# and that is all it can do.
+
+TICKER_LIMIT = 8
+
+
+def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None, now=None) -> list[dict]:
+    """Every chat still awaiting work, oldest first.
+
+    Oldest first because that is the order a drain should work them, so the list
+    is a plan rather than an inventory.
+
+    EVERY ENTRY IS RE-ANCHORED, through the same `reanchor_chats` the state and
+    chat frames go through. Ids are content-derived, so answering a comment
+    renames its block: an entry still carrying the id it was written against
+    names nothing the page has, and the header would then be counting work
+    against a paragraph that no longer exists. A chat whose paragraph is
+    genuinely gone is listed with no block rather than dropped or attached to
+    the wrong one.
+    """
+    chats = chat.read_chats(log)
+    if not chats:
+        return []
+    present = {b.id for b in blocks}
+    where = _anchor_of(anchored if anchored is not None
+                       else reanchor_chats(chat.by_block(log), blocks, chats), present)
+    heads = {b.id: b.parent_heading for b in blocks}
+    wheres = _wheres(blocks, root)
+    starts = state_starts(log)
+    at = _parse_ts(now) or datetime.now(timezone.utc)
+
+    out: list[dict] = []
+    for c in sorted(chats, key=lambda c: c.ts):
+        if c.state in chat.TERMINAL:
+            continue
+        block = where.get(c.id)
+        since = starts.get(c.id) or c.ts
+        out.append({
+            "id": c.id,
+            "block": block,
+            "section": heads.get(block) if block else None,
+            "where": wheres.get(block) if block else None,
+            "body": _one_line(c.body),
+            "state": c.state,
+            "since": since,
+            "waited": _seconds_between(since, at),
+        })
+    return out
+
+
+def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
+                anchored: dict | None = None, root=None) -> list[dict]:
+    """Recent agent activity, newest first, named the way the author names it.
+
+    Read off the state records the agent actually appended, so it reports what
+    happened rather than what was asked for. A handful, because this is a status
+    line and not a scrollback. The live half of the ticker is assembled on the
+    page from the `state` and `patch` frames; this is the seed, so a page opened
+    mid-run does not start blank.
+    """
+    chats = chat.read_chats(log)
+    present = {b.id for b in blocks}
+    where = _anchor_of(anchored if anchored is not None
+                       else reanchor_chats(chat.by_block(log), blocks, chats), present)
+    heads = {b.id: b.parent_heading for b in blocks}
+    wheres = _wheres(blocks, root)
+
+    out: list[dict] = []
+    for rec in chat.read_records(log):
+        if rec.get("kind") != "state" or not rec.get("state"):
+            continue
+        # `queued` is the standing state, and the header already counts it.
+        # Found in a browser: three comments filled the ticker with three lines
+        # reading "queued" and pushed the agent's actual work off the end of it.
+        if rec["state"] == "queued":
+            continue
+        block = where.get(rec.get("id"))
+        out.append({
+            "kind": "state",
+            "id": rec.get("id"),
+            "state": rec["state"],
+            "block": block,
+            "section": heads.get(block) if block else None,
+            "where": wheres.get(block) if block else None,
+            "when": rec.get("ts", ""),
+        })
+    out.reverse()
+    return out[:limit]
+
+
+def _wheres(blocks, root) -> dict:
+    """block id -> the place a reader can go and look, `file:line`.
+
+    The section is the right name for a paragraph, and some blocks have none: an
+    abstract sits above every heading. Watched live, one of those reported "the
+    manuscript · working", which told the author nothing. A file and a line is
+    somewhere he can actually go.
+    """
+    return {b.id: f"{_rel(b.file, root)}:{b.line_start}" for b in blocks}
+
+
+def _anchor_of(anchored: dict, present: set) -> dict:
+    """chat id -> the live block it sits on, or None when it has none."""
+    out: dict[str, str | None] = {}
+    for block_id, msgs in anchored.items():
+        live = block_id if block_id in present else None
+        for m in msgs:
+            out[m["id"]] = live
+    return out
+
+
+def state_starts(log: Path) -> dict[str, str]:
+    """When each chat entered the state it is in now.
+
+    Not when the comment was written. A comment that waited an hour and was
+    picked up ten seconds ago has been *working* for ten seconds, and reporting
+    the hour would say the agent had been stuck on it.
+    """
+    state: dict[str, str] = {}
+    since: dict[str, str] = {}
+    for rec in chat.read_records(log):
+        cid = rec.get("id")
+        if not cid:
+            continue
+        if rec.get("kind") == "comment":
+            state[cid] = "queued"
+            since[cid] = rec.get("ts", "")
+        elif rec.get("kind") == "state" and rec.get("state"):
+            if state.get(cid) != rec["state"]:
+                since[cid] = rec.get("ts", since.get(cid, ""))
+            state[cid] = rec["state"]
+    return since
+
+
+def _parse_ts(value):
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _seconds_between(since, at) -> int:
+    then = _parse_ts(since)
+    if then is None:
+        return 0
+    return max(0, int((at - then).total_seconds()))
+
+
+def _one_line(text: str, n: int = 140) -> str:
+    """The body as the header can show it: one line, clipped."""
+    flat = " ".join(str(text or "").split())
+    return flat[:n] + "…" if len(flat) > n else flat
 
 
 def _rel(path, root) -> str:

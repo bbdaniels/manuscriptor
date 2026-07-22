@@ -182,12 +182,73 @@
     return Math.round(s / 3600) + 'h ago';
   }
 
+  /* The standing agent state, for the title bar. "3 queued · 1 working", and
+     "idle" when there is nothing. A status line, not a dashboard: the author
+     glances at it, he does not read it. */
+  var QUEUE_ORDER = ['queued', 'working'];
+
+  function queueSummary(queue) {
+    queue = queue || [];
+    var counts = {}, seen = [];
+    for (var i = 0; i < queue.length; i++) {
+      var st = (queue[i] && queue[i].state) || 'queued';
+      if (counts[st] === undefined) { counts[st] = 0; seen.push(st); }
+      counts[st]++;
+    }
+    var order = QUEUE_ORDER.filter(function (s) { return counts[s]; })
+      .concat(seen.filter(function (s) { return QUEUE_ORDER.indexOf(s) === -1; }));
+    if (!order.length) return 'idle';
+    return order.map(function (s) { return counts[s] + ' ' + s; }).join(' · ');
+  }
+
+  /* One ticker line: what happened, to the block NAMED THE WAY THE AUTHOR NAMES
+     IT. A hex id is not a name he chose, and it changes the moment the
+     paragraph is edited, so it would be the least stable thing on the page. */
+  var TICKER_WORDS = {
+    queued: 'queued', working: 'working', done: 'done', orphaned: 'orphaned'
+  };
+
+  function tickerText(e) {
+    e = e || {};
+    var label = e.section || e.where || 'the manuscript';
+    var what;
+    if (e.kind === 'patch') {
+      what = 'edited';
+      if (e.n > 1) what += ', ' + e.n + ' blocks';
+    } else {
+      what = TICKER_WORDS[e.state] || String(e.state || '');
+    }
+    return label + ' · ' + what;
+  }
+
+  /* An edit renames its block, so every queue entry has to travel with the
+     rename or it addresses a paragraph the page no longer has. That is the same
+     defect that froze the margin on `working`, one layer up. */
+  function renameQueue(queue, renamed) {
+    queue = queue || [];
+    if (!renamed) return queue;
+    var map = {};
+    Object.keys(renamed).forEach(function (k) { map[normId(k)] = normId(renamed[k]); });
+    return queue.map(function (e) {
+      if (!e || !e.block) return e;
+      var from = normId(e.block), to = map[from];
+      if (!to || to === from) return e;
+      var copy = {};
+      Object.keys(e).forEach(function (k) { copy[k] = e[k]; });
+      copy.block = to;
+      return copy;
+    });
+  }
+
   var api = {
     validateLatex: validateLatex,
     normId: normId,
     draftKey: draftKey,
     spliceAt: spliceAt,
     hexToHS: hexToHS,
+    queueSummary: queueSummary,
+    tickerText: tickerText,
+    renameQueue: renameQueue,
     MS_DRAFT_PREFIX: MS_DRAFT_PREFIX
   };
 
@@ -211,6 +272,9 @@
     save: {},               // block id -> {state, reason, at}
     sent: {},               // block id -> the text last sent, to confirm against
     blockState: {},         // block id -> queued|working|done|locked
+    queue: [],              // the agent's standing work, oldest first
+    ticker: [],             // what actually happened, newest first
+    tickerKey: '',          // so a refresh ages the entries without re-animating
     caret: null,            // {id, start, end, scrollTop}
     back: [],               // where a detour came from, newest last
     insert: null,           // an insert form open inline on the References tab
@@ -222,7 +286,7 @@
 
   var appEl, railEl, docEl, inspEl, docInner, ibodyEl, tabsEl,
       eyebrowEl, ititleEl, isubEl, jumpBtn, backBtn, headSaveEl, liveEl, liveTextEl, metaEl,
-      outlineEl, pathEl, hueWheel;
+      outlineEl, pathEl, hueWheel, agentEl, tickerEl;
 
   var anchorEl = null, io = null, warnedBareId = false;
 
@@ -1137,6 +1201,11 @@
   // paragraph in front of them. Everything keyed to the id moves with it.
   function applyRenames(renamed) {
     if (!renamed) return;
+    // The queue is a list rather than a bag keyed by block, so it cannot ride
+    // the loop below. Left behind, its entries would name the paragraph as it
+    // was before the agent answered it.
+    S.queue = renameQueue(S.queue, renamed);
+    S.ticker = renameQueue(S.ticker, renamed);
     Object.keys(renamed).forEach(function (rawOld) {
       var from = normId(rawOld), to = normId(renamed[rawOld]);
       if (!to || from === to) return;
@@ -1144,7 +1213,7 @@
       var el = blockEl(from);
       if (el) el.setAttribute('data-mx', to);
 
-      ['blocks', 'chats', 'drafts', 'blockState', 'save'].forEach(function (bag) {
+      ['blocks', 'chats', 'drafts', 'blockState', 'save', 'sent'].forEach(function (bag) {
         var store = S[bag];
         if (store && Object.prototype.hasOwnProperty.call(store, from)) {
           store[to] = store[from];
@@ -1176,11 +1245,27 @@
   /* Behaviour 3. A patch for the block under the cursor waits for the blur.
      Otherwise the author's own save re-renders the paragraph they are typing
      into and takes the caret with it. */
+  /* Did this page write it? The server cannot tell one writer from another, and
+     should not: it has no knowledge of who is on the other end. This page does
+     know what it sent, so it can keep the author's own saves out of a ticker
+     that is meant to show what someone ELSE did to his manuscript. */
+  function isOwnEdit(rawId, msg) {
+    var data = msg.blockdata && msg.blockdata[rawId];
+    if (!data) return false;
+    var src = String(data.source || '');
+    var keys = Object.keys(S.sent);
+    for (var i = 0; i < keys.length; i++) {
+      if (S.sent[keys[i]] === src) return true;
+    }
+    return false;
+  }
+
   function onPatch(msg) {
     var ui = captureUI();
     applyRenames(msg.renamed);
     var blocks = msg.blocks || {};
     var touched = {};
+    var theirs = Object.keys(blocks).filter(function (raw) { return !isOwnEdit(raw, msg); });
 
     Object.keys(blocks).forEach(function (raw) {
       var id = normId(raw);
@@ -1225,6 +1310,17 @@
     if (S.sel && touched[S.sel.blockId] && S.sel.blockId !== S.focusedBlock) renderInspector();
     restoreUI(ui);
     updateMeta();
+
+    // The ticker reports the edit LANDING, not the claim that it would. A `done`
+    // with no patch behind it is a comment closed without the file changing,
+    // and the author should be able to see the difference.
+    if (theirs.length) {
+      var first = normId(theirs[0]);
+      pushTicker({
+        kind: 'patch', block: first, section: sectionOf(first),
+        n: theirs.length, when: new Date().toISOString()
+      });
+    }
   }
 
   function flushDeferred(id) {
@@ -1292,8 +1388,29 @@
       case 'state': {
         var id = normId(msg.block);
         S.blockState[id] = msg.state;
+        // `queued` is the standing state and the header already counts it. A
+        // new comment arrives as a `queued` frame, so pushing those filled the
+        // ticker with the author's own three comments and pushed the agent's
+        // work off the end of it. The ticker is for what MOVED.
+        if (msg.state !== 'queued') {
+          pushTicker({
+            kind: 'state', state: msg.state, block: id,
+            section: sectionOf(id), when: msg.at || new Date().toISOString()
+          });
+        }
         hydrate();
         if (S.sel && S.sel.blockId === id) renderInspector();
+        break;
+      }
+      case 'queue': {
+        S.queue = (msg.queue || []).map(function (e) {
+          if (!e || !e.block) return e;
+          var copy = {};
+          Object.keys(e).forEach(function (k) { copy[k] = e[k]; });
+          copy.block = normId(e.block);
+          return copy;
+        });
+        renderAgent();
         break;
       }
       case 'chat': {
@@ -1359,6 +1476,88 @@
     document.documentElement.style.setProperty('--h', String(hs.h));
     document.documentElement.style.setProperty('--sat', hs.s.toFixed(2));
     store(MS_PREF_PREFIX + 'hue', hex);
+  }
+
+  // ------------------------------------------------- the agent, in the header
+  //
+  // A session that edits the author's prose while he is reading is only
+  // acceptable if he can glance up and see what it is doing. The margin pin
+  // answers "is anything happening on THIS paragraph"; these two answer "what
+  // is happening at all", which is the question he actually has.
+
+  var TICKER_SHOWN = 5;    // a handful, not a scrollback
+  var TICKER_KEEP = 12;
+
+  /* What to call a block in front of the author. Its section first, because
+     that is how he thinks about the paper. Some blocks have none -- an abstract
+     sits above every heading -- and a real session picking one up reported "the
+     manuscript · working", which told him nothing. A file and a line is
+     somewhere he can go. */
+  function sectionOf(id) {
+    var b = S.blocks[id];
+    if (b && b.parent_heading) return b.parent_heading;
+    for (var i = 0; i < S.queue.length; i++) {
+      var e = S.queue[i];
+      if (e && e.block === id && (e.section || e.where)) return e.section || e.where;
+    }
+    if (b && b.file) return String(b.file) + (b.line_start ? ':' + b.line_start : '');
+    return null;
+  }
+
+  /* The one-line summary is deliberately terse, so the detail goes where it
+     costs nothing to carry: the oldest few, in the order they will be worked. */
+  function queueTitle() {
+    if (!S.queue.length) return 'Nothing queued.';
+    return S.queue.slice(0, 4).map(function (e) {
+      return (e.section || e.where || 'the manuscript') + ' · ' + e.state +
+        (e.since ? ' ' + ago(e.since) : '') + (e.body ? ' — ' + e.body : '');
+    }).join('\n');
+  }
+
+  function renderAgent() {
+    if (agentEl) {
+      var text = agentEl.querySelector('.atext');
+      if (text) text.textContent = queueSummary(S.queue);
+      var working = S.queue.some(function (e) { return e && e.state === 'working'; });
+      agentEl.classList.toggle('is-working', working);
+      agentEl.classList.toggle('is-idle', S.queue.length === 0);
+      agentEl.setAttribute('title', queueTitle());
+    }
+    renderTicker();
+  }
+
+  function tickerKey(items) {
+    return items.map(function (e) {
+      return [e.kind, e.state, e.block, e.when, e.n].join('|');
+    }).join(';');
+  }
+
+  /* Re-rendering wholesale every refresh would restart the entry animation on
+     the newest line every fifteen seconds, which is a status line demanding
+     attention it has not earned. Same entries: only their ages move. */
+  function renderTicker() {
+    if (!tickerEl) return;
+    var items = S.ticker.slice(0, TICKER_SHOWN);
+    var key = tickerKey(items);
+    if (key === S.tickerKey) {
+      var times = tickerEl.querySelectorAll('time');
+      for (var i = 0; i < times.length && i < items.length; i++) {
+        times[i].textContent = items[i].when ? ago(items[i].when) : '';
+      }
+      return;
+    }
+    S.tickerKey = key;
+    tickerEl.hidden = items.length === 0;
+    tickerEl.innerHTML = items.map(function (e, i) {
+      return '<span class="tk' + (i ? '' : ' now') + '">' + esc(tickerText(e)) +
+        '<time>' + esc(e.when ? ago(e.when) : '') + '</time></span>';
+    }).join('');
+  }
+
+  function pushTicker(e) {
+    S.ticker.unshift(e);
+    if (S.ticker.length > TICKER_KEEP) S.ticker.length = TICKER_KEEP;
+    renderTicker();
   }
 
   function updateMeta() {
@@ -1557,15 +1756,25 @@
     outlineEl = document.getElementById('outline');
     pathEl = document.getElementById('doc-path');
     hueWheel = document.getElementById('hue-wheel');
+    agentEl = document.getElementById('agent-status');
+    tickerEl = document.getElementById('ticker');
 
     S.ms = window.MS || {};
     S.blocks = S.ms.blocks || {};
     S.chats = S.ms.chats || {};
     S.docKey = String(S.ms.title || window.location.pathname || 'doc');
+    // Seeded from the blob so a page opened while a session is halfway through
+    // the third comment does not open on "idle" and an empty ticker.
+    S.queue = S.ms.queue || [];
+    S.ticker = (S.ms.ticker || []).slice(0, TICKER_KEEP);
 
     restoreDrafts();
     hydrate();
     updateMeta();
+    renderAgent();
+    // "how long it has been in that state" has to keep being true. Ages only:
+    // renderTicker rebuilds nothing when the entries themselves have not moved.
+    window.setInterval(renderAgent, 15000);
 
     if (pathEl && !pathEl.textContent) {
       var first = S.order.length ? S.blocks[S.order[0]] : null;
@@ -1621,6 +1830,14 @@
      so there is one code path for a patch however it arrived. */
   api.handle = handle;
   api.select = select;
+
+  /* The standing state, readable by a host that is not a websocket: the
+     standalone shell, or a check driving the page. Both need what the header is
+     showing without re-deriving it from frames they never saw. Copies, so a
+     reader cannot quietly become a writer. */
+  api.agentState = function () {
+    return { queue: S.queue.slice(), ticker: S.ticker.slice() };
+  };
 
   return api;
 });

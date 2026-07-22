@@ -15,12 +15,22 @@ The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edi
 | `manuscriptor blocks` | **works**, the block table |
 | `manuscriptor evidence` | **works** (absorbed from cite-evidence) |
 | `manuscriptor repair` / `clean` | **works** |
-| `manuscriptor proc` | M5, the drain, not yet built |
+| `manuscriptor proc` | **works**, the queue a drain reads |
+| `manuscriptor state` | **works**, records what happened |
+| `Manuscriptor.app` | **works**, `shell/build.sh` |
 
 ```bash
 manuscriptor serve ~/Projects/manuscriptor-demo/latex          # a copy, edit freely
 manuscriptor serve ~/Projects/estonia-ecm/latex --read-only    # a real one, safely
+manuscriptor serve <dir> --with-agent                          # and a session draining comments
 ```
+
+`--with-agent` starts a background Claude Code session that answers comments as
+you leave them. It runs with edits accepted inside the manuscript directory,
+which is the point of the flag and worth knowing before typing it: the header
+carries `2 queued · 1 working` and a ticker names what was touched, so the work
+is visible rather than silent. It refuses to combine with `--read-only`, and the
+session dies with the server.
 
 `serve` is read-write: an edit in the page is written to the `.tex` file on a
 typing pause. `--read-only` renders and browses without any path reaching the
@@ -31,9 +41,8 @@ work is safe by construction rather than by remembering.
 repo. Break it however you like and `git -C ~/Projects/manuscriptor-demo
 checkout .` puts it back.
 
-Not yet built: the drain (`proc` and the wake job), so chats land in
-`comments.jsonl` and nothing reads them; descriptions for computed values; the
-insert flows beyond a footnote; reading in coauthor markup; the native shell.
+Not yet built: descriptions for computed values, the insert flows beyond a
+footnote, and reading in coauthor markup.
 
 The design lives in the Obsidian vault at `Manuscriptor/plans/2026-07-22 - Phase 1 Design.md`, with verified findings and decision rationale in `Manuscriptor/Technical Notes.md`. Read those before implementing a milestone.
 

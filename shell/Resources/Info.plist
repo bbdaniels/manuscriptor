@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>                   <string>Manuscriptor</string>
+  <key>CFBundleDisplayName</key>            <string>Manuscriptor</string>
+  <key>CFBundleExecutable</key>             <string>Manuscriptor</string>
+  <key>CFBundleIdentifier</key>             <string>com.bbdaniels.manuscriptor</string>
+  <key>CFBundleInfoDictionaryVersion</key>  <string>6.0</string>
+  <key>CFBundlePackageType</key>            <string>APPL</string>
+  <key>CFBundleShortVersionString</key>     <string>0.1.0</string>
+  <key>CFBundleVersion</key>                <string>1</string>
+  <key>NSPrincipalClass</key>               <string>NSApplication</string>
+  <key>NSHighResolutionCapable</key>        <true/>
+  <key>LSMinimumSystemVersion</key>         <string>13.0</string>
+
+  <!-- The reason the app exists: Finder offers Manuscriptor in Open With, and
+       an opened .tex resolves to its manuscript root rather than being served
+       as a fragment. -->
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key>       <string>LaTeX Document</string>
+      <key>CFBundleTypeRole</key>       <string>Editor</string>
+      <key>LSHandlerRank</key>          <string>Alternate</string>
+      <key>CFBundleTypeExtensions</key> <array><string>tex</string></array>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>org.tug.tex</string>
+        <string>public.plain-text</string>
+      </array>
+    </dict>
+  </array>
+
+  <!-- TeX has no system-declared UTI, so the app imports one. Without it
+       LSItemContentTypes names a type nothing on the machine defines. -->
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>  <string>org.tug.tex</string>
+      <key>UTTypeDescription</key> <string>LaTeX Document</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.plain-text</string>
+        <string>public.source-code</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key> <array><string>tex</string></array>
+      </dict>
+    </dict>
+  </array>
+
+  <!-- The page is served over plain HTTP on loopback. App Transport Security
+       blocks that by default and the window would come up empty. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key> <true/>
+    <key>NSExceptionDomains</key>
+    <dict>
+      <key>127.0.0.1</key>
+      <dict>
+        <key>NSExceptionAllowsInsecureHTTPLoads</key> <true/>
+      </dict>
+    </dict>
+  </dict>
+</dict>
+</plist>

@@ -94,6 +94,40 @@ body {
 @media (prefers-reduced-motion: no-preference) { .pulse { animation: breathe 2.4s ease-in-out infinite; } }
 @keyframes breathe { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
 
+/* ---------- the agent ---------- */
+/* The standing state takes the auto margin so it sits with the socket's pulse
+   at the right of the title bar; `.live` then follows it rather than pushing
+   it back to the left. Two indicators, two questions: is the page live, and is
+   anything being done to the manuscript. */
+.titlebar .agent { margin-left: auto; display: flex; align-items: center; gap: .38rem; font-size: .74rem; color: var(--muted); font-variant-numeric: tabular-nums; cursor: default; }
+.titlebar .agent + .live { margin-left: .85rem; }
+.adot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
+.agent.is-idle { color: var(--faint); }
+.agent.is-idle .adot { background: var(--rule); }
+.agent.is-working .adot { background: var(--paraphrase); }
+@media (prefers-reduced-motion: no-preference) {
+  .agent.is-working .adot { animation: breathe 1.6s ease-in-out infinite; }
+}
+
+/* The ticker: a handful of recent entries, newest first, clipped rather than
+   scrolled so the page never gains a horizontal scrollbar for it. */
+.ticker {
+  display: flex; align-items: baseline; gap: 1.1rem; flex: none;
+  padding: .32rem .9rem; border-bottom: 1px solid var(--rule); background: var(--sunken);
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(90deg, #000 82%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 82%, transparent 100%);
+}
+.ticker[hidden] { display: none; }
+.tk { display: inline-flex; align-items: baseline; gap: .4rem; white-space: nowrap; font-size: .72rem; color: var(--faint); }
+.tk time { font-family: var(--mono); font-size: .66rem; color: var(--faint); opacity: .75; }
+.tk.now { color: var(--muted); }
+.tk.now::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); align-self: center; }
+@media (prefers-reduced-motion: no-preference) {
+  .tk.now { animation: tick-in .45s ease-out both; }
+}
+@keyframes tick-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
 .toolbar { display: flex; align-items: center; gap: .55rem; padding: .45rem .9rem; border-bottom: 1px solid var(--rule); background: var(--surface); flex-wrap: wrap; flex: none; }
 .grp { display: flex; gap: .35rem; }
 .sep { width: 1px; align-self: stretch; background: var(--rule); margin: 0 .25rem; }

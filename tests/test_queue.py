@@ -1,0 +1,663 @@
+"""The agent queue, the header status, and the ticker.
+
+A session that edits the author's prose while he is reading is only acceptable
+if he can glance up and see what it is doing. A pin on one paragraph is not
+that. These tests hold three things:
+
+  * the QUEUE is a real list, oldest first, and every entry names a block the
+    page still has. A queue entry addressed to a block id that an edit renamed
+    is the same defect that froze the margin on `working`: the frame lands on
+    nothing and the author's only sign of life stops moving.
+  * the TICKER reports what actually happened, from the log's state records and
+    the patch frames, newest first, naming the block by its section rather than
+    by a hex id the author never chose.
+  * `serve --with-agent` refuses to combine with `--read-only`, and whatever it
+    launches dies with the server. A stray session editing a manuscript after
+    the server is gone is the worst failure this project has.
+
+Nothing in the queue may call a model: it reads `comments.jsonl` and the block
+map, and that is the whole of its knowledge.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shutil
+import signal
+import subprocess
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+from jinja2 import Template
+
+from manuscriptor import cli
+from manuscriptor.server import build as build_mod
+from manuscriptor.server import chat, drain
+
+ROOT = Path(__file__).resolve().parents[1]
+TEMPLATES = ROOT / "manuscriptor" / "templates"
+INDEX = TEMPLATES / "index.html.j2"
+STYLES = TEMPLATES / "static" / "styles.css"
+VIEWER = TEMPLATES / "static" / "viewer.js"
+NODE = shutil.which("node")
+
+DOC = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+The treatment raised screening rates substantially across all three cohorts followed.
+
+We interpret this as evidence that the contract itself, rather than the payment, drove it.
+
+A third paragraph, present so the neighbour context has something to pick up.
+\end{document}
+"""
+
+
+def ago_iso(seconds: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def setup(tmp_path: Path, body: str = DOC):
+    """A manuscript with one comment on its second paragraph."""
+    (tmp_path / "main.tex").write_text(body, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    bid = [x.id for x in b.blocks if x.kind == "paragraph"][1]
+    blk = b.by_id[bid]
+    chat.append(
+        tmp_path / "comments.jsonl",
+        {"id": "c-0001", "kind": "comment", "block": bid, "file": str(blk.file),
+         "lines": [blk.line_start, blk.line_end], "quote": blk.source_text[:120],
+         "body": "This overclaims. Soften it.", "author": "bb", "ts": ago_iso(300)},
+    )
+    return tmp_path, bid, b
+
+
+def comment_on(d: Path, blocks, index: int, cid: str, body: str, *, age: float = 0.0) -> str:
+    """Leave a comment on the nth paragraph and return its block id."""
+    para = [x for x in blocks if x.kind == "paragraph"][index]
+    chat.append(
+        d / "comments.jsonl",
+        {"id": cid, "kind": "comment", "block": para.id, "file": str(para.file),
+         "lines": [para.line_start, para.line_end], "quote": para.source_text[:120],
+         "body": body, "author": "bb", "ts": ago_iso(age)},
+    )
+    return para.id
+
+
+# --------------------------------------------------------------------- the queue
+
+
+def test_the_queue_lists_pending_work_oldest_first(tmp_path):
+    """The order a drain should work them, so the list is the plan."""
+    d, bid, b = setup(tmp_path)
+    comment_on(d, b.blocks, 0, "c-0002", "tighten this", age=100)
+    comment_on(d, b.blocks, 2, "c-0003", "and this", age=10)
+
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    assert [e["id"] for e in q] == ["c-0001", "c-0002", "c-0003"]
+
+
+def test_a_queue_entry_carries_what_the_header_and_the_margin_need(tmp_path):
+    d, bid, b = setup(tmp_path)
+    e = build_mod.queue_view(d / "comments.jsonl", b.blocks)[0]
+    assert e["id"] == "c-0001"
+    assert e["block"] == bid
+    assert e["state"] == "queued"
+    assert e["section"] == "Results"
+    assert e["body"] == "This overclaims. Soften it."
+    assert e["since"], "a state with no start cannot be aged"
+    assert e["waited"] >= 290, e["waited"]
+
+
+def test_a_body_is_one_line_because_the_header_is_one_line(tmp_path):
+    d, _, b = setup(tmp_path, DOC)
+    chat.append(d / "comments.jsonl",
+                {"id": "c-0002", "kind": "comment", "block": b.blocks[1].id,
+                 "quote": b.blocks[1].source_text[:120],
+                 "body": "Cut the second sentence.\n\nThen fold the claim into the first.",
+                 "author": "bb"})
+    e = [x for x in build_mod.queue_view(d / "comments.jsonl", b.blocks) if x["id"] == "c-0002"][0]
+    assert "\n" not in e["body"]
+    assert e["body"].startswith("Cut the second sentence. Then fold")
+
+
+def test_waited_measures_the_current_state_not_the_comment(tmp_path):
+    """A comment queued for an hour and picked up ten seconds ago has been
+    WORKING for ten seconds. Reporting the hour would say the agent had been
+    stuck on it, which is the opposite of what happened."""
+    d, _, b = setup(tmp_path)
+    chat.append(d / "comments.jsonl",
+                {"id": "c-0001", "kind": "state", "state": "working", "ts": ago_iso(9)})
+    e = build_mod.queue_view(d / "comments.jsonl", b.blocks)[0]
+    assert e["state"] == "working"
+    assert e["waited"] < 60, e["waited"]
+
+
+def test_a_finished_chat_leaves_the_queue(tmp_path):
+    d, _, b = setup(tmp_path)
+    assert len(build_mod.queue_view(d / "comments.jsonl", b.blocks)) == 1
+    drain.mark(d, "c-0001", "done")
+    assert build_mod.queue_view(d / "comments.jsonl", b.blocks) == []
+
+
+def test_a_queue_entry_never_names_a_block_the_page_has_lost(tmp_path):
+    """The bug that froze the margin, one layer up.
+
+    Ids are content derived, so answering a comment renames its block. A queue
+    entry still carrying the old id names nothing on the page, and the header
+    would count work against a paragraph that no longer exists.
+    """
+    d, bid, _ = setup(tmp_path)
+    src = (d / "main.tex").read_text(encoding="utf-8")
+    (d / "main.tex").write_text(src.replace("drove it.", "drove it, we now think."), encoding="utf-8")
+
+    b = build_mod.build(d)
+    assert bid not in b.by_id, "the fixture must actually change the id"
+
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    assert len(q) == 1
+    assert q[0]["block"] != bid
+    assert q[0]["block"] in b.by_id, "every entry must name a live block"
+    assert q[0]["section"] == "Results"
+
+
+def test_a_chat_whose_paragraph_is_gone_is_listed_without_a_block(tmp_path):
+    """Never dropped, and never pointed at the wrong paragraph either."""
+    d, _, _ = setup(tmp_path)
+    src = (d / "main.tex").read_text(encoding="utf-8")
+    (d / "main.tex").write_text(
+        src.replace(
+            "We interpret this as evidence that the contract itself, rather than the payment, drove it.\n",
+            "",
+        ),
+        encoding="utf-8",
+    )
+    b = build_mod.build(d)
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    assert len(q) == 1, "never silently discarded"
+    assert q[0]["block"] is None
+    assert q[0]["section"] is None
+
+
+def test_the_blob_carries_the_queue_and_the_ticker(tmp_path):
+    """A page loading mid-run must not start blank and claim idle."""
+    d, bid, _ = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    blob = build_mod.build(d).blob
+    assert [e["id"] for e in blob["queue"]] == ["c-0001"]
+    assert blob["queue"][0]["state"] == "working"
+    assert blob["ticker"], "the log's state records seed the ticker"
+
+
+# --------------------------------------------------------------------- the ticker
+
+
+def test_the_ticker_is_newest_first_and_names_the_section(tmp_path):
+    d, _, b = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    drain.mark(d, "c-0001", "done")
+    t = build_mod.ticker_view(d / "comments.jsonl", build_mod.build(d).blocks)
+    assert t[0]["state"] == "done"
+    assert t[1]["state"] == "working"
+    assert t[0]["section"] == "Results", "the author's terms, not a hex id"
+    assert t[0]["when"]
+
+
+def test_a_block_with_no_section_is_still_named_something_the_author_can_find(tmp_path):
+    """Watched live: a real session picked up a comment on the ABSTRACT and the
+    ticker read "the manuscript · working". The abstract sits above every
+    heading, so it genuinely has no section, and the fallback told the author
+    nothing at all. A file and a line is a place he can go.
+    """
+    body = DOC.replace("\\begin{document}\n",
+                       "\\begin{document}\n\\begin{abstract}\nThis paper examines a contract.\n\\end{abstract}\n")
+    (tmp_path / "main.tex").write_text(body, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    blk = next(x for x in b.blocks if "examines a contract" in x.source_text)
+    assert blk.parent_heading is None, "the fixture must actually be sectionless"
+    chat.append(tmp_path / "comments.jsonl",
+                {"id": "c-0001", "kind": "comment", "block": blk.id, "file": str(blk.file),
+                 "quote": blk.source_text[:120], "body": "tighten", "author": "bb"})
+
+    e = build_mod.queue_view(tmp_path / "comments.jsonl", b.blocks, root=tmp_path)[0]
+    assert e["section"] is None
+    assert e["where"] == f"main.tex:{blk.line_start}", e["where"]
+
+
+def test_the_authors_own_comment_is_not_agent_activity(tmp_path):
+    """Observed in a browser: three comments filled the ticker with three lines
+    reading `queued` and pushed the agent's actual work out of it. Queued is the
+    STANDING state and the header already counts it. The ticker is for what
+    moved.
+    """
+    d, _, _ = setup(tmp_path)
+    blocks = build_mod.build(d).blocks
+    assert build_mod.ticker_view(d / "comments.jsonl", blocks) == []
+    chat.append(d / "comments.jsonl", {"id": "c-0001", "kind": "state", "state": "queued"})
+    assert build_mod.ticker_view(d / "comments.jsonl", blocks) == []
+    drain.mark(d, "c-0001", "working")
+    assert len(build_mod.ticker_view(d / "comments.jsonl", blocks)) == 1
+
+
+def test_the_ticker_is_a_handful_not_a_scrollback(tmp_path):
+    d, _, b = setup(tmp_path)
+    for i in range(12):
+        chat.append(d / "comments.jsonl",
+                    {"id": "c-0001", "kind": "state",
+                     "state": "working" if i % 2 else "queued", "ts": ago_iso(100 - i)})
+    t = build_mod.ticker_view(d / "comments.jsonl", build_mod.build(d).blocks)
+    assert 0 < len(t) <= 8, len(t)
+
+
+# ------------------------------------------------------------------- the frames
+
+
+def collect_frames(session):
+    sent = []
+    session.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
+    return sent
+
+
+def test_a_queue_frame_is_broadcast_when_the_log_changes(tmp_path):
+    from manuscriptor.server.app import Session
+
+    d, bid, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+
+    drain.mark(d, "c-0001", "working")
+    asyncio.run(s.on_log_change())
+
+    qs = [m for m in sent if m["type"] == "queue"]
+    assert qs, "the page cannot show a queue it is never sent"
+    assert [e["state"] for e in qs[-1]["queue"]] == ["working"]
+
+
+def test_the_queue_is_not_repainted_when_nothing_changed(tmp_path):
+    """Re-reading an unchanged log must not repaint anything."""
+    from manuscriptor.server.app import Session
+
+    d, _, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+    asyncio.run(s.on_log_change())
+    assert sent == []
+
+
+def test_a_queue_frame_is_reanchored_like_the_state_frame(tmp_path):
+    """The whole point of item 1, asserted end to end.
+
+    The agent edits the paragraph and then reports on it. The state frame is
+    re-anchored today; a queue frame that is not would name the dead id and the
+    header would count work on a block the page cannot find.
+    """
+    from manuscriptor.server.app import Session
+
+    d, bid, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+
+    src = (d / "main.tex").read_text(encoding="utf-8")
+    (d / "main.tex").write_text(src.replace("drove it.", "drove it, we now think."), encoding="utf-8")
+    asyncio.run(s.on_change())
+
+    sent = collect_frames(s)
+    drain.mark(d, "c-0001", "working")
+    asyncio.run(s.on_log_change())
+
+    q = [m for m in sent if m["type"] == "queue"][-1]["queue"]
+    live = {b.id for b in s.build.blocks}
+    assert q and q[0]["block"] != bid
+    assert q[0]["block"] in live, "a frame naming a block the page lost is the freeze bug"
+
+
+def test_a_state_frame_says_when_it_happened(tmp_path):
+    """The ticker reports what happened, so it needs the log's time and not the
+    client's clock at the moment the frame arrived."""
+    from manuscriptor.server.app import Session
+
+    d, _, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+    drain.mark(d, "c-0001", "working")
+    asyncio.run(s.on_log_change())
+    st = [m for m in sent if m["type"] == "state"][-1]
+    assert st.get("at"), "a state frame with no time cannot be aged"
+
+
+def test_a_state_frame_is_timed_BY_THE_STATE_not_by_the_comment(tmp_path):
+    """Found by watching the running page, not by reading the code.
+
+    Every ticker entry claimed to be older than it was: a `done` a second old
+    read as six seconds, and the newest line sat above older ones carrying a
+    larger age. The frame was carrying the COMMENT's timestamp, because that is
+    what `by_block` puts on a message. What the ticker needs is when the state
+    changed.
+    """
+    from manuscriptor.server.app import Session
+
+    d, _, _ = setup(tmp_path)          # the comment is five minutes old
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+    drain.mark(d, "c-0001", "working")
+    asyncio.run(s.on_log_change())
+
+    st = [m for m in sent if m["type"] == "state"][-1]
+    age = (datetime.now(timezone.utc)
+           - datetime.fromisoformat(st["at"])).total_seconds()
+    assert age < 30, f"the frame is timed by the comment, not by the state ({age:.0f}s old)"
+
+
+def test_proc_tells_the_session_the_order_and_to_mark_it(tmp_path):
+    """`proc` is what a session reads, so the queue's two rules belong in it and
+    not only in a skill file it may not have loaded: work them oldest first, and
+    say you have started before you start."""
+    d, _, b = setup(tmp_path)
+    comment_on(d, b.blocks, 0, "c-0002", "and this", age=10)
+    text = drain.as_text(drain.collect(d))
+    assert text.index("c-0001") < text.index("c-0002"), "oldest first"
+    head = text[: text.index("=" * 20)]
+    assert "oldest first" in head.lower()
+    assert "working" in head
+
+
+def test_the_queue_never_calls_a_model():
+    """The invariant, held in the two modules a queue would be tempted to reach
+    out of. The server has zero knowledge of Claude: it may say the name in a
+    docstring, and may not import a client or start a process.
+    """
+    for name in ("build.py", "app.py", "drain.py"):
+        text = (ROOT / "manuscriptor" / "server" / name).read_text(encoding="utf-8")
+        for banned in ("import anthropic", "from anthropic", "import openai",
+                       "import subprocess", "Popen", "os.system"):
+            assert banned not in text, f"{banned} reached server/{name}"
+
+
+# ------------------------------------------------------- the client, under node
+
+
+def node_call(fn: str, *args):
+    assert NODE, "node is required for these tests"
+    script = (
+        "const v = require(%s);\n"
+        "const out = v[%s].apply(null, JSON.parse(process.argv[1]));\n"
+        "process.stdout.write(JSON.stringify(out === undefined ? null : out));\n"
+    ) % (json.dumps(str(VIEWER)), json.dumps(fn))
+    p = subprocess.run([NODE, "-e", script, json.dumps(list(args))],
+                       capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_header_summarises_the_queue():
+    q = [
+        {"id": "c-1", "state": "queued"}, {"id": "c-2", "state": "queued"},
+        {"id": "c-3", "state": "working"}, {"id": "c-4", "state": "queued"},
+    ]
+    assert node_call("queueSummary", q) == "3 queued · 1 working"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_an_empty_queue_reads_idle():
+    assert node_call("queueSummary", []) == "idle"
+    assert node_call("queueSummary", None) == "idle"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_ticker_line_names_the_section_not_the_id():
+    assert node_call("tickerText", {"kind": "state", "state": "working",
+                                    "section": "Results"}) == "Results · working"
+    assert node_call("tickerText", {"kind": "patch", "section": "Data", "n": 1}) == "Data · edited"
+    line = node_call("tickerText", {"kind": "state", "state": "done", "block": "b-3f2a91c0de"})
+    assert "b-3f2a91c0de" not in line, "a hex id is not the author's term for a paragraph"
+    # a sectionless block (an abstract) still names a place he can go
+    assert node_call("tickerText", {"kind": "state", "state": "done", "section": None,
+                                    "where": "main.tex:57"}) == "main.tex:57 · done"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_queue_follows_a_block_through_a_rename():
+    """An edit renames its block, so a queue entry keyed to the old id would
+    stop matching the page the moment the agent answered the comment."""
+    q = [{"id": "c-1", "block": "b-old", "state": "working"}]
+    out = node_call("renameQueue", q, {"b-old": "b-new"})
+    assert out[0]["block"] == "b-new"
+    assert out[0]["id"] == "c-1"
+
+
+# ------------------------------------------------------------------ the template
+
+
+def test_the_header_carries_the_agent_status_and_the_ticker():
+    tpl = Template(INDEX.read_text(encoding="utf-8"))
+    html = tpl.render(ms={"title": "T", "html": "", "blocks": {}, "outline": [],
+                          "chats": {}, "todos": [], "activity": [], "queue": [],
+                          "ticker": [], "stats": {}},
+                      styles_css="", viewer_js="")
+    assert 'id="agent-status"' in html, "the standing state has nowhere to live"
+    assert 'id="ticker"' in html, "the ticker has nowhere to live"
+
+
+def test_the_client_handles_the_queue_frame():
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "'queue'" in js, "the queue frame is unhandled"
+
+
+def test_the_ticker_respects_reduced_motion():
+    css = STYLES.read_text(encoding="utf-8")
+    assert ".ticker" in css
+    i = css.find(".tk")
+    assert i != -1
+    assert "prefers-reduced-motion" in css
+    # any animation on the ticker has to sit behind the no-preference guard
+    for line in css.splitlines():
+        if ".tk" in line and "animation:" in line:
+            assert "no-preference" in css[: css.find(line)][-400:], (
+                "the ticker animates unconditionally"
+            )
+
+
+# ------------------------------------------------------------- serve --with-agent
+
+
+def test_an_agent_that_cannot_write_is_refused(tmp_path):
+    """A read-only agent is a contradiction, and silently dropping one of two
+    flags the author typed is worse than refusing."""
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    with pytest.raises(SystemExit) as e:
+        cli.main(["serve", str(tmp_path), "--with-agent", "--read-only", "--no-window"])
+    msg = str(e.value)
+    assert "--with-agent" in msg and "--read-only" in msg
+
+
+def test_the_agent_needs_claude_on_the_path(tmp_path, monkeypatch):
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["serve", str(tmp_path), "--with-agent", "--no-window"])
+    assert "claude" in str(e.value)
+
+
+def test_the_agent_runs_in_the_manuscript_directory(tmp_path):
+    """It must inherit the author's CLAUDE.md and skills, which means its cwd is
+    the manuscript rather than wherever serve was invoked."""
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    script = cli.agent_loop_script(tmp_path, claude="/usr/bin/claude", manuscriptor="/usr/bin/manuscriptor")
+    assert "/usr/bin/manuscriptor" in script and "--wait" in script
+    assert "/usr/bin/claude" in script
+    assert str(tmp_path.resolve()) in script
+    log = cli.agent_log_path(tmp_path)
+    assert log.parent.is_dir() or log.parent == tmp_path / "build" / "manuscriptor"
+    assert "build" in str(log)
+
+
+def test_the_agent_is_killed_with_the_server(tmp_path):
+    """The worst failure mode here is a session still editing a manuscript after
+    the server is gone. The child gets its own process group so the whole tree
+    dies, not just the shell at the top of it."""
+    pidfile = tmp_path / "child.pid"
+    script = tmp_path / "loop.sh"
+    script.write_text(
+        "#!/bin/sh\nsleep 60 &\necho $! > %s\nwait\n" % pidfile, encoding="utf-8"
+    )
+    proc = cli.spawn_group(["/bin/sh", str(script)], cwd=tmp_path, log_path=tmp_path / "a.log")
+    for _ in range(80):
+        if pidfile.exists() and pidfile.read_text().strip():
+            break
+        time.sleep(0.05)
+    grandchild = int(pidfile.read_text().strip())
+    os.kill(grandchild, 0)          # alive before
+
+    cli.terminate_group(proc, grace=3.0)
+
+    assert proc.poll() is not None, "the launcher itself survived"
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(grandchild, signal.SIGKILL)
+        pytest.fail("the grandchild survived: a stray session would keep editing")
+
+
+def test_the_loop_reaches_manuscriptor_even_when_it_is_not_on_the_path(tmp_path):
+    """The console script is not always on PATH -- it was not on this machine
+    until it was symlinked. The fallback has to be ONE executable, because the
+    script runs it as one word: a bare "python -m manuscriptor.cli" would be
+    looked up as a file with that literal name and the loop would never run.
+    """
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    out = cli.agent_log_path(tmp_path).parent
+    real = shutil.which
+    cmd = cli.manuscriptor_command(out, which=lambda name: None if name == "manuscriptor" else real(name))
+    assert " " not in cmd, cmd
+    assert os.access(cmd, os.X_OK), f"{cmd} is not executable"
+    p = subprocess.run([cmd, "--version"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
+    assert "manuscriptor" in p.stdout
+
+
+def test_the_loop_drains_what_is_waiting_then_wakes_on_the_next_comment(tmp_path):
+    """The loop's control flow, with a stand-in for the session so no model runs.
+
+    Three branches, and all three matter. A comment left BEFORE the server
+    started must be worked without waiting for a second one, or it sits there
+    until the author happens to write another. An empty queue must cost one
+    blocked process and no session. And a comment arriving afterwards must wake
+    it.
+    """
+    d, _, b = setup(tmp_path)                    # c-0001 already pending
+    ms = shutil.which("manuscriptor")
+    if not ms:
+        pytest.skip("manuscriptor console script not on PATH")
+
+    calls = tmp_path / "calls.txt"
+    fake = tmp_path / "fake-claude"
+    fake.write_text(
+        "#!/bin/sh\n"
+        f"echo call >> {calls}\n"
+        f'for id in $("{ms}" proc "{tmp_path}" --json | grep \'"chat_id"\' | cut -d\'"\' -f4); do\n'
+        f'  "{ms}" state "{tmp_path}" "$id" done\n'
+        "done\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+
+    log = tmp_path / "agent.log"
+    script = tmp_path / "loop.sh"
+    script.write_text(cli.agent_loop_script(tmp_path, claude=str(fake), manuscriptor=ms),
+                      encoding="utf-8")
+    proc = cli.spawn_group(["/bin/sh", str(script)], cwd=tmp_path, log_path=log)
+
+    def wait_until(pred, secs, what):
+        end = time.time() + secs
+        while time.time() < end:
+            if pred():
+                return
+            time.sleep(0.2)
+        pytest.fail(f"{what}; log:\n{log.read_text(encoding='utf-8') if log.exists() else '(none)'}")
+
+    def closed(cid):
+        return cid not in {c.id for c in chat.pending(tmp_path / "comments.jsonl")}
+
+    try:
+        wait_until(lambda: closed("c-0001"), 45,
+                   "the comment waiting before the loop started was never worked")
+        first = calls.read_text(encoding="utf-8").count("call")
+        assert first >= 1
+
+        # nothing pending now: one blocked process, no second session
+        time.sleep(3)
+        assert calls.read_text(encoding="utf-8").count("call") == first, \
+            "a session was started with an empty queue"
+        assert proc.poll() is None, "the loop exited instead of waiting"
+
+        comment_on(tmp_path, b.blocks, 0, "c-0002", "and tighten this one")
+        wait_until(lambda: closed("c-0002"), 45, "the loop never woke on the new comment")
+        # `--wait` snapshots the log's size when it starts, so the next record
+        # has to arrive after the loop is back inside it or nothing wakes and
+        # the check below would pass without testing anything.
+        time.sleep(2)
+        settled = calls.read_text(encoding="utf-8").count("call")
+
+        # The log grows for reasons that are not work: a state record from
+        # anywhere wakes the watcher. Starting a whole session to discover an
+        # empty queue is the cost this guard exists to avoid, and a drain that
+        # closes two comments at once makes the next wake exactly that.
+        chat.append(tmp_path / "comments.jsonl",
+                    {"id": "c-0001", "kind": "state", "state": "done"})
+        time.sleep(4)
+        assert calls.read_text(encoding="utf-8").count("call") == settled, \
+            "a session was started for an empty queue"
+    finally:
+        cli.terminate_group(proc)
+    assert proc.poll() is not None
+
+
+def test_the_loop_does_not_start_a_session_on_a_manuscript_that_will_not_build(tmp_path):
+    """`proc` fails when the manuscript does not render, and a failure is not an
+    empty queue. Reading it as one starts a session per wake against a paper
+    that cannot be read, which is the loop spending money to discover the same
+    error over and over.
+    """
+    ms = shutil.which("manuscriptor")
+    if not ms:
+        pytest.skip("manuscriptor console script not on PATH")
+    calls = tmp_path / "calls.txt"
+    fake = tmp_path / "fake-claude"
+    fake.write_text(f"#!/bin/sh\necho call >> {calls}\n", encoding="utf-8")
+    fake.chmod(0o755)
+    # no .tex at all, and a comment waiting: `proc` exits non-zero
+    chat.append(tmp_path / "comments.jsonl",
+                {"id": "c-0001", "kind": "comment", "block": "b-x", "body": "anything"})
+    assert subprocess.run([ms, "proc", str(tmp_path), "--json"],
+                          capture_output=True).returncode != 0
+
+    script = tmp_path / "loop.sh"
+    script.write_text(cli.agent_loop_script(tmp_path, claude=str(fake), manuscriptor=ms),
+                      encoding="utf-8")
+    proc = cli.spawn_group(["/bin/sh", str(script)], cwd=tmp_path, log_path=tmp_path / "agent.log")
+    try:
+        time.sleep(6)
+        assert not calls.exists(), "a session was started against a manuscript that will not build"
+    finally:
+        cli.terminate_group(proc)
+
+
+def test_the_agent_log_is_invisible_to_the_manuscript_repository(tmp_path):
+    """Serving a paper must never be the reason git status grows."""
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    log = cli.agent_log_path(tmp_path)
+    assert log.is_relative_to(tmp_path / "build" / "manuscriptor")
+    assert (log.parent / ".gitignore").read_text(encoding="utf-8").strip() == "*"

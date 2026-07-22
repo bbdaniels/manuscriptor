@@ -50,6 +50,9 @@ class Session:
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
         self.seen_chats: dict[str, dict] = {}
+        # The queue as it was last pushed, reduced to its identity so a repaint
+        # is triggered by work moving and not by a second passing.
+        self.seen_queue: list[tuple] = []
         self.build = None
         self.rebuild()
 
@@ -112,6 +115,13 @@ class Session:
             for m in msgs:
                 current[m["id"]] = dict(m, block=block_id)
 
+        # WHEN THE STATE CHANGED, not when the comment was written. A message
+        # carries the comment's timestamp, so timing the frame by it made every
+        # ticker entry claim to be as old as the comment it belonged to: a `done`
+        # a second old read as five minutes, and the newest line sat above older
+        # ones carrying a larger age. Found by watching the page, not the code.
+        starts = build_mod.state_starts(self.log)
+
         for cid, msg in current.items():
             was = self.seen_chats.get(cid)
             if was is None:
@@ -122,12 +132,34 @@ class Session:
             if not was or was.get("state") != msg.get("state"):
                 await self.broadcast({
                     "type": "state", "block": msg["block"], "state": msg["state"],
+                    # The ticker reports what happened, so it ages each entry by
+                    # the log's own time rather than by the client's clock at the
+                    # moment the frame happened to arrive.
+                    "at": starts.get(cid) or msg.get("ts") or chat.now(),
                 })
+
+        # The standing state, as a list rather than as marks on the page. A pin
+        # answers "is anything happening on THIS paragraph"; the author reading
+        # page four needs "three waiting, one being worked" without hunting.
+        # Re-anchored through the same pass as the frames above, or an entry
+        # names a block the page has lost.
+        queue = build_mod.queue_view(
+            self.log, self.build.blocks, anchored=anchored, root=self.dir
+        ) if self.build is not None else []
+        ident = [(e["id"], e["block"], e["state"], e["since"]) for e in queue]
+        if ident != self.seen_queue:
+            await self.broadcast({"type": "queue", "queue": queue})
+            self.seen_queue = ident
+
         # Connected clients got the frames above. Anyone loading afterwards
         # reads the blob, so it has to carry the same state rather than the one
         # frozen at the last .tex rebuild.
         if self.build is not None:
             self.build.blob["chats"] = anchored
+            self.build.blob["queue"] = queue
+            self.build.blob["ticker"] = build_mod.ticker_view(
+                self.log, self.build.blocks, anchored=anchored, root=self.dir
+            )
         self.seen_chats = current
 
     async def on_edit(self, block_id: str, source: str) -> dict:

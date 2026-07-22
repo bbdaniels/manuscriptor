@@ -7,8 +7,12 @@ rather than failing obscurely.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import __version__
@@ -89,17 +93,233 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+# ------------------------------------------------------------ serve --with-agent
+#
+# THE LAUNCH LIVES HERE AND NOWHERE ELSE. `manuscriptor/server/` has zero
+# knowledge of Claude and must not learn that a process exists; the two halves
+# share a filesystem and meet at the `.tex` tree and `comments.jsonl`. `cli.py`
+# is allowed to start both, because it is the thing the author typed.
+
+AGENT_PROMPT = (
+    "Drain the pending Manuscriptor comments in this directory. Use the "
+    "manuscriptor-drain skill: work the queue oldest first, mark each comment "
+    "working before you start and done when the edit has landed, and change "
+    "exactly one block per comment. Read as widely as you need. Do nothing the "
+    "comments did not ask for."
+)
+
+
+def agent_log_path(manuscript_dir: Path) -> Path:
+    """Where the session's output goes.
+
+    Inside the build directory, which writes its own `.gitignore`, because
+    serving a paper must never be the reason `git status` grows.
+    """
+    from manuscriptor.server.build import keep_out_of_git
+
+    out = Path(manuscript_dir).resolve() / "build" / "manuscriptor"
+    out.mkdir(parents=True, exist_ok=True)
+    keep_out_of_git(out)
+    return out / "agent.log"
+
+
+def agent_loop_script(manuscript_dir: Path, *, claude: str, manuscriptor: str) -> str:
+    """The drain loop, as a script the author can read.
+
+    `proc --wait` blocks until the comment log grows and then exits, so the loop
+    costs nothing while nothing is happening: one blocked process, no polling.
+    Anything already pending is worked before the first block, or a comment left
+    before the server started would sit there until the next one arrived.
+
+    A failed session backs off instead of spinning, because the common cause is
+    a credential problem that will not fix itself in the next hundred
+    milliseconds.
+    """
+    d = str(Path(manuscript_dir).resolve())
+    return f"""#!/bin/sh
+# Written by `manuscriptor serve --with-agent`. Kill the server and this goes
+# with it: it runs in its own process group and the server kills the group.
+DIR={_sh(d)}
+MS={_sh(manuscriptor)}
+CLAUDE={_sh(claude)}
+cd "$DIR" || exit 1
+
+drain() {{
+  # A failure is not an empty queue. When the manuscript does not render, `proc`
+  # exits non-zero, and reading that as "nothing pending" would be worse: it
+  # would start a session on every wake against a paper that cannot be read.
+  if ! PENDING=$("$MS" proc "$DIR" --json 2>&1); then
+    echo "--- $(date '+%Y-%m-%d %H:%M:%S')  the manuscript does not build; not drained"
+    printf '%s\\n' "$PENDING" | tail -3
+    sleep 5
+    return 0
+  fi
+  if [ "$(printf '%s' "$PENDING" | tr -d '[:space:]')" = "[]" ]; then
+    return 0
+  fi
+  echo "--- $(date '+%Y-%m-%d %H:%M:%S')  draining"
+  "$CLAUDE" -p {_sh(AGENT_PROMPT)} --permission-mode acceptEdits || sleep 5
+}}
+
+drain
+while :; do
+  "$MS" proc "$DIR" --wait || exit 0
+  drain
+done
+"""
+
+
+def _sh(value: str) -> str:
+    """One shell-quoted argument. The manuscript path is the author's, not ours."""
+    return "'" + str(value).replace("'", "'\\''") + "'"
+
+
+def manuscriptor_command(out_dir: Path, *, which=None) -> str:
+    """One executable that runs manuscriptor, whatever the install looks like.
+
+    The console script is not always on PATH -- it was not on this machine until
+    it was symlinked into `~/.local/bin`. The obvious fallback,
+    `sys.executable -m manuscriptor.cli`, is three words, and the loop runs this
+    as ONE, so it would be looked up as a file with that literal name and the
+    watcher would never run. A shim keeps it one token and survives a path with
+    spaces in it.
+    """
+    which = which or shutil.which
+    found = which("manuscriptor")
+    if found:
+        return found
+    shim = Path(out_dir) / "manuscriptor-shim.sh"
+    shim.write_text(f'#!/bin/sh\nexec {_sh(sys.executable)} -m manuscriptor.cli "$@"\n',
+                    encoding="utf-8")
+    shim.chmod(0o755)
+    return str(shim)
+
+
+def spawn_group(argv: list[str], *, cwd: Path, log_path: Path) -> subprocess.Popen:
+    """Start a child in its OWN process group, with its output on disk.
+
+    The group is the point. A drain loop starts a `claude`, which starts its own
+    children; signalling the shell alone would leave those running, and a
+    session still editing a manuscript after the server is gone is the worst
+    failure this design has.
+    """
+    log = open(log_path, "a", buffering=1, encoding="utf-8")
+    try:
+        return subprocess.Popen(
+            argv, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL, start_new_session=True,
+        )
+    finally:
+        log.close()   # the child holds its own descriptor
+
+
+def terminate_group(proc: subprocess.Popen | None, *, grace: float = 5.0) -> None:
+    """Take the whole tree down, not just the process at the top of it."""
+    if proc is None or (proc.poll() is not None and _group_gone(proc)):
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            break
+        time.sleep(0.05)
+
+    # The launcher exiting is not the same as the group being empty: a `claude`
+    # it started can outlive it. Sweep whatever is left.
+    try:
+        os.killpg(pgid, 0)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _group_gone(proc: subprocess.Popen) -> bool:
+    try:
+        os.killpg(os.getpgid(proc.pid), 0)
+    except (ProcessLookupError, PermissionError):
+        return True
+    return False
+
+
+def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
+    """Launch the drain loop beside the server. Says what it started."""
+    claude = shutil.which("claude")
+    if not claude:
+        sys.exit(
+            "--with-agent needs the `claude` CLI on PATH and it is not there. "
+            "Install Claude Code, or drop --with-agent and run "
+            "`manuscriptor proc <dir>` in a session yourself."
+        )
+    log = agent_log_path(manuscript_dir)
+    ms = manuscriptor_command(log.parent)
+    script = log.parent / "agent-loop.sh"
+    script.write_text(agent_loop_script(manuscript_dir, claude=claude, manuscriptor=ms),
+                      encoding="utf-8")
+    proc = spawn_group(["/bin/sh", str(script)], cwd=Path(manuscript_dir).resolve(),
+                       log_path=log)
+    print(f"  agent  {claude} -p … --permission-mode acceptEdits   (pid {proc.pid})")
+    print("         wakes on each comment; one block per comment")
+    print(f"         log {log}")
+    return proc, log
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from manuscriptor.server.app import serve
 
-    serve(
-        Path(args.manuscript).resolve(),
-        port=args.port,
-        open_window=not args.no_window,
-        main=args.main,
-        bib=args.bib,
-        read_only=args.read_only,
-    )
+    d = Path(args.manuscript).resolve()
+    agent = None
+    if args.with_agent:
+        if args.read_only:
+            sys.exit(
+                "--with-agent and --read-only contradict each other: an agent that "
+                "cannot write cannot answer a comment, and the comment log is not "
+                "written either. Pick one."
+            )
+        agent, _ = start_agent(d)
+
+    # The agent must not outlive the server. KeyboardInterrupt is handled inside
+    # serve(); a SIGTERM would otherwise kill this process without running the
+    # cleanup below and leave a session editing the manuscript.
+    previous = {}
+    if agent is not None:
+        def _stop(signum, _frame):
+            raise SystemExit(128 + signum)
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            try:
+                previous[sig] = signal.signal(sig, _stop)
+            except (ValueError, OSError):
+                pass
+
+    try:
+        serve(
+            d,
+            port=args.port,
+            open_window=not args.no_window,
+            main=args.main,
+            bib=args.bib,
+            read_only=args.read_only,
+        )
+    finally:
+        for sig, handler in previous.items():
+            try:
+                signal.signal(sig, handler)
+            except (ValueError, OSError):
+                pass
+        if agent is not None:
+            terminate_group(agent)
+            print("  agent stopped")
     return 0
 
 
@@ -214,6 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--bib", help="Bibliography filename")
     p_serve.add_argument("--read-only", action="store_true",
                          help="Render and browse without the manuscript ever being written to.")
+    p_serve.add_argument("--with-agent", action="store_true",
+                         help="Also run a Claude Code session that drains comments as they arrive. "
+                              "Refuses to combine with --read-only.")
     p_serve.set_defaults(func=cmd_serve)
 
     p_blocks = sub.add_parser("blocks", help="Print the block table for a manuscript (flatten and segment only).")

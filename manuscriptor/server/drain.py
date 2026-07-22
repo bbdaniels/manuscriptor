@@ -168,10 +168,16 @@ def as_text(items: list[Item]) -> str:
         return "No pending comments."
 
     out: list[str] = [
-        f"{len(items)} pending comment{'s' if len(items) != 1 else ''}.",
+        f"{len(items)} pending comment{'s' if len(items) != 1 else ''}, oldest first,",
+        "which is the order to work them: the author is watching a counter, and",
+        "answering the newest leaves the one he has waited longest for until last.",
         "",
         "Read as widely as you need. Write ONE block per comment, the one named",
-        "under EDIT. When done, run: manuscriptor state <dir> <chat-id> done",
+        "under EDIT. Say you have started before you start, or the edit appears",
+        "under him with no warning:",
+        "",
+        "    manuscriptor state <dir> <chat-id> working",
+        "    manuscriptor state <dir> <chat-id> done",
         "",
     ]
     for it in items:

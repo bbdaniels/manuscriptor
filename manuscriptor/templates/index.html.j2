@@ -13,10 +13,17 @@
                         parent_heading,includes,cites,values}},
         "outline": [{level,text,id}],
         "chats":   {block_id: [{id,who,body,ts,state}]},
+        "queue":   [{id,block,section,body,state,since,waited}],  # oldest first
+        "ticker":  [{kind,id,state,block,section,when}],          # newest first
         "todos":   [{text,done}],
         "activity":[{text,when}],
         "stats":   {files,cites,values,exhibits},
       }
+
+  `queue` and `ticker` are the agent's standing state, seeded here so a page
+  opened while a session is mid-run does not paint "idle" and then correct
+  itself. Both are kept current afterwards by the `queue`, `state` and `patch`
+  frames rather than by a reload.
 
   `styles_css` and `viewer_js` are the two static files, inlined so the page
   is a single self-contained artefact that can be opened straight off disk.
@@ -34,7 +41,8 @@
 {%- set MS = ms if ms is defined and ms else {
   'title': title | default('Manuscript', true),
   'html': manuscript_html | default('', true),
-  'blocks': {}, 'outline': [], 'chats': {}, 'todos': [], 'activity': [], 'stats': {}
+  'blocks': {}, 'outline': [], 'chats': {}, 'queue': [], 'ticker': [],
+  'todos': [], 'activity': [], 'stats': {}
 } -%}
 {%- set stats = MS.get('stats', {}) or {} -%}
 {%- set todos = MS.get('todos', []) or [] -%}
@@ -53,6 +61,11 @@
     <div class="dots"><i></i><i></i><i></i></div>
     <span class="name">Manuscriptor</span>
     <span class="path" id="doc-path">{{ MS.get('path', '') }}</span>
+    {#- The standing agent state. "3 queued · 1 working", "idle" when there is
+        nothing. It sits beside the socket's own pulse because they answer two
+        different questions: is the page live, and is anything being done to the
+        manuscript. -#}
+    <span class="agent is-idle" id="agent-status" title="Nothing queued."><span class="adot"></span><span class="atext">idle</span></span>
     <span class="live" id="live"><span class="pulse"></span> <span id="live-text">watching</span></span>
   </div>
 
@@ -72,6 +85,11 @@
     </span>
     <span class="tb-meta" id="toolbar-meta"></span>
   </div>
+
+  {#- What actually happened, newest first, filled in by the viewer from the
+      log's state records and the patch frames. Hidden until there is something
+      to say, so an idle manuscript loses no reading height to it. -#}
+  <div class="ticker" id="ticker" aria-live="polite" hidden></div>
 
   <div class="cols">
 
