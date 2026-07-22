@@ -59,10 +59,18 @@ def test_the_manuscript_directory_is_not_written_to(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
-def test_math_survives_as_a_mathjax_span(tmp_path):
+def test_math_becomes_native_mathml(tmp_path):
+    """Math is emitted as MathML, which browsers render themselves.
+
+    The alternative was bundling MathJax, roughly a megabyte of JavaScript, to
+    render notation the browser already knows. MathML costs nothing, needs no
+    script, and keeps the page self-contained, which the CSP requires anyway.
+    """
     src = SIMPLE.replace("Ordinary prose", "Math $x^2$ and prose")
     html = render_document(src, cwd=tmp_path, bib=None)
-    assert 'class="math inline"' in html
+    assert "<math" in html and "MathML" in html
+    assert "<msup>" in html, "structure, not an image or a fallback string"
+    assert "class=\"math inline\"" not in html, "no MathJax spans left to render"
 
 
 def test_relative_image_paths_are_preserved_verbatim(tmp_path):

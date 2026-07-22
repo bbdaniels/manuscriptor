@@ -294,3 +294,43 @@ def _unresolved_span(macro: str, key: str) -> str:
         f'<span class="ref-unresolved" data-ref="{key}" '
         f'title="no \\label{{{key}}} in the compiled .aux">\\{macro}{{{key}}}</span>'
     )
+
+
+# ------------------------------------------------- resolving before pandoc
+
+
+_UNRESOLVED = "??"
+
+
+def resolve_source(latex: str, labels: dict[str, str]) -> tuple[str, list[str]]:
+    """Substitute `\\ref`, `\\pageref` and `\\eqref` in the LaTeX itself.
+
+    This is where cross-references should always have been resolved. Doing it
+    on pandoc's html worked only because `--mathjax` happens to emit an
+    unresolved reference inside a math span, where a regex could reach it.
+    Under `--mathml` pandoc drops the reference and its text outright, so a
+    manuscript renders "See Table  and Section ." and nothing raises.
+
+    Resolving here removes the dependency on a rendering backend's incidental
+    behaviour, and it is the only place `\\pageref` can ever work, since HTML
+    has no pages and the number exists only in the `.aux`.
+
+    An unknown label becomes a visible `??`, exactly as LaTeX prints it, and is
+    reported. A reference that quietly disappears is the failure this whole
+    function exists to prevent, so it must never fail silently either.
+    """
+    missing: list[str] = []
+
+    def one(m: re.Match) -> str:
+        macro, key = m.group(1), m.group(2).strip()
+        if macro == "pageref":
+            value = labels.get(key + PAGE_SUFFIX)
+        else:
+            value = labels.get(key)
+        if value is None:
+            if key not in missing:
+                missing.append(key)
+            return _UNRESOLVED
+        return f"({value})" if macro == "eqref" else value
+
+    return _MACRO_RE.sub(one, latex), missing

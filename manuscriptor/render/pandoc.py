@@ -68,7 +68,7 @@ from pathlib import Path
 _BASE_FLAGS = (
     "--from=latex+raw_tex",
     "--to=html5",
-    "--mathjax",
+    "--mathml",
     "--wrap=preserve",
 )
 

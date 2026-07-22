@@ -78,11 +78,15 @@ def build(
     bl = blocks_mod.segment(flat)
     bl = producers.apply(bl, produced, root_file=main_tex)
 
-    anchored = anchors.inject(flat.text, bl)
-    html = pandoc.render_document(anchored, cwd=manuscript_dir, bib=bib_path)
-
     aux = main_tex.with_suffix(".aux")
     labels = refs.load_labels(aux) if aux.exists() else {}
+
+    anchored = anchors.inject(flat.text, bl)
+    # Before pandoc, not after. Pandoc drops an unresolved reference outright
+    # under --mathml, so resolving on its output would silently lose every
+    # cross-reference in the manuscript.
+    anchored, unresolved_src = refs.resolve_source(anchored, labels)
+    html = pandoc.render_document(anchored, cwd=manuscript_dir, bib=bib_path)
 
     post = postprocess.postprocess(
         html, blocks=bl, manuscript_dir=manuscript_dir, output_dir=out, labels=labels
@@ -107,7 +111,7 @@ def build(
         },
         "diagnostics": {
             "unanchored": post.get("unanchored", []),
-            "unresolved_refs": post.get("unresolved_refs", []),
+            "unresolved_refs": sorted(set(unresolved_src) | set(post.get("unresolved_refs", []))),
             "missing_includes": list(flat.missing),
         },
     }
