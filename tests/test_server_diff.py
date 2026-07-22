@@ -106,3 +106,34 @@ def test_block_html_returns_the_whole_element(two_builds):
     assert frag.startswith("<")
     assert frag.rstrip().endswith(">")
     assert frag.count("data-mx=") == 1, "one block's markup, not its neighbours'"
+
+
+# --------------------------------------------------------- the page itself
+
+
+def test_the_server_can_actually_render_its_page(tmp_path):
+    """The gap that let a tidy break the running product.
+
+    268 tests passed while `serve` returned a 500 on every request, because not
+    one of them rendered the page the server actually hands to a browser. The
+    template, the blob and the session are each tested; the line where they meet
+    was not.
+    """
+    manuscript(tmp_path)
+    from manuscriptor.server.app import Session, _page
+
+    page = _page(Session(tmp_path))
+    assert page.lstrip().startswith("<!DOCTYPE html>")
+    assert "window.MS" in page, "the data blob must reach the page"
+    assert "data-mx=" in page, "and the anchors with it"
+    assert page.count("<style>") == 1 and "function" in page, "css and js inlined"
+
+
+def test_the_session_exposes_its_blob_as_data_not_a_call(tmp_path):
+    """`blob` is a property. A caller invoking it got a TypeError at request
+    time rather than at import time, which is how this shipped."""
+    manuscript(tmp_path)
+    from manuscriptor.server.app import Session
+
+    blob = Session(tmp_path).blob
+    assert isinstance(blob, dict) and blob["blocks"]

@@ -225,7 +225,7 @@ def _page(session: Session) -> str:
     tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
     css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
     js = resources.files("manuscriptor.templates.static").joinpath("viewer.js").read_text(encoding="utf-8")
-    return Template(tpl).render(ms=session.blob(), styles_css=css, viewer_js=js)
+    return Template(tpl).render(ms=session.blob, styles_css=css, viewer_js=js)
 
 
 def make_app(session: Session) -> web.Application:
