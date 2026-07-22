@@ -43,6 +43,44 @@ _CITATION_SPAN_RE = re.compile(r'<span\s+class="citation"\s+data-cites="([^"]*)"
 _IMG_SRC_RE = re.compile(r'<img\s[^>]*?src="([^"]+)"', re.IGNORECASE)
 
 
+_SIMPLE_MATH_RE = re.compile(
+    r'<span class="math inline">\\\(([_^])\{([^{}\\]{1,12})\}\\\)</span>'
+)
+
+
+def _simple_math_to_html(html: str) -> str:
+    """Turn trivially simple math into real HTML.
+
+    Pandoc emits `\\(^{*}\\)` for a significance star and expects MathJax to
+    render it. The page is deliberately self-contained and carries no MathJax,
+    so the reader sees the markup instead of the stars, in every cell of every
+    regression table.
+
+    Only a bare superscript or subscript of plain characters is converted.
+    Anything with structure is left as math, because a half-guess at real
+    notation is worse than notation that has not rendered.
+    """
+    return _SIMPLE_MATH_RE.sub(
+        lambda m: f"<{'sup' if m.group(1) == '^' else 'sub'}>{m.group(2)}"
+                  f"</{'sup' if m.group(1) == '^' else 'sub'}>",
+        html,
+    )
+
+
+_TABLE_OPEN_RE = re.compile(r"<table\b")
+
+
+def _wrap_tables(html: str) -> str:
+    """Give every table its own horizontal scroll container.
+
+    A regression table with eight columns is wider than the reading measure. It
+    must scroll inside itself; the manuscript column scrolling sideways would
+    take the prose with it.
+    """
+    out = html.replace("<table", '<div class="table-scroll"><table')
+    return out.replace("</table>", "</table></div>")
+
+
 def postprocess(
     html: str,
     *,
@@ -78,8 +116,10 @@ def postprocess(
         if named not in unanchored:
             unanchored.append(named)
 
+    # Last, so the anchor check above counts data-mx on the real elements
+    # rather than on wrappers this adds.
     return {
-        "html": html,
+        "html": _wrap_tables(_simple_math_to_html(html)),
         "unanchored": unanchored,
         "unresolved_refs": unresolved,
         "assets": assets,

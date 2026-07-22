@@ -179,12 +179,138 @@ def normalize_for_pandoc(source: str) -> str:
     """
     declared = _declared_column_types(source)
     source = _strip_newcolumntypes(source)
+    source = _unwrap_text_outside_math(source)
+    source = _flatten_stacked_cells(source)
+    source = _strip_rules(source)
+    source = _single_longtable_head(source)
     for name, skip in _SCALING_MACROS.items():
         source = _unwrap_macro(source, name, skip)
     for name, args in _WRAPPER_ENVS.items():
         source = _unwrap_environment(source, name, args)
     source = _plain_multicolumn_specs(source, declared)
     return _plain_table_specs(source, declared)
+
+
+_TEXT_RE = re.compile(r"\\text\s*(?=\{)")
+
+
+def _unwrap_text_outside_math(source: str) -> str:
+    """Unwrap `\\text{...}` where it is not inside math, keeping its content.
+
+    `\\text` is an amsmath command and is only legal in math mode. esttab emits
+    it in table cells anyway, to get a proper minus glyph (`\\text{-}0.021`) and
+    for literals like `\\text{n.a.}`. Outside math, pandoc drops the command AND
+    its argument, so a negative coefficient renders as positive and a literal
+    disappears. Neither raises anything.
+
+    That makes this the most dangerous normalization in the file: it is the one
+    standing between the reader and a sign error in a results table.
+
+    Inside math it is left alone, because MathJax renders it correctly and the
+    upright-vs-italic distinction it carries there is real.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _TEXT_RE.search(source, i)
+        if m is None:
+            out.append(source[i:])
+            return "".join(out)
+        if _in_math(source, m.start()):
+            out.append(source[i : m.end()])
+            i = m.end()
+            continue
+        end = _skip_group(source, m.end())
+        out.append(source[i : m.start()])
+        out.append(source[m.end() + 1 : end - 1])
+        i = end
+
+
+def _in_math(source: str, at: int) -> bool:
+    """True when `at` falls inside `$...$`, `$$...$$` or `\\(...\\)`."""
+    prefix = source[:at]
+    dollars = len(re.findall(r"(?<!\\)\$", prefix))
+    if dollars % 2 == 1:
+        return True
+    opens = len(re.findall(r"\\\(", prefix))
+    closes = len(re.findall(r"\\\)", prefix))
+    return opens > closes
+
+
+_MAKECELL_RE = re.compile(r"\\(?:makecell|thead|shortstack)\s*(?:\[[^\]]*\])?\s*(?=\{)")
+
+
+def _flatten_stacked_cells(source: str) -> str:
+    """Collapse a stacked cell into one line, because its `\\\\` is not a row break.
+
+    `makecell` stacks a coefficient over its standard error inside ONE cell,
+    separated by `\\\\`. Pandoc reads that as a row separator, so the row is torn
+    apart: column one keeps its label, columns two onward come out empty, and
+    every standard error lands on a row of its own. estonia-ecm's hospitalization
+    table rendered as a single column of numbers, with no error anywhere.
+
+    The two lines are joined with a space rather than a break. "-0.021* (0.011)"
+    is how the author would read it aloud, and HTML has no equivalent of the
+    stacking that would survive a table cell.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _MAKECELL_RE.search(source, i)
+        if m is None:
+            out.append(source[i:])
+            return "".join(out)
+        end = _skip_group(source, m.end())
+        inner = source[m.end() + 1 : end - 1]
+        # Only the breaks INSIDE the cell; a nested makecell is handled by
+        # recursion, so its breaks are gone before this line runs.
+        inner = re.sub(r"\\\\\s*", " ", _flatten_stacked_cells(inner)).strip()
+        out.append(source[i : m.start()])
+        out.append(inner)
+        i = end
+
+
+_RULE_RE = re.compile(
+    r"\\(?:cmidrule|cline|specialrule|addlinespace|morecmidrules)\s*"
+    r"(?:\[[^\]]*\])?\s*(?:\([^)]*\))?\s*(?:\{[^}]*\})?"
+)
+
+_LONGTABLE_RE = re.compile(r"\\begin\s*\{longtable\*?\}.*?\\end\s*\{longtable\*?\}", re.S)
+_HEAD_SPAN_RE = re.compile(r"\\endfirsthead\b(.*?)\\endhead\b", re.S)
+
+
+def _strip_rules(source: str) -> str:
+    """Drop partial horizontal rules, which have no HTML counterpart.
+
+    `\\cmidrule(lr){2-3}` does not merely fail to render: pandoc emits its
+    arguments as table content, so every table in the reference manuscript
+    carried a first body row reading `2-3 (lr)4-5`. Silent, and sitting in the
+    middle of the author's regression output.
+
+    `\\toprule`, `\\midrule` and `\\bottomrule` are deliberately NOT here.
+    Pandoc reads those to find the header boundary, so removing them would cost
+    the table its `<thead>`.
+    """
+    return _RULE_RE.sub("", source)
+
+
+def _single_longtable_head(source: str) -> str:
+    """Keep one header when a longtable declares two.
+
+    longtable writes its header twice by design: the block before
+    `\\endfirsthead` for page one, and the block before `\\endhead` for every
+    page after. HTML has no pages, so pandoc faithfully emits both and the
+    reader sees the header line doubled.
+
+    Only touched when BOTH are present. Most of the corpus declares only
+    `\\endfirsthead`, which pandoc already handles, and rewriting that would be
+    a fix in search of a bug.
+    """
+
+    def one(m: re.Match) -> str:
+        return _HEAD_SPAN_RE.sub(lambda _m: "\\endfirsthead\n", m.group(0), count=1)
+
+    return _LONGTABLE_RE.sub(one, source)
 
 
 def _declared_column_types(source: str) -> dict[str, str]:
@@ -333,6 +459,31 @@ def _plain_table_specs(source: str, declared: dict[str, str]) -> str:
         cursor = spec_end
 
 
+_REPEAT_RE = re.compile(r"\*\s*\{\s*(\d+)\s*\}\s*(?=\{)")
+
+
+def _expand_repeats(spec: str) -> str:
+    """Expand the `array` package's `*{n}{cols}` repetition.
+
+    This is what Stata's esttab emits by default (`l*{1}{ccccc}`), and pandoc
+    does not read it: the table vanishes with no error. estonia-qbs lost five of
+    its seven tables to exactly this.
+
+    Dropping the multiplier instead of expanding it is worse than it looks. At
+    `*{1}` it happens to be right, so it passes on the common case and then
+    quietly discards columns the moment a manuscript uses `*{3}`.
+    """
+    out = spec
+    for _ in range(8):  # bounded: nested repeats are legal but never deep
+        m = _REPEAT_RE.search(out)
+        if not m:
+            break
+        end = _skip_group(out, m.end())
+        inner = out[m.end() + 1 : end - 1]
+        out = out[: m.start()] + inner * int(m.group(1)) + out[end:]
+    return out
+
+
 def _plain_colspec(spec: str, declared: dict[str, str] | None = None) -> str:
     """Reduce a column specification to alignment letters and rules.
 
@@ -342,11 +493,12 @@ def _plain_colspec(spec: str, declared: dict[str, str] | None = None) -> str:
     the letters c, r, and l inside a command name, and a character filter would
     read that single column as four.
     """
+    spec = _expand_repeats(spec)
     out: list[str] = []
     i = 0
     while i < len(spec):
         c = spec[i]
-        if c in "<>@!*":
+        if c in "<>@!":
             nxt = _skip_group(spec, i + 1)
             i = nxt if nxt > i + 1 else i + 1
             continue
