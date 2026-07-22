@@ -1,0 +1,1028 @@
+<title>Manuscriptor — planned interface</title>
+<style>
+  :root {
+    --ground:#F4F5F7; --surface:#FFFFFF; --sunken:#ECEEF1;
+    --ink:#151A20; --muted:#626C79; --faint:#8B94A0; --rule:#DCE1E7;
+    --accent:#2B5278; --accent-soft:#E4EBF3;
+    --verbatim:#2E7D5B; --paraphrase:#A97410; --missing:#B24239; --computed:#6A55A0;
+    --computed-soft:#EDE9F6;
+    --serif: Charter, "Iowan Old Style", Georgia, "Times New Roman", serif;
+    --ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --shadow: 0 1px 2px rgba(20,26,33,.06), 0 8px 24px rgba(20,26,33,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground:#131619; --surface:#1A1E23; --sunken:#22272D;
+      --ink:#E3E7EB; --muted:#8A949F; --faint:#6B747E; --rule:#2A3038;
+      --accent:#83AACE; --accent-soft:#1E2A36;
+      --verbatim:#5FBE90; --paraphrase:#D9A441; --missing:#E0776C; --computed:#A996DC;
+      --computed-soft:#241F33;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#131619; --surface:#1A1E23; --sunken:#22272D;
+    --ink:#E3E7EB; --muted:#8A949F; --faint:#6B747E; --rule:#2A3038;
+    --accent:#83AACE; --accent-soft:#1E2A36;
+    --verbatim:#5FBE90; --paraphrase:#D9A441; --missing:#E0776C; --computed:#A996DC;
+    --computed-soft:#241F33;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+  :root[data-theme="light"] {
+    --ground:#F4F5F7; --surface:#FFFFFF; --sunken:#ECEEF1;
+    --ink:#151A20; --muted:#626C79; --faint:#8B94A0; --rule:#DCE1E7;
+    --accent:#2B5278; --accent-soft:#E4EBF3;
+    --verbatim:#2E7D5B; --paraphrase:#A97410; --missing:#B24239; --computed:#6A55A0;
+    --computed-soft:#EDE9F6;
+    --shadow: 0 1px 2px rgba(20,26,33,.06), 0 8px 24px rgba(20,26,33,.06);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ground); color:var(--ink); font-family:var(--ui); font-size:15px; line-height:1.5; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:2px; }
+
+  .note { max-width:80rem; margin:0 auto; padding:2.5rem 1.5rem 1rem; }
+  .note h1 { font-family:var(--serif); font-size:1.9rem; font-weight:600; margin:0 0 .4rem; letter-spacing:-.01em; text-wrap:balance; }
+  .note p { color:var(--muted); margin:0; max-width:62ch; }
+  .note .kbd { font-family:var(--mono); font-size:.85em; background:var(--sunken); border:1px solid var(--rule); border-radius:4px; padding:.1em .35em; color:var(--ink); }
+
+  /* ---------- the app frame ---------- */
+  .app {
+    max-width:80rem; margin:1.5rem auto 3rem; background:var(--surface);
+    border:1px solid var(--rule); border-radius:10px; overflow:hidden; box-shadow:var(--shadow);
+    height:78vh; min-height:620px; display:flex; flex-direction:column;
+  }
+  .titlebar {
+    display:flex; align-items:center; gap:.75rem; padding:.6rem .9rem;
+    border-bottom:1px solid var(--rule); background:var(--sunken);
+  }
+  .dots { display:flex; gap:.4rem; }
+  .dots i { width:11px; height:11px; border-radius:50%; background:var(--rule); display:block; }
+  .titlebar .name { font-size:.82rem; color:var(--muted); font-weight:500; }
+  .titlebar .path { font-family:var(--mono); font-size:.74rem; color:var(--faint); }
+  .titlebar .live { margin-left:auto; display:flex; align-items:center; gap:.4rem; font-size:.74rem; color:var(--muted); }
+  .pulse { width:7px; height:7px; border-radius:50%; background:var(--verbatim); }
+  @media (prefers-reduced-motion: no-preference) { .pulse { animation: breathe 2.4s ease-in-out infinite; } }
+  @keyframes breathe { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  .toolbar { display:flex; align-items:center; gap:.55rem; padding:.45rem .9rem; border-bottom:1px solid var(--rule); background:var(--surface); flex-wrap:wrap; }
+  .grp { display:flex; gap:.35rem; }
+  .sep { width:1px; align-self:stretch; background:var(--rule); margin:0 .25rem; }
+  .tb { font:inherit; font-size:.75rem; padding:.28rem .6rem; border-radius:5px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); cursor:pointer; white-space:nowrap; }
+  .tb:hover { border-color:var(--accent); color:var(--accent); }
+  .tb.accent { border-color:var(--accent); color:var(--accent); }
+  .tb.accent:hover { background:var(--accent-soft); }
+  .tb-meta { margin-left:auto; font-family:var(--mono); font-size:.68rem; color:var(--faint); }
+
+  /* Each column owns its own scroll. min-height:0 is what actually lets a grid
+     child scroll rather than stretch its parent. */
+  .cols { display:grid; grid-template-columns: 190px minmax(0,1fr) minmax(0,29rem); flex:1; min-height:0; }
+  @media (max-width: 1000px) { .cols { grid-template-columns:1fr; } .rail { display:none; } }
+
+  /* ---------- left rail ---------- */
+  .rail { min-height:0; border-right:1px solid var(--rule); background:var(--sunken); padding:1rem .85rem; display:flex; flex-direction:column; gap:1.4rem; overflow:auto; }
+  .rail h3 { font-size:.66rem; text-transform:uppercase; letter-spacing:.09em; color:var(--faint); margin:0 0 .5rem; font-weight:600; }
+  .outline { display:flex; flex-direction:column; gap:.1rem; }
+  .outline a { display:flex; justify-content:space-between; gap:.4rem; font-size:.8rem; color:var(--muted); text-decoration:none; padding:.24rem .4rem; border-radius:4px; }
+  .outline a:hover { background:var(--accent-soft); color:var(--ink); }
+  .outline a.on { background:var(--accent-soft); color:var(--ink); font-weight:500; }
+  .outline .n { font-family:var(--mono); font-size:.68rem; color:var(--faint); font-variant-numeric:tabular-nums; }
+  .todo { display:flex; flex-direction:column; gap:.3rem; }
+  .todo label { display:flex; align-items:flex-start; gap:.4rem; font-size:.75rem; color:var(--ink); line-height:1.35; cursor:pointer; }
+  .todo input { margin:.2rem 0 0; accent-color:var(--accent); flex:none; }
+  .todo s { color:var(--faint); text-decoration-thickness:1px; }
+  .todo em { font-style:normal; font-family:var(--mono); font-size:.62rem; color:var(--computed); background:var(--computed-soft); border-radius:3px; padding:0 .25em; }
+  .feed { display:flex; flex-direction:column; gap:.55rem; }
+  .ev { font-size:.72rem; color:var(--muted); line-height:1.35; padding-left:.7rem; border-left:2px solid var(--rule); }
+  .ev.now { border-left-color:var(--accent); color:var(--ink); }
+  .ev b { font-weight:600; color:var(--ink); }
+  .ev time { display:block; font-family:var(--mono); font-size:.64rem; color:var(--faint); }
+
+  /* ---------- manuscript ---------- */
+  .doc { overflow:auto; min-height:0; padding:2rem 1.6rem 3rem; border-right:1px solid var(--rule); }
+  .doc-inner { max-width:38rem; margin:0 auto; }
+  .doc h2 { font-family:var(--serif); font-size:1.15rem; font-weight:600; margin:0 0 1.1rem; letter-spacing:.01em; }
+  .doc h2 .lbl { font-family:var(--mono); font-size:.62rem; color:var(--faint); display:block; text-transform:uppercase; letter-spacing:.1em; font-weight:500; margin-bottom:.3rem; }
+
+  .blk { position:relative; font-family:var(--serif); font-size:1rem; line-height:1.68; margin:0 0 1.15rem; padding:.35rem .6rem .35rem .7rem; border-radius:5px; border-left:2px solid transparent; cursor:text; }
+  .blk:hover { background:var(--sunken); border-left-color:var(--rule); }
+  .blk.sel { background:var(--accent-soft); border-left-color:var(--accent); }
+  .blk .tag { position:absolute; left:-3.6rem; top:.5rem; font-family:var(--mono); font-size:.62rem; color:var(--faint); opacity:0; font-variant-numeric:tabular-nums; }
+  .blk:hover .tag, .blk.sel .tag { opacity:1; }
+  @media (max-width:1240px) { .blk .tag { display:none; } }
+
+  /* clickable spans inside prose */
+  .cite, .val { cursor:pointer; border-radius:2px; padding:0 .05em; }
+  .cite { border-bottom:2px solid var(--verbatim); }
+  .cite.para { border-bottom-color:var(--paraphrase); }
+  .cite.miss { border-bottom-color:var(--missing); }
+  .cite:hover { background:var(--accent-soft); }
+  .val { font-variant-numeric:tabular-nums; background:var(--computed-soft); border-bottom:1px dotted var(--computed); color:var(--ink); }
+  .val:hover { background:var(--computed); color:var(--surface); }
+
+  /* exhibit blocks */
+  .exhibit { border:1px solid var(--rule); border-radius:6px; padding:.85rem; background:var(--sunken); cursor:pointer; margin:0 0 1.15rem; }
+  .exhibit:hover { border-color:var(--computed); }
+  .exhibit.sel { border-color:var(--accent); background:var(--accent-soft); }
+  .exhibit .cap { font-family:var(--serif); font-size:.85rem; color:var(--muted); margin-bottom:.6rem; }
+  .exhibit .cap b { color:var(--ink); font-weight:600; }
+  table.mini { width:100%; border-collapse:collapse; font-family:var(--serif); font-size:.8rem; font-variant-numeric:tabular-nums; }
+  table.mini th { text-align:right; font-weight:600; font-size:.7rem; color:var(--muted); border-bottom:1px solid var(--ink); padding:.25rem .4rem; }
+  table.mini th:first-child, table.mini td:first-child { text-align:left; }
+  table.mini td { text-align:right; padding:.22rem .4rem; border-bottom:1px solid var(--rule); }
+  table.mini tr:last-child td { border-bottom:1px solid var(--ink); }
+  .sup { color:var(--muted); font-size:.85em; }
+
+  /* margin comment pins */
+  .pin { position:absolute; right:-1.5rem; top:.45rem; width:1.05rem; height:1.05rem; border-radius:50%; border:1.5px solid var(--rule); background:var(--surface); font-family:var(--ui); font-size:.6rem; font-weight:700; color:var(--muted); display:grid; place-items:center; cursor:pointer; }
+  .pin.queued { border-color:var(--paraphrase); color:var(--paraphrase); }
+  .pin.working { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+  .pin.done { border-color:var(--verbatim); color:var(--verbatim); }
+  .pin.ext { border-color:var(--computed); color:var(--computed); background:var(--computed-soft); font-size:.52rem; top:1.9rem; }
+  @media (max-width:1240px) { .pin { right:-1.2rem; } }
+
+  /* ---------- inspector ---------- */
+  .insp { display:flex; flex-direction:column; min-height:0; background:var(--surface); overflow:hidden; }
+  .insp-head { padding:.85rem 1rem .6rem; border-bottom:1px solid var(--rule); }
+  .eyebrow { display:flex; align-items:center; gap:.45rem; font-size:.64rem; text-transform:uppercase; letter-spacing:.09em; font-weight:600; color:var(--faint); }
+  .chip { font-family:var(--ui); font-size:.62rem; letter-spacing:.04em; padding:.1rem .4rem; border-radius:3px; border:1px solid currentColor; }
+  .chip.v { color:var(--verbatim); } .chip.p { color:var(--paraphrase); }
+  .chip.m { color:var(--missing); } .chip.c { color:var(--computed); }
+  .insp-head h4 { font-family:var(--serif); font-size:1rem; margin:.35rem 0 .1rem; font-weight:600; }
+  .insp-head .sub { font-size:.74rem; color:var(--muted); font-family:var(--mono); }
+  .jump { margin-top:.45rem; font:inherit; font-size:.7rem; padding:.2rem .45rem; border-radius:4px; border:1px solid var(--accent); background:var(--accent-soft); color:var(--accent); cursor:pointer; }
+
+  .tabs { display:flex; gap:.1rem; padding:0 .6rem; border-bottom:1px solid var(--rule); background:var(--sunken); }
+  .tabs button { appearance:none; background:none; border:0; border-bottom:2px solid transparent; padding:.5rem .55rem; font:inherit; font-size:.76rem; color:var(--muted); cursor:pointer; }
+  .tabs button:hover { color:var(--ink); }
+  .tabs button.on { color:var(--ink); border-bottom-color:var(--accent); font-weight:500; }
+  .tabs .count { font-family:var(--mono); font-size:.64rem; color:var(--faint); margin-left:.2rem; }
+
+  .insp-body { padding:1rem; overflow:auto; flex:1; display:flex; flex-direction:column; gap:.9rem; }
+  .card { border:1px solid var(--rule); border-radius:6px; overflow:hidden; }
+  .card > header { padding:.5rem .7rem; background:var(--sunken); border-bottom:1px solid var(--rule); font-size:.72rem; color:var(--muted); display:flex; justify-content:space-between; gap:.5rem; align-items:center; }
+  .card > header b { color:var(--ink); font-weight:600; font-family:var(--mono); font-size:.72rem; }
+  .card .in { padding:.7rem; }
+
+  .quote { font-family:var(--serif); font-size:.87rem; line-height:1.6; border-left:2px solid var(--verbatim); padding-left:.7rem; margin:0 0 .55rem; }
+  .quote.p { border-left-color:var(--paraphrase); }
+  .meta { font-size:.72rem; color:var(--muted); }
+  .meta a { color:var(--accent); text-decoration:none; }
+  .meta a:hover { text-decoration:underline; }
+
+  pre { margin:0; font-family:var(--mono); font-size:.72rem; line-height:1.55; overflow-x:auto; padding:.7rem; background:var(--sunken); }
+  pre .k { color:var(--accent); } pre .s { color:var(--verbatim); } pre .c { color:var(--faint); font-style:italic; }
+  pre .hl { background:var(--computed-soft); border-left:2px solid var(--computed); display:block; margin-left:-.7rem; padding-left:calc(.7rem - 2px); }
+
+  .src { font-family:var(--mono); font-size:.74rem; line-height:1.6; padding:.7rem; background:var(--sunken); border:0; width:100%; color:var(--ink); resize:vertical; min-height:7rem; }
+  .src:focus { outline:2px solid var(--accent); outline-offset:-2px; }
+  .inputtok { background:var(--computed-soft); color:var(--computed); border-radius:2px; padding:0 .15em; }
+
+  /* Insert belongs to the editor, because the editor is the only surface with a cursor. */
+  .insbar { display:flex; align-items:center; gap:.35rem; flex-wrap:wrap; padding:.5rem .7rem; border-top:1px solid var(--rule); background:var(--surface); }
+  .insbar > span { font-size:.68rem; text-transform:uppercase; letter-spacing:.07em; color:var(--faint); font-weight:600; margin-right:.15rem; }
+  .insbar em { font-style:normal; font-size:.7rem; color:var(--faint); margin-left:auto; }
+  .ins { font:inherit; font-size:.72rem; padding:.2rem .5rem; border-radius:4px; border:1px dashed var(--rule); background:transparent; color:var(--muted); cursor:pointer; }
+  .ins:hover { border-style:solid; border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+
+  .stat { display:grid; grid-template-columns:auto 1fr; gap:.3rem .8rem; font-size:.75rem; }
+  .stat dt { color:var(--muted); } .stat dd { margin:0; font-family:var(--mono); font-variant-numeric:tabular-nums; }
+
+  .chat { display:flex; flex-direction:column; gap:.5rem; }
+  .msg { border:1px solid var(--rule); border-radius:6px; padding:.55rem .7rem; font-size:.8rem; }
+  .msg .who { font-size:.66rem; text-transform:uppercase; letter-spacing:.07em; color:var(--faint); font-weight:600; margin-bottom:.2rem; }
+  .msg.bb { background:var(--accent-soft); border-color:transparent; }
+  .composer { display:flex; flex-direction:column; gap:.4rem; }
+  .composer textarea { font:inherit; font-size:.8rem; padding:.5rem .6rem; border:1px solid var(--rule); border-radius:6px; background:var(--surface); color:var(--ink); resize:vertical; min-height:3.6rem; }
+  .row { display:flex; gap:.4rem; align-items:center; }
+  .btn { font:inherit; font-size:.76rem; padding:.35rem .7rem; border-radius:5px; border:1px solid var(--rule); background:var(--surface); color:var(--ink); cursor:pointer; }
+  .btn.pri { background:var(--accent); border-color:var(--accent); color:#fff; }
+  :root[data-theme="dark"] .btn.pri, :root:not([data-theme="light"]) .btn.pri { color:var(--ground); }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .btn.pri { color:#fff; } }
+  .btn:hover { border-color:var(--accent); }
+  .hintline { font-size:.72rem; color:var(--muted); }
+
+  .locked { display:flex; gap:.5rem; align-items:flex-start; font-size:.76rem; color:var(--muted); background:var(--computed-soft); border:1px solid var(--computed); border-radius:6px; padding:.6rem .7rem; }
+  .locked b { color:var(--ink); }
+
+  .hit { display:flex; flex-direction:column; gap:.12rem; padding:.5rem .6rem; border:1px solid var(--rule); border-radius:5px; margin-bottom:.4rem; cursor:pointer; font-size:.78rem; }
+  .hit:last-child { margin-bottom:0; }
+  .hit:hover { border-color:var(--accent); background:var(--accent-soft); }
+  .hit b { font-weight:600; }
+  .hit span { color:var(--muted); font-size:.74rem; line-height:1.4; }
+  .hit em { font-style:italic; }
+  .hit .ok, .hit .warn { font-family:var(--mono); font-size:.65rem; margin-top:.15rem; }
+  .hit .ok { color:var(--verbatim); }
+  .hit .warn { color:var(--paraphrase); }
+
+  .slash { display:flex; flex-direction:column; gap:.1rem; }
+  .cmd { display:flex; gap:.6rem; align-items:baseline; padding:.34rem .45rem; border-radius:5px; cursor:pointer; }
+  .cmd:hover { background:var(--accent-soft); }
+  .cmd b { font-family:var(--mono); font-size:.76rem; color:var(--accent); font-weight:600; min-width:4.6rem; }
+  .cmd span { font-size:.76rem; color:var(--muted); }
+
+  .add { position:absolute; left:-1.5rem; top:.38rem; width:1.1rem; height:1.1rem; border-radius:4px; border:1px solid var(--rule); background:var(--surface); color:var(--muted); font-size:.8rem; line-height:1; display:grid; place-items:center; cursor:pointer; opacity:0; padding:0; }
+  .blk:hover .add, .blk.sel .add, .add:focus-visible { opacity:1; }
+  .add:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+  @media (max-width:1240px) { .add { left:-1.2rem; } }
+
+  .legend { max-width:80rem; margin:0 auto; padding:0 1.5rem 3rem; display:grid; grid-template-columns:repeat(auto-fit,minmax(15rem,1fr)); gap:1.1rem; }
+  .legend section { border-top:2px solid var(--rule); padding-top:.7rem; }
+  .legend h4 { font-size:.68rem; text-transform:uppercase; letter-spacing:.09em; color:var(--faint); margin:0 0 .35rem; font-weight:600; }
+  .legend p { margin:0; font-size:.82rem; color:var(--muted); line-height:1.55; }
+  .legend b { color:var(--ink); font-weight:600; }
+
+  /* =====================================================================
+     SKINS. The manuscript column is read for hours, so it stays legible in
+     every one of these; the chrome is where a design language is allowed to
+     have an opinion.
+     ===================================================================== */
+
+  /* ---- GLASS: the Kanban Pro language, applied only where it belongs.
+     A tinted ground, a translucent inspector that lets the page show through,
+     and the 1px inset top highlight that actually reads as glass. Commits to
+     one world rather than trying to be two. ---- */
+  /* One hue drives the whole space, the way Arc does it. The status colours
+     below deliberately do NOT rotate with it: green, amber and red mean
+     something here, so they cannot be part of the decoration. */
+  .app[data-skin="glass"] {
+    --h:214; --sat:1;
+    --ground:hsl(var(--h) calc(40% * var(--sat)) 15%); --surface:hsl(var(--h) calc(38% * var(--sat)) 20%); --sunken:hsl(var(--h) calc(42% * var(--sat)) 13%);
+    --ink:hsl(var(--h) calc(30% * var(--sat)) 94%); --muted:hsl(var(--h) calc(22% * var(--sat)) 72%); --faint:hsl(var(--h) calc(18% * var(--sat)) 55%);
+    --rule:hsl(var(--h) calc(30% * var(--sat)) 29%);
+    --accent:hsl(var(--h) calc(62% * var(--sat)) 60%); --accent-soft:hsl(var(--h) calc(38% * var(--sat)) 26%);
+    --verbatim:#5FC59A; --paraphrase:#E3B458; --missing:#EC8377; --computed:#A99BE8;
+    --computed-soft:hsl(var(--h) calc(26% * var(--sat)) 24%);
+    background:
+      radial-gradient(120% 90% at 12% -10%, hsl(var(--h) calc(44% * var(--sat)) 27%) 0%, transparent 60%),
+      radial-gradient(100% 80% at 100% 0%, hsl(calc(var(--h) + 24) calc(40% * var(--sat)) 22%) 0%, transparent 55%),
+      hsl(var(--h) calc(42% * var(--sat)) 14%);
+    border-color:hsl(var(--h) calc(30% * var(--sat)) 29%); border-radius:14px;
+    box-shadow: 0 24px 70px rgba(6,12,26,.55), 0 1px 0 rgba(255,255,255,.07) inset;
+  }
+  .app[data-skin="glass"] .titlebar,
+  .app[data-skin="glass"] .toolbar { background:rgba(255,255,255,.03); backdrop-filter:blur(14px); border-color:rgba(255,255,255,.07); }
+  .app[data-skin="glass"] .rail { background:hsl(var(--h) calc(46% * var(--sat)) 10% / .38); backdrop-filter:blur(14px); border-color:rgba(255,255,255,.06); }
+  .app[data-skin="glass"] .doc { background:transparent; border-color:rgba(255,255,255,.06); }
+  /* the inspector is the piece he asked about: it floats over the page */
+  .app[data-skin="glass"] .insp {
+    background:hsl(var(--h) calc(38% * var(--sat)) 27% / .5); backdrop-filter:blur(24px) saturate(140%);
+    box-shadow: -1px 0 0 rgba(255,255,255,.08), 0 1px 0 rgba(255,255,255,.09) inset;
+  }
+  .app[data-skin="glass"] .insp-head,
+  .app[data-skin="glass"] .tabs { background:transparent; border-color:rgba(255,255,255,.08); }
+  .app[data-skin="glass"] .card {
+    background:rgba(255,255,255,.045); border-color:rgba(255,255,255,.09); border-radius:10px;
+    box-shadow: 0 1px 0 rgba(255,255,255,.07) inset;
+  }
+  .app[data-skin="glass"] .card > header { background:rgba(255,255,255,.035); border-color:rgba(255,255,255,.07); }
+  .app[data-skin="glass"] pre,
+  .app[data-skin="glass"] .src { background:hsl(var(--h) calc(48% * var(--sat)) 7% / .46); color:var(--ink); }
+  .app[data-skin="glass"] .btn,
+  .app[data-skin="glass"] .tb { border-radius:999px; border-color:rgba(255,255,255,.14); background:rgba(255,255,255,.05); box-shadow:0 1px 0 rgba(255,255,255,.08) inset; }
+  .app[data-skin="glass"] .btn.pri { background:var(--accent); border-color:hsl(var(--h) 62% 68%); color:hsl(var(--h) 45% 12%); }
+  .app[data-skin="glass"] .ins { border-radius:999px; }
+  .app[data-skin="glass"] .blk { font-size:1.02rem; }
+  .app[data-skin="glass"] .blk:hover { background:rgba(255,255,255,.05); }
+  .app[data-skin="glass"] .blk.sel { background:hsl(var(--h) 55% 55% / .18); }
+  .app[data-skin="glass"] .exhibit { background:rgba(255,255,255,.04); border-radius:10px; }
+
+
+  /* ---- the switcher, part of the mockup page rather than the app ---- */
+  .skinctl { margin-left:auto; display:flex; align-items:center; gap:.3rem; }
+  .skinctl .tb[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); background:var(--accent-soft); font-weight:500; }
+  .hues { display:flex; align-items:center; padding-left:.45rem; margin-left:.2rem; border-left:1px solid var(--rule); }
+  .hue { width:1rem; height:1rem; padding:0; border-radius:50%; cursor:pointer; border:1px solid rgba(255,255,255,.25); background:hsl(var(--sw) 62% 58%); }
+  .hue:hover { transform:scale(1.15); }
+  .wheel { width:1.6rem; height:1.6rem; padding:0; border:1px solid var(--rule); border-radius:6px; background:none; cursor:pointer; }
+  .wheel::-webkit-color-swatch-wrapper { padding:2px; }
+  .wheel::-webkit-color-swatch { border:none; border-radius:4px; }
+  .hue[aria-pressed="true"] { box-shadow:0 0 0 2px var(--surface), 0 0 0 3.5px hsl(var(--sw) 62% 58%); }
+  .tb-meta { margin-left:0 !important; }
+
+  .savestate { display:flex; align-items:center; gap:.4rem; font-size:.74rem; color:var(--muted); padding:.5rem .7rem; }
+  .savestate i { width:.45rem; height:.45rem; border-radius:50%; background:var(--verbatim); flex:none; }
+  .savestate.held i { background:var(--paraphrase); }
+  .savestate b { color:var(--ink); font-weight:600; }
+
+  .skins { max-width:80rem; margin:0 auto; padding:.4rem 1.5rem 0; display:flex; align-items:center; gap:.4rem; flex-wrap:wrap; }
+  .skins span { font-size:.68rem; text-transform:uppercase; letter-spacing:.08em; color:var(--faint); font-weight:600; margin-right:.2rem; }
+  .skins button { font:inherit; font-size:.76rem; padding:.3rem .7rem; border-radius:6px; border:1px solid var(--rule); background:var(--surface); color:var(--muted); cursor:pointer; }
+  .skins button:hover { border-color:var(--accent); color:var(--accent); }
+  .skins button[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:500; }
+  .skins em { font-style:normal; font-size:.72rem; color:var(--faint); margin-left:.3rem; }
+
+  .restored, .dirtybar { font-size:.74rem; border-radius:6px; padding:.45rem .6rem; line-height:1.4; }
+  .restored { background:var(--accent-soft); color:var(--ink); border:1px solid var(--accent); }
+  .dirtybar { background:var(--computed-soft); color:var(--muted); border:1px solid var(--computed); }
+  .dirtybar span { font-weight:700; color:var(--computed); text-transform:uppercase; font-size:.66rem; letter-spacing:.07em; margin-right:.3rem; }
+  .blk.dirty::after, .exhibit.dirty::after {
+    content:''; position:absolute; right:-1.5rem; top:2.1rem;
+    width:.5rem; height:.5rem; border-radius:50%; background:var(--computed);
+  }
+  .blk.dirty { position:relative; }
+</style>
+
+<div class="note">
+  <h1>Manuscriptor, planned interface</h1>
+  <p>Real prose from <span class="kbd">estonia-ecm</span> and <span class="kbd">qutub-india</span>. Everything is clickable and each thing opens a different inspector: citations show their evidence, violet numbers and exhibits show the code and data behind them, paragraphs show their unflattened source and their thread. Insert lives on the paragraph editor, under the source box, because that is the only surface with a cursor. Try the table, the violet numbers, the <span class="kbd">R2</span> pin, and <span class="kbd">Read in comments</span>, then scroll the middle column while the inspector stays put.</p>
+</div>
+
+<div class="app" data-skin="instrument">
+  <div class="titlebar">
+    <div class="dots"><i></i><i></i><i></i></div>
+    <span class="name">Manuscriptor</span>
+    <span class="path">estonia-ecm/latex/main.tex</span>
+    <span class="live"><span class="pulse"></span> watching · 3 comments open</span>
+  </div>
+
+  <div class="toolbar">
+    <span class="grp">
+      <button class="tb" type="button">Compile PDF</button>
+      <button class="tb" type="button">Compile Word</button>
+    </span>
+    <span class="sep"></span>
+    <span class="grp">
+      <button class="tb accent" type="button" data-open="import:reviewer">Read in comments…</button>
+    </span>
+    <span class="skinctl"><button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button><button class="tb" type="button" data-skin="glass" aria-pressed="false">Glass</button><span class="hues" hidden><input type="color" class="wheel" value="#5597DB" aria-label="custom space colour" hidden></span></span><span class="tb-meta">saved 2s ago · main.pdf 41pp</span>
+  </div>
+
+  <div class="cols">
+    <!-- ================= rail ================= -->
+    <nav class="rail">
+      <div>
+        <h3>Manuscript</h3>
+        <div class="outline">
+          <a href="#" class="on">Introduction <span class="n">2</span></a>
+          <a href="#">Conceptual model</a>
+          <a href="#">Context and intervention</a>
+          <a href="#">Data and approach <span class="n">1</span></a>
+          <a href="#">Results</a>
+          <a href="#">Discussion</a>
+          <a href="#">Appendix A–G</a>
+        </div>
+      </div>
+      <div>
+        <h3>Sources</h3>
+        <div class="outline">
+          <a href="#">24 tex files</a>
+          <a href="#">84 citations</a>
+          <a href="#">31 computed values</a>
+          <a href="#">9 exhibits</a>
+        </div>
+      </div>
+      <div>
+        <h3>To do <span class="n" style="float:right">3 of 7</span></h3>
+        <div class="todo">
+          <label><input type="checkbox" checked> <s>Rewrite the opening on mechanism</s></label>
+          <label><input type="checkbox" checked> <s>Resolve the 3 red citations</s></label>
+          <label><input type="checkbox"> Answer R2 on identification <em>11</em></label>
+          <label><input type="checkbox"> Add female subsample to Table 2</label>
+          <label><input type="checkbox"> Re-run 12_sp_quality after filter fix</label>
+          <label><input type="checkbox"> Cut Discussion by 400 words</label>
+        </div>
+        <button class="tb" type="button" style="margin-top:.45rem;width:100%;font-size:.7rem">Add a task</button>
+      </div>
+
+      <div>
+        <h3>Activity</h3>
+        <div class="feed">
+          <div class="ev now"><b>Working</b> on your note at ¶4<time>now</time></div>
+          <div class="ev">Rewrote ¶2, one sentence<time>2 min ago</time></div>
+          <div class="ev">Reloaded, <b>table2_cross.tex</b> changed on disk<time>14 min ago</time></div>
+          <div class="ev">Flattened 24 files, 0 unresolved<time>16 min ago</time></div>
+        </div>
+      </div>
+    </nav>
+
+    <!-- ================= manuscript ================= -->
+    <main class="doc">
+      <div class="doc-inner">
+        <h2><span class="lbl">Section 1</span>Introduction</h2>
+
+        <p class="blk" data-kind="para" data-id="b-3f2a" tabindex="0">
+          <span class="tag">¶1 · 212</span>
+          Effective primary healthcare requires high-quality curative care, but as the global burden of non-communicable diseases grows, that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes <span class="cite" data-kind="cite" data-key="nishtar2018time" tabindex="0">(Nishtar et al. 2018)</span>. A key element of the implicit contract in much of healthcare has been the responsiveness of healthcare providers to patient signals of acute ill-health. A well-known problem that this creates is the lack of attention to prevention of disease <span class="cite para" data-kind="cite" data-key="rose1992strategy" tabindex="0">(Kenkel 2011; Fineberg 2013; Rose 1992)</span>.
+        </p>
+
+        <p class="blk" data-kind="para" data-id="b-91c4" tabindex="0">
+          <span class="tag">¶2 · 214</span>
+          <span class="pin done" title="resolved">✓</span>
+          While the program ran, ordering the new test rose by <span class="val" data-kind="value" data-key="test_ordering_pp" tabindex="0">10.4pp</span> against a control mean of <span class="val" data-kind="value" data-key="test_ordering_base" tabindex="0">4.1%</span>, and correct case management improved by <span class="val" data-kind="value" data-key="correct_p2_wb" tabindex="0">0.096</span> standard deviations. Three years after the subsidy was withdrawn, only the test-ordering effect persisted.
+        </p>
+
+        <div class="exhibit" data-kind="exhibit" data-id="b-tab2" tabindex="0">
+          <div class="cap"><b>Table 2.</b> Cross-sectional impacts on chronic care management</div>
+          <table class="mini">
+            <thead><tr><th>Outcome</th><th>Control</th><th>ECM</th><th>Diff</th></tr></thead>
+            <tbody>
+              <tr><td>Any chronic consult</td><td>0.412</td><td>0.483</td><td>0.071<span class="sup">***</span></td></tr>
+              <tr><td>Hyperlipidemia dx</td><td>0.187</td><td>0.230</td><td>0.043<span class="sup">**</span></td></tr>
+              <tr><td>Statin prescription</td><td>0.094</td><td>0.122</td><td>0.028<span class="sup">**</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p class="blk" data-kind="para" data-id="b-77ad" tabindex="0">
+          <span class="tag">¶3 · 198</span>
+          <span class="pin working" title="being addressed">●</span>
+          <span class="pin ext" title="from Reviewer 2" data-open="review:r2">R2</span>
+          Inadequate prevention or delayed detection leads to worse health for patients and higher costs and foregone economic benefits for society, yet it remains neglected by multiple actors within the health system <span class="cite miss" data-kind="cite" data-key="unmatched2019" tabindex="0">(Aiyar and Sen 2019)</span>.
+        </p>
+
+        <p class="blk" data-kind="para" data-id="b-c410" tabindex="0">
+          <span class="tag">&para;4 &middot; 216</span>
+          The care relationship between doctors and patients may be critical because, in many health domains, timely identification and management of underlying health issues requires a more personal and structured understanding of an individual patient's overall health. Optimal treatment frequently begins before a patient raises acute symptomatic concerns or even experiences notable discomfort.
+        </p>
+
+        <p class="blk" data-kind="para" data-id="b-2b8e" tabindex="0">
+          <span class="tag">&para;5 &middot; 218</span>
+          The ECM program thereby attempts to shift patient care from an implicit &lsquo;reactive&rsquo; focus on salient ailments to an explicit contract between the patient and doctor based on a forward-looking and broader &lsquo;holistic&rsquo; conception of the welfare of the patient <span class="cite" data-kind="cite" data-key="nishtar2018time" tabindex="0">(World Bank 2017)</span>. This has dual potential effects on the relationship between doctors and their patients, analogous to the twin problems of clarity and credibility.
+        </p>
+
+        <h2 style="margin-top:2rem"><span class="lbl">Section 2</span>A conceptual model</h2>
+
+        <p class="blk" data-kind="para" data-id="b-9d31" tabindex="0">
+          <span class="tag">&para;6 &middot; 224</span>
+          It may be natural to wonder why, if relational contracting is clearly beneficial, it is not already widely implemented. In some health systems, institutional features, such as fee-for-service payment for primary care physicians, may limit incentives to adopt this approach. But even where payers and providers have better-aligned incentives, our findings demonstrate that health systems may be forgoing important benefits.
+        </p>
+
+        <p class="blk" data-kind="para" data-id="b-5a77" tabindex="0">
+          <span class="tag">&para;7 &middot; 226</span>
+          Inadequate prevention or delayed detection leads to worse health for patients and higher costs and foregone economic benefits for society. We estimate the implied return at <span class="val" data-kind="value" data-key="correct_p2_wb" tabindex="0">0.096</span> standard deviations per enrolled patient-year, which is small relative to the screening literature but concentrated among the mild-risk group.
+        </p>
+      </div>
+    </main>
+
+    <!-- ================= inspector ================= -->
+    <aside class="insp">
+      <div class="insp-head">
+        <div class="eyebrow" id="eyebrow">Evidence <span class="chip v">verbatim</span></div>
+        <h4 id="ititle">Time to deliver on NCDs</h4>
+        <div class="sub" id="isub">nishtar2018time · main.tex:212</div>
+        <button class="jump" id="jump" type="button" hidden>↑ back to the paragraph this belongs to</button>
+      </div>
+      <div class="tabs" id="tabs"></div>
+      <div class="insp-body" id="ibody"></div>
+    </aside>
+  </div>
+</div>
+
+<div class="legend">
+  <section>
+    <h4>Underlines carry meaning</h4>
+    <p>A citation's underline is its evidence status: <b>green</b> the quote is verbatim in the cited paper, <b>amber</b> the model reported it but could not match it, <b>red</b> nothing found. Scanning a page tells you where your support is thin before you read a word.</p>
+  </section>
+  <section>
+    <h4>Violet means computed</h4>
+    <p>Every number that arrived through <b>\input</b> from analysis code is marked. That is your no-hardcoded-results rule made visible: an unmarked number in prose is one you typed by hand, and the page will show you that.</p>
+  </section>
+  <section>
+    <h4>The source you edit is unflattened</h4>
+    <p>The Source tab shows <b>\input{...}</b>, never the resolved value. Editing a paragraph can never silently bake a result into the manuscript, because the directive is what you are holding.</p>
+  </section>
+  <section>
+    <h4>Pins show what is happening</h4>
+    <p>A comment is <b>amber</b> while queued, <b>blue</b> while being addressed, <b>green</b> once resolved with a diff to review. Nothing changes under you without a mark in the margin.</p>
+  </section>
+  <section>
+    <h4>Outside markup comes in</h4>
+    <p>A reviewer's PDF or a coauthor's tracked changes are matched to paragraphs by <b>the text they highlighted</b>, not the page number, so the anchors survive your rewrites. Anything that cannot be placed confidently waits in a tray rather than attaching itself to the wrong sentence.</p>
+  </section>
+  <section>
+    <h4>Compiling stays where you are</h4>
+    <p>PDF and Word run the tools you already have, so the Word file opens in Word and the tables keep their rules. You never leave the page to find out what the manuscript looks like.</p>
+  </section>
+  <section>
+    <h4>Nothing typed is ever discarded</h4>
+    <p>A draft belongs to its <b>block</b>, not to the panel showing it. Click away, scroll off, let a file change land underneath you: the text is still there when you come back, and the paragraph carries a dot until you save or discard. The inspector rebuilds constantly, so this had to be true by construction rather than by remembering to be careful.</p>
+  </section>
+  <section>
+    <h4>Three columns, three scrolls</h4>
+    <p>The window never scrolls; each column does. That is what lets you hold a claim in view while reading the code behind it, and it is why a redraw has to restore <b>three</b> scroll positions, not one.</p>
+  </section>
+  <section>
+    <h4>The inspector is pinned, not following</h4>
+    <p>Scrolling away never clears what you opened. The header offers a way back to the paragraph it belongs to instead, because scrolling to check something should not throw away the thing you were checking.</p>
+  </section>
+  <section>
+    <h4>Inserting is a multi-file write</h4>
+    <p>A citation writes <b>three</b> places, a number writes three, an exhibit writes four. A text editor can only ever do the manuscript line, which is why insertion has to live in the tool rather than beside it.</p>
+  </section>
+  <section>
+    <h4>There is no field for a literal number</h4>
+    <p>You cannot type a result, because the only way a value enters the manuscript is as an <b>\input</b> of a file some script wrote. Your standing rule is enforced by there being no other door.</p>
+  </section>
+</div>
+
+<script>
+(function () {
+  var DATA = {
+    'cite:nishtar2018time': {
+      eyebrow: 'Evidence', chip: ['v','verbatim'],
+      title: 'Time to deliver on non-communicable diseases',
+      sub: 'nishtar2018time · main.tex:212',
+      tabs: [
+        {name:'Evidence', n:2, body: [
+          {card:'Supporting passages', right:'Lancet 2018', html:
+            '<p class="quote">The rising burden of NCDs demands health systems that identify and manage chronic conditions continuously, rather than responding only to acute presentations.</p>' +
+            '<p class="quote p">Continuity of care between episodes is the weakest link in most primary care systems.</p>' +
+            '<p class="meta">Verbatim check passed on passage 1. Passage 2 could not be matched in the indexed fulltext, so treat it with care.</p>'},
+          {card:'Source', right:'Zotero', html:
+            '<p class="meta">Nishtar S, Niinistö S, Sirisena M, et al. <em>The Lancet</em>, 2018.<br>' +
+            '<a href="#">doi:10.1016/S0140-6736(18)30675-5</a> · <a href="#">open in Zotero</a> · <a href="#">open PDF at p.2</a></p>'}
+        ]},
+        {name:'Claim', body:[{card:'The sentence this supports', html:
+          '<p class="quote" style="border-left-color:var(--accent)">…that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes.</p>' +
+          '<p class="meta">Introduction, paragraph 1. Two other claims in this manuscript cite the same paper.</p>'}]},
+        {name:'Note', body:[{card:'Leave a note on this citation', html: composer('Is this the right cite for the continuity claim, or should it be Kruk?')}]}
+      ]
+    },
+    'cite:rose1992strategy': {
+      eyebrow:'Evidence', chip:['p','paraphrase'],
+      title:'Three cited works, one claim', sub:'kenkel · fineberg · rose1992strategy · main.tex:212',
+      tabs:[{name:'Evidence', n:3, body:[
+        {card:'rose1992strategy', right:'verbatim', html:'<p class="quote">A large number of people at small risk may give rise to more cases of disease than the small number who are at high risk.</p>'},
+        {card:'kenkel', right:'paraphrase', html:'<p class="quote p">Preventive effort responds weakly to expected health returns.</p><p class="meta">Not matched verbatim. The cited chapter has no indexed fulltext in your library.</p>'},
+        {card:'fineberg', right:'no fulltext', html:'<p class="meta">Not in your Zotero library. <a href="#">Try to fetch</a> · <a href="#">search Crossref</a></p>'}
+      ]}]
+    },
+    'cite:unmatched2019': {
+      eyebrow:'Evidence', chip:['m','missing'],
+      title:'No supporting passage found', sub:'unmatched2019 · main.tex:198',
+      tabs:[{name:'Evidence', body:[
+        {card:'Why this is red', html:'<p class="meta">This key resolves to no item in your Zotero library, so no fulltext could be searched. The claim it supports is the strongest normative sentence in the introduction, which makes it worth resolving before submission.</p>'},
+        {card:'Next', html:'<div class="row"><button class="btn pri">Search Crossref</button><button class="btn">Fetch into Zotero</button><button class="btn">Mark intentional</button></div>'}
+      ]}]
+    },
+    'value:correct_p2_wb': {
+      eyebrow:'Provenance', chip:['c','computed'],
+      title:'0.096', sub:'exhibits/correct_p2_wb.tex · written by code/12_sp_quality.R',
+      tabs:[
+        {name:'Code', body:[
+          {card:'What this is', html:'<p class="meta"><b>Effect on correct case management, in standard deviations.</b> The post &times; treat interaction from the standardized-patient quality model. Reported in &para;2 and again in &para;7 of the conceptual section.</p>'},
+          {card:'code/12_sp_quality.R', right:'lines 116–124', html:
+            '<pre><span class="c">### Using feols() for faster clustered standard errors</span>\n' +
+            '<span class="hl">m2 = <span class="k">feols</span>(correct ~ post*treat | provider + round,\n' +
+            '          data = sp, cluster = ~provider)</span>\n\n' +
+            '<span class="k">write_frag</span>(<span class="s">"exhibits/correct_p2_wb.tex"</span>,\n' +
+            '           <span class="k">fmt</span>(m2$coeftable[<span class="s">"post:treat"</span>, <span class="s">"Estimate"</span>], 3))</pre>'},
+          {card:'What produced this value', html:
+            '<dl class="stat"><dt>Estimate</dt><dd>0.096</dd><dt>Std. error</dt><dd>0.041</dd><dt>p</dt><dd>0.019</dd>' +
+            '<dt>Observations</dt><dd>2,344</dd><dt>Clusters</dt><dd>394 providers</dd><dt>Fixed effects</dt><dd>provider, round</dd></dl>'}
+        ]},
+        {name:'Data', body:[
+          {card:'Estimation sample', right:'sp', html:
+            '<dl class="stat"><dt>Source</dt><dd>data/clean/sp_rounds.rds</dd><dt>Rows in</dt><dd>3,108</dd>' +
+            '<dt>Dropped</dt><dd>764 (no consent)</dd><dt>Rows used</dt><dd>2,344</dd><dt>Built by</dt><dd>code/03_sp_clean.R</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem"><a href="#">Open the sample</a> · <a href="#">Show the drop chain</a></p>'},
+          {card:'Ask about this estimate', html: composer('Re-run this without the round fixed effects and tell me if it moves.')}
+        ]},
+        {name:'History', body:[
+          {card:'This value over time', html:
+            '<dl class="stat"><dt>today</dt><dd>0.096</dd><dt>12 Jul</dt><dd>0.094</dd><dt>28 Jun</dt><dd>0.088</dd><dt>03 Jun</dt><dd>0.111</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">Changed when <b>03_sp_clean.R</b> tightened the consent filter on 28 June. The manuscript never had to be edited, because the number is an <b>\\input</b>.</p>'}
+        ]}
+      ]
+    },
+    'value:test_ordering_pp': {
+      eyebrow:'Provenance', chip:['c','computed'],
+      title:'10.4pp', sub:'exhibits/test_ordering_pp.tex · written by code/09_did_main.R',
+      tabs:[{name:'Code', body:[
+        {card:'What this is', html:'<p class="meta"><b>Effect on ordering the new test in round 2, percentage points.</b> The round-2 term of the event-study interaction, taken while the subsidy was still running.</p>'},
+        {card:'code/09_did_main.R', right:'lines 78–84', html:
+          '<pre><span class="hl">did = <span class="k">feols</span>(ordered_xpert ~ i(round, treat, ref = 1) | provider + round,\n' +
+          '           data = panel, cluster = ~provider)</span>\n\n' +
+          '<span class="k">write_frag</span>(<span class="s">"exhibits/test_ordering_pp.tex"</span>, <span class="k">pp</span>(did, <span class="s">"round::2:treat"</span>))</pre>'},
+        {card:'Reported alongside', html:'<p class="meta">Control mean 4.1% comes from the same script, line 91. Both appear in this sentence, so a change to the sample moves them together.</p>'}
+      ]}]
+    },
+    'value:test_ordering_base': {
+      eyebrow:'Provenance', chip:['c','computed'],
+      title:'4.1%', sub:'exhibits/test_ordering_base.tex · written by code/09_did_main.R',
+      tabs:[{name:'Code', body:[{card:'What this is', html:'<p class="meta"><b>Control-group mean of test ordering at baseline.</b> The denominator the effect beside it is scaled against, so the two move together when the sample changes.</p>'},
+        {card:'code/09_did_main.R', right:'line 91', html:
+        '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/test_ordering_base.tex"</span>,\n' +
+        '           <span class="k">pct</span>(<span class="k">mean</span>(panel$ordered_xpert[panel$treat == 0 &amp; panel$round == 1])))</span></pre>'}]}]
+    },
+    'exhibit:b-tab2': {
+      eyebrow:'Provenance', chip:['c','generated'],
+      title:'Table 2', sub:'latex/tables/table2_cross.tex · \\include from main.tex:198',
+      tabs:[
+        {name:'Code', body:[
+          {card:'code/07_table2_cross.R', right:'lines 116–133', html:
+            '<pre><span class="c">### Using feols() for faster clustered standard errors</span>\n' +
+            '<span class="hl">m1 = <span class="k">feols</span>(var_dummy ~ age + gender + var_pre_dummy + ecm_include_patient\n' +
+            '           | block_categorical, data = d, cluster = ~clinic)</span>\n' +
+            'm2 = <span class="k">feols</span>(var ~ age + gender + var_pre + ecm_include_patient\n' +
+            '           | block_categorical, data = d, cluster = ~clinic)\n\n' +
+            '<span class="k">esttab</span>(m1, m2, file = <span class="s">"latex/tables/table2_cross.tex"</span>)</pre>'},
+          {card:'Chain', html:
+            '<dl class="stat"><dt>Data</dt><dd>data/clean/patients.rds</dd><dt>Built by</dt><dd>code/01_id_clean.R</dd>' +
+            '<dt>Model</dt><dd>OLS, clinic-clustered</dd><dt>Sample</dt><dd>18,204 patients</dd><dt>Last run</dt><dd>14 min ago</dd></dl>'}
+        ]},
+        {name:'Source', body:[
+          {card:'This block is generated', html:
+            '<div class="locked"><span>⊘</span><div><b>Not editable here.</b> This file is written by <b>code/07_table2_cross.R</b>. Editing it would hardcode a result into the manuscript. Change the script and the table will rebuild.</div></div>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn pri">Open the script</button><button class="btn">Re-run it</button></div>'}
+        ]},
+        {name:'Note', body:[{card:'Leave a note on this exhibit', html: composer('Add the female subsample as a third panel, and move the p-values to a note.')}]}
+      ]
+    },
+    'para:b-91c4': {
+      eyebrow:'Paragraph', chip:null,
+      title:'Results summary, ¶2', sub:'main.tex:214 · 3 computed values inside',
+      tabs:[
+        {name:'Source', body:[
+          {card:'main.tex:214', right:'editable', html:
+            '<div class="src" contenteditable="true" spellcheck="false">While the program ran, ordering the new test rose by <span class="inputtok">\\input{exhibits/test_ordering_pp}</span> against a control mean of <span class="inputtok">\\input{exhibits/test_ordering_base}</span>, and correct case management improved by <span class="inputtok">\\input{exhibits/correct_p2_wb}</span> standard deviations. Three years after the subsidy was withdrawn, only the test-ordering effect persisted.</div>' +
+            '<div class="insbar"><span>At cursor</span><button class="ins" type="button" data-open="insert:cite">Citation</button><button class="ins" type="button" data-open="insert:value">Number</button><button class="ins" type="button" data-open="insert:cite">Footnote</button><em>or type / in the box</em></div><div class="insbar"><span>After this &para;</span><button class="ins" type="button" data-open="insert:exhibit">Exhibit</button><button class="ins" type="button" data-open="insert:exhibit">New paragraph</button><em>a new block, not an edit to this one</em></div>' +
+            '<p class="meta" style="padding:.5rem .7rem .6rem">You are holding the unflattened source, so the three <b>\\input</b> directives survive your edit. The values shown in the page are read from those files.</p>'},
+          {card:'', html:'<div class="savestate"><i></i><span><b>Saved</b> to main.tex, 2s ago. Writes on a pause, not a button.</span></div>' + '<div class="savestate held"><i></i><span><b>Held</b> when the LaTeX will not parse, so a half-typed \\citep{ never reaches the file or the compiler.</span></div>' + '<div class="row" style="padding:0 .7rem .6rem"><button class="btn">Revert to last good</button><button class="btn">History</button></div>'}
+        ]},
+        {name:'Chat', n:1, body:[
+          {card:'Ask for a change here', right:'⌘↵', html: composer('Cut the second sentence and fold the persistence claim into the first. Type / to insert a citation, a number, or an exhibit.')},
+          {card:'Earlier', html:
+            '<div class="chat">' +
+            '<div class="msg bb"><div class="who">You · 11:04</div>Tighten this. The second sentence says the same thing as the last sentence of ¶1.</div>' +
+            '<div class="msg"><div class="who">Claude · 11:05 · resolved</div>Cut the restatement and folded the persistence claim into the first sentence. One sentence shorter, no numbers touched.</div>' +
+            '</div>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn">Show the diff</button><button class="btn">Undo</button></div>'}
+        ]},
+        {name:'References', n:3, body:[
+          {card:'Computed values', right:'3', html:
+            '<div class="hit" data-open="value:test_ordering_pp"><b>10.4pp &middot; test_ordering_pp</b>' +
+            '<span>Effect on ordering the new test in round 2, in percentage points. The round-2 term of the event-study interaction.</span>' +
+            '<span class="ok">09_did_main.R:78 &middot; feols, provider-clustered</span></div>' +
+            '<div class="hit" data-open="value:test_ordering_base"><b>4.1% &middot; test_ordering_base</b>' +
+            '<span>Control-group mean of test ordering at baseline. The denominator for the effect reported beside it.</span>' +
+            '<span class="ok">09_did_main.R:91 &middot; sample mean</span></div>' +
+            '<div class="hit" data-open="value:correct_p2_wb"><b>0.096 &middot; correct_p2_wb</b>' +
+            '<span>Effect on correct case management, in standard deviations. The post &times; treat interaction.</span>' +
+            '<span class="ok">12_sp_quality.R:120 &middot; feols, two-way FE</span></div>' +
+            '<p class="meta" style="margin-top:.5rem">Two scripts feed this paragraph. Re-running either changes what it says, with the manuscript untouched.</p>'},
+          {card:'Citations', right:'0', html:
+            '<p class="meta">None. A results paragraph reporting three effects with no citation is normal, but worth a look if you meant to benchmark against prior estimates.</p>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn" data-open="insert:cite">Insert a citation</button></div>'}
+        ]}
+      ]
+    },
+    'insert:cite': {
+      eyebrow:'Insert', chip:['v','citation'],
+      title:'Add a citation here', sub:'at the cursor · main.tex:214',
+      tabs:[
+        {name:'Find it', body:[
+          {card:'', html: chooser('cite')},
+          {card:'Search', right:'your library first', html:
+            '<div class="composer"><textarea style="min-height:2.4rem">persistence of provider behavior change after subsidy withdrawal</textarea></div>' +
+            '<p class="meta" style="margin-top:.5rem">Searches your Zotero library first, then Crossref and OpenAlex for anything it does not already hold.</p>'},
+          {card:'In your library', right:'2 of 2,140', html:
+            '<div class="hit"><b>Das, Holla, Mohpal &amp; Muralidharan (2016)</b><span>Quality and accountability in health care delivery. <em>AER</em> 106(12).</span>' +
+            '<span class="ok">has indexed fulltext</span></div>' +
+            '<div class="hit"><b>Mohanan et al. (2021)</b><span>Effect of a large-scale training program on provider practice. <em>JHE</em> 78.</span>' +
+            '<span class="ok">has indexed fulltext</span></div>'},
+          {card:'Not in your library', right:'Crossref', html:
+            '<div class="hit"><b>Björkman Nyqvist &amp; Svensson (2024)</b><span>Sustaining provider effort after donor exit. <em>JDE</em> 168.</span>' +
+            '<span class="warn">would be created: Zotero record + PDF fetch</span></div>'}
+        ]},
+        {name:'What gets written', n:3, body:[
+          {card:'Three coordinated writes', html:
+            '<dl class="stat"><dt>main.tex:214</dt><dd>\\citep{dasholla2016quality}</dd>' +
+            '<dt>references.bib</dt><dd>+1 entry, from the Crossref record</dd>' +
+            '<dt>Zotero</dt><dd>unchanged, already held</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">A text editor could only do the first line. Doing all three is why insertion lives here.</p>'},
+          {card:'Identity gate', right:'must pass', html:
+            '<dl class="stat"><dt>DOI</dt><dd>10.1257/aer.20151138</dd><dt>Crossref</dt><dd>agrees</dd>' +
+            '<dt>OpenAlex</dt><dd>agrees</dd><dt>Zotero</dt><dd>present, fulltext indexed</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">Nothing is inserted on a key that fails this. A citation you cannot resolve is a citation you cannot check.</p>'},
+          {card:'Then, immediately', html:
+            '<p class="meta">The evidence pass runs on the new pair, so the underline is colored before you look away. If the paper does not actually say what the sentence claims, you find out now rather than from a referee.</p>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn pri">Insert and check</button><button class="btn">Insert only</button></div>'}
+        ]}
+      ]
+    },
+    'insert:value': {
+      eyebrow:'Insert', chip:['c','computed value'],
+      title:'Add a number here', sub:'at the cursor · main.tex:214',
+      tabs:[
+        {name:'Where from', body:[
+          {card:'', html: chooser('value')},
+          {card:'You cannot type it', html:
+            '<div class="locked"><span>⊘</span><div><b>There is no field for a literal number.</b> A value enters the manuscript only as an <b>\\input</b> of a file that some script wrote. That is your standing rule, enforced by there being no other way to do it.</div></div>'},
+          {card:'From a model you have already run', right:'3 fitted', html:
+            '<div class="hit"><b>did · code/09_did_main.R:78</b><span>ordered_xpert ~ i(round, treat) | provider + round</span>' +
+            '<span class="ok">14 estimable quantities</span></div>' +
+            '<div class="hit"><b>m2 · code/12_sp_quality.R:120</b><span>correct ~ post*treat | provider + round</span>' +
+            '<span class="ok">9 estimable quantities</span></div>' +
+            '<div class="hit"><b>m1 · code/07_table2_cross.R:116</b><span>var_dummy ~ age + gender + ecm | block</span>' +
+            '<span class="ok">22 estimable quantities</span></div>'},
+          {card:'Or describe one that does not exist yet', html:
+            '<div class="composer"><textarea style="min-height:2.6rem">the control-group mean of statin prescription in the year before enrollment</textarea>' +
+            '<div class="row"><button class="btn pri">Write the code for it</button></div></div>' +
+            '<p class="meta">Claude adds the estimation to the right script, runs it, and the fragment appears. You review the code, not the number.</p>'}
+        ]},
+        {name:'What gets written', n:3, body:[
+          {card:'Three coordinated writes', html:
+            '<dl class="stat"><dt>exhibits/statin_base.tex</dt><dd>new file, the value alone</dd>' +
+            '<dt>code/07_table2_cross.R</dt><dd>+1 write_frag line, after the model</dd>' +
+            '<dt>main.tex:214</dt><dd>\\input{exhibits/statin_base}</dd></dl>'},
+          {card:'The line added to the script', html:
+            '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/statin_base.tex"</span>,\n' +
+            '           <span class="k">pct</span>(<span class="k">mean</span>(d$statin_pre[d$ecm_include_patient == 0])))</span></pre>'},
+          {card:'', html:
+            '<p class="meta">Inserting a number is a change to your analysis code. That is the point: the manuscript and the chain move together, and re-running the script updates the sentence.</p>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn pri">Write, run, insert</button><button class="btn">Show me the diff first</button></div>'}
+        ]}
+      ]
+    },
+    'insert:exhibit': {
+      eyebrow:'Insert', chip:['c','exhibit'],
+      title:'Add a table or figure', sub:'a new block after ¶2 · main.tex:215',
+      tabs:[
+        {name:'What kind', body:[
+          {card:'', html: chooser('exhibit')},
+          {card:'Start from', html:
+            '<div class="hit"><b>An existing script</b><span>Add a panel or a column to a table you already produce.</span><span class="ok">7 scripts write exhibits</span></div>' +
+            '<div class="hit"><b>A model already fitted</b><span>Format an existing estimation into a new table.</span><span class="ok">3 fitted</span></div>' +
+            '<div class="hit"><b>A description</b><span>Say what it should show and let Claude write the script.</span><span class="warn">new file in code/</span></div>'},
+          {card:'Describe it', html:
+            '<div class="composer"><textarea style="min-height:2.6rem">Table 2 again but split by patient sex, with the interaction p-value in a note.</textarea>' +
+            '<div class="row"><button class="btn pri">Draft the script</button></div></div>'}
+        ]},
+        {name:'What gets written', n:4, body:[
+          {card:'Four coordinated writes', html:
+            '<dl class="stat"><dt>code/07b_table2_by_sex.R</dt><dd>new script, reusing 07\'s sample</dd>' +
+            '<dt>latex/tables/table2_by_sex.tex</dt><dd>generated output</dd>' +
+            '<dt>main.tex:215</dt><dd>a new block: float + \\include + caption + \\label{tab:by_sex}</dd>' +
+            '<dt>runfile.R</dt><dd>+1 line, so it rebuilds with everything else</dd></dl>'},
+          {card:'Numbering', html:
+            '<p class="meta">This is a <b>new block</b> spliced between ¶2 and what follows, not an edit to either. Where the float actually prints is up to LaTeX and its placement options, so it may appear a page away from where the source sits. Placing it here renumbers what follows. Every <b>\\ref</b> to a later exhibit is checked against the recompiled <b>.aux</b>, and anything that fails to resolve is flagged rather than left as a silent <b>??</b> in the PDF.</p>'},
+          {card:'', html:
+            '<p class="meta">The <b>runfile</b> line matters more than it looks. An exhibit that is not in the runfile is an exhibit that goes stale the next time you rebuild, and you will not notice until a referee does.</p>' +
+            '<div class="row" style="margin-top:.6rem"><button class="btn pri">Draft it all</button><button class="btn">Script only, place it later</button></div>'}
+        ]}
+      ]
+    },
+    'import:reviewer': {
+      eyebrow:'Read in comments', chip:null,
+      title:'Bring outside markup in', sub:'PDF annotations, Word tracked changes, a response letter',
+      tabs:[
+        {name:'Import', body:[
+          {card:'Drop a marked-up file', html:
+            '<p class="meta">Every annotation is matched back to the paragraph it sits on, using the text the commenter highlighted rather than the page number. It arrives as a chat in the margin, attributed, exactly like one of your own.</p>' +
+            '<div class="row" style="margin-top:.65rem;flex-wrap:wrap"><button class="btn pri">Choose a file…</button>' +
+            '<span class="hintline">.pdf · .docx · a response letter</span></div>'},
+          {card:'Recently read in', right:'2 files', html:
+            '<dl class="stat"><dt>JPubE_R2.pdf</dt><dd>31 anchored · 2 unplaced</dd>' +
+            '<dt>hannah_track_changes.docx</dt><dd>18 anchored · 0 unplaced</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">Unplaced comments sit in a tray rather than guessing a paragraph. Nothing is attached to the wrong sentence.</p>'}
+        ]},
+        {name:'Export', body:[
+          {card:'Compile', html:
+            '<dl class="stat"><dt>PDF</dt><dd>xelatex, 3 passes + bibtex</dd><dt>Word</dt><dd>pandoc-docx, citations resolved</dd>' +
+            '<dt>Submission</dt><dd>flat zip, .bbl generated</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">These run the skills you already have, so the Word file opens in Word and the tables keep their rules.</p>' +
+            '<div class="row" style="margin-top:.6rem;flex-wrap:wrap"><button class="btn pri">Compile PDF</button><button class="btn">Compile Word</button><button class="btn">Build submission zip</button></div>'}
+        ]}
+      ]
+    },
+    'review:r2': {
+      eyebrow:'Reviewer 2', chip:['c','imported'],
+      title:'On the neglect claim', sub:'JPubE_R2.pdf p.4 · anchored to main.tex:198',
+      tabs:[
+        {name:'Comment', n:1, body:[
+          {card:'What they highlighted', html:
+            '<p class="quote" style="border-left-color:var(--computed)">…yet it remains neglected by multiple actors within the health system.</p>' +
+            '<div class="msg" style="margin-top:.6rem"><div class="who">Reviewer 2 · JPubE_R2.pdf p.4</div>' +
+            '"Neglected by whom? The paper asserts this repeatedly but never distinguishes patient-side from provider-side underinvestment. The cited work does not settle it."</div>'},
+          {card:'Matched here because', html:
+            '<p class="meta">The highlighted text matches this paragraph at 0.97 similarity. Page 4 of the PDF corresponds to <b>main.tex:198</b> through the same block map the margin uses, so the anchor survives you rewriting anything above it.</p>'},
+          {card:'', html:'<div class="row" style="flex-wrap:wrap"><button class="btn pri">Address it</button><button class="btn">Draft a response</button><button class="btn">Defer to the letter</button></div>'}
+        ]},
+        {name:'All from R2', n:31, body:[
+          {card:'Across the manuscript', html:
+            '<dl class="stat"><dt>Introduction</dt><dd>6</dd><dt>Data and approach</dt><dd>11</dd><dt>Results</dt><dd>9</dd>' +
+            '<dt>Discussion</dt><dd>3</dd><dt>Unplaced</dt><dd>2</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">Eleven of thirty-one touch identification, which is where this revision will actually be won or lost.</p>'}
+        ]}
+      ]
+    },
+    'para:b-3f2a': {
+      eyebrow:'Paragraph', chip:null,
+      title:'Opening paragraph, ¶1', sub:'main.tex:212 · 2 citation groups',
+      tabs:[
+        {name:'Source', body:[{card:'main.tex:212', right:'editable', html:
+          '<div class="src" contenteditable="true" spellcheck="false">Effective primary healthcare requires high-quality curative care, but as the global burden of non-communicable diseases grows, that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes \\citep{nishtar2018time}.</div>' + '<div class="insbar"><span>At cursor</span><button class="ins" type="button" data-open="insert:cite">Citation</button><button class="ins" type="button" data-open="insert:value">Number</button><button class="ins" type="button" data-open="insert:cite">Footnote</button><em>or type / in the box</em></div><div class="insbar"><span>After this &para;</span><button class="ins" type="button" data-open="insert:exhibit">Exhibit</button><button class="ins" type="button" data-open="insert:exhibit">New paragraph</button><em>a new block, not an edit to this one</em></div>'},
+          {card:'', html:'<div class="savestate"><i></i><span><b>Saved</b> to main.tex, 2s ago. Writes on a pause, not a button.</span></div>' + '<div class="savestate held"><i></i><span><b>Held</b> when the LaTeX will not parse, so a half-typed \\citep{ never reaches the file or the compiler.</span></div>' + '<div class="row" style="padding:0 .7rem .6rem"><button class="btn">Revert to last good</button><button class="btn">History</button></div>'}]},
+        {name:'Chat', body:[{card:'Ask for a change here', right:'⌘↵', html: composer('Open on the mechanism rather than the burden. This reads like a WHO report.')}]},
+        {name:'References', n:4, body:[
+          {card:'Citations', right:'4', html:
+            '<div class="hit" data-open="cite:nishtar2018time"><b>nishtar2018time</b>' +
+            '<span>Nishtar et al., <em>Lancet</em> 2018. Supports the continuity-of-care premise.</span>' +
+            '<span class="ok">verbatim</span></div>' +
+            '<div class="hit" data-open="cite:rose1992strategy"><b>kenkel &middot; fineberg &middot; rose1992strategy</b>' +
+            '<span>Three works on the underinvestment in prevention, cited as a group.</span>' +
+            '<span class="warn">1 verbatim &middot; 1 paraphrase &middot; 1 without fulltext</span></div>'},
+          {card:'Computed values', right:'0', html:
+            '<p class="meta">None. This paragraph makes only qualitative claims.</p>'},
+          {card:'', html:'<div class="row" style="flex-wrap:wrap"><button class="btn" data-open="insert:cite">Insert a citation</button><button class="btn" data-open="insert:value">Insert a number</button><button class="btn" data-open="insert:exhibit">Insert an exhibit</button></div>'}]}
+      ]
+    },
+    'para:b-77ad': {
+      eyebrow:'Paragraph', chip:null,
+      title:'Neglect claim, ¶3', sub:'main.tex:198 · being addressed',
+      tabs:[
+        {name:'Chat', n:1, body:[{card:'', html:
+          '<div class="chat">' +
+          '<div class="msg bb"><div class="who">You · 11:09</div>This citation is doing a lot of work it cannot support. Either find a better one or soften the claim.</div>' +
+          '<div class="msg"><div class="who">Claude · working</div>Reading the three nearest candidates in your library before touching the sentence.</div>' +
+          '</div>'}]},
+        {name:'Source', body:[{card:'main.tex:198', right:'locked while working', html:
+          '<div class="locked"><span>◔</span><div><b>Locked.</b> This block is being edited right now. It unlocks when the change lands, and you will see the diff.</div></div>'}]}
+      ]
+    }
+  };
+
+  function chooser(active) {
+    var opts = [['cite','Citation'],['value','Number'],['exhibit','Exhibit']];
+    return '<div class="row" style="flex-wrap:wrap">' + opts.map(function (o) {
+      return '<button class="btn' + (o[0] === active ? ' pri' : '') + '" data-open="insert:' + o[0] + '">' + o[1] + '</button>';
+    }).join('') + '<span class="hintline">or type / in any chat</span></div>';
+  }
+
+
+  function composer(placeholder) {
+    return '<div class="composer"><textarea placeholder="' + placeholder + '"></textarea>' +
+      '<div class="row"><button class="btn pri">Send</button><button class="btn">Comment only</button>' +
+      '<span class="hintline">⌘↵ to send</span></div></div>';
+  }
+
+  var eyebrow = document.getElementById('eyebrow'),
+      ititle  = document.getElementById('ititle'),
+      isub    = document.getElementById('isub'),
+      tabsEl  = document.getElementById('tabs'),
+      bodyEl  = document.getElementById('ibody');
+
+  function render(key, tabIndex) {
+    var d = DATA[key];
+    if (!d) return;
+    tabIndex = tabIndex || 0;
+    eyebrow.innerHTML = d.eyebrow + (d.chip ? ' <span class="chip ' + d.chip[0] + '">' + d.chip[1] + '</span>' : '');
+    ititle.textContent = d.title;
+    isub.textContent = d.sub;
+
+    tabsEl.innerHTML = '';
+    d.tabs.forEach(function (t, i) {
+      var b = document.createElement('button');
+      b.innerHTML = t.name + (t.n ? ' <span class="count">' + t.n + '</span>' : '');
+      if (i === tabIndex) b.className = 'on';
+      b.addEventListener('click', function () { render(key, i); });
+      tabsEl.appendChild(b);
+    });
+
+    renderCards(d, tabIndex);
+    restoreDrafts(key, tabIndex);
+  }
+
+  // Nothing you have typed is ever thrown away by navigation or by a redraw.
+  // A draft belongs to its block, not to the panel that happens to be showing.
+  var drafts = {};
+
+  function restoreDrafts(key, tabIndex) {
+    var fields = bodyEl.querySelectorAll('.src, textarea');
+    Array.prototype.forEach.call(fields, function (f, i) {
+      var k = key + '|' + tabIndex + '|' + i,
+          isArea = f.tagName === 'TEXTAREA';
+      if (drafts[k] != null) {
+        if (isArea) { f.value = drafts[k]; } else { f.innerHTML = drafts[k]; }
+        flagRestored();
+      }
+      f.addEventListener('input', function () {
+        drafts[k] = isArea ? f.value : f.innerHTML;
+        if (anchorEl) anchorEl.classList.add('dirty');
+        showDirty();
+      });
+    });
+  }
+
+  function flagRestored() {
+    var b = document.createElement('div');
+    b.className = 'restored';
+    b.textContent = 'Unsaved draft restored. It was kept when you clicked away.';
+    bodyEl.insertBefore(b, bodyEl.firstChild);
+  }
+
+  function showDirty() {
+    if (bodyEl.querySelector('.dirtybar')) return;
+    var b = document.createElement('div');
+    b.className = 'dirtybar';
+    b.innerHTML = '<span>Unsaved</span> kept on this block until you save or discard it';
+    bodyEl.insertBefore(b, bodyEl.firstChild);
+  }
+
+  function renderCards(d, tabIndex) {
+    bodyEl.innerHTML = d.tabs[tabIndex].body.map(function (c) {
+      return '<div class="card">' +
+        (c.card ? '<header><b>' + c.card + '</b>' + (c.right ? '<span>' + c.right + '</span>' : '') + '</header>' : '') +
+        '<div class="in" style="' + (c.html.indexOf('<pre') === 0 || c.html.indexOf('<div class="src"') === 0 ? 'padding:0' : '') + '">' +
+        c.html + '</div></div>';
+    }).join('');
+  }
+
+  // The inspector is PINNED, not following. Scrolling the manuscript never
+  // clears what you are examining; it only offers you the way back. Otherwise
+  // scrolling away to check something would throw away the thing you opened.
+  var anchorEl = null,
+      docEl = document.querySelector('.doc'),
+      jumpBtn = document.getElementById('jump'),
+      io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (en) {
+          if (en.target === anchorEl) jumpBtn.hidden = en.isIntersecting;
+        });
+      }, { root: docEl, threshold: 0 });
+
+  jumpBtn.addEventListener('click', function () {
+    if (!anchorEl) return;
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    anchorEl.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
+  });
+
+  function select(el, key) {
+    document.querySelectorAll('.sel').forEach(function (n) { n.classList.remove('sel'); });
+    var blk = el.closest('.blk, .exhibit');
+    if (blk) blk.classList.add('sel');
+    if (anchorEl) io.unobserve(anchorEl);
+    anchorEl = blk || null;
+    jumpBtn.hidden = true;
+    if (anchorEl) io.observe(anchorEl);
+    render(key, 0);
+  }
+
+  document.addEventListener('click', function (e) {
+    var opener = e.target.closest('[data-open]');
+    if (opener) { e.stopPropagation(); select(opener, opener.dataset.open); return; }
+    var cite = e.target.closest('.cite');
+    if (cite) { e.stopPropagation(); select(cite, 'cite:' + cite.dataset.key); return; }
+    var val = e.target.closest('.val');
+    if (val) { e.stopPropagation(); select(val, 'value:' + val.dataset.key); return; }
+    var ex = e.target.closest('.exhibit');
+    if (ex) { select(ex, 'exhibit:' + ex.dataset.id); return; }
+    var blk = e.target.closest('.blk');
+    if (blk) { select(blk, 'para:' + blk.dataset.id); return; }
+  });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var t = e.target;
+    if (t.classList && (t.classList.contains('cite') || t.classList.contains('val') ||
+        t.classList.contains('blk') || t.classList.contains('exhibit'))) {
+      e.preventDefault(); t.click();
+    }
+  });
+
+  render('cite:nishtar2018time', 0);
+})();
+</script>
+<script>
+(function () {
+  var app = document.querySelector('.app'),
+      hues = document.querySelector('.hues'),
+      wheel = document.querySelector('.wheel');
+
+  document.querySelectorAll('.skinctl .tb').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.skinctl .tb').forEach(function (o) { o.setAttribute('aria-pressed', 'false'); });
+      b.setAttribute('aria-pressed', 'true');
+      app.dataset.skin = b.dataset.skin;
+      hues.hidden = b.dataset.skin !== 'glass';
+    });
+  });
+
+  wheel.hidden = false;
+  wheel.addEventListener('input', function () {
+    var hs = hexToHS(wheel.value);
+    app.style.setProperty('--h', hs.h);
+    app.style.setProperty('--sat', hs.s.toFixed(2));
+  });
+
+  // A picked colour carries its saturation as well as its hue, so a muted slate
+  // gives a muted space instead of snapping back to a saturated one.
+  function hexToHS(hex) {
+    var r = parseInt(hex.slice(1, 3), 16) / 255,
+        g = parseInt(hex.slice(3, 5), 16) / 255,
+        b = parseInt(hex.slice(5, 7), 16) / 255,
+        max = Math.max(r, g, b), min = Math.min(r, g, b),
+        d = max - min, l = (max + min) / 2, h = 0, sat = 0;
+    if (d) {
+      sat = d / (1 - Math.abs(2 * l - 1));
+      if (max === r) h = 60 * (((g - b) / d) % 6);
+      else if (max === g) h = 60 * ((b - r) / d + 2);
+      else h = 60 * ((r - g) / d + 4);
+      if (h < 0) h += 360;
+    }
+    return { h: Math.round(h), s: Math.max(0.25, Math.min(1.6, sat * 1.35)) };
+  }
+})();
+</script>

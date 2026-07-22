@@ -25,8 +25,8 @@ State = Literal["queued", "working", "done", "orphaned"]
 
 
 @dataclass(frozen=True)
-class Thread:
-    """A comment plus every state record that followed it, folded."""
+class Chat:
+    """One block's conversation: a comment plus every state record that followed."""
 
     id: str
     block: str
@@ -41,11 +41,11 @@ def append(log: Path, record: dict) -> None:
     raise NotImplementedError("M4")
 
 
-def read_threads(log: Path) -> tuple[Thread, ...]:
-    """Fold the append-only log into current thread state."""
+def read_chats(log: Path) -> tuple[Chat, ...]:
+    """Fold the append-only log into current chat state."""
     raise NotImplementedError("M4")
 
 
-def pending(log: Path) -> tuple[Thread, ...]:
-    """Threads awaiting work. This is what a drain reads."""
+def pending(log: Path) -> tuple[Chat, ...]:
+    """Chats awaiting work. This is what a drain reads."""
     raise NotImplementedError("M5")
