@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 
-import pytest
 
 from manuscriptor.render.pandoc import normalize_for_pandoc, render_document
 
