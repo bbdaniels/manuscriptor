@@ -177,6 +177,7 @@ def _block_record(b, html: str, produced: dict, root: Path | None = None) -> dic
             for inc in b.includes
         ],
         "cites": _cites_in_block(html, b.id),
+        "footnotes": _footnotes_in(b.source_text),
         "values": [
             {
                 "key": Path(inc.target).stem,
@@ -187,6 +188,38 @@ def _block_record(b, html: str, produced: dict, root: Path | None = None) -> dic
             for inc in b.includes
         ],
     }
+
+
+def _footnotes_in(source: str) -> list[str]:
+    """The footnotes a block carries, in order.
+
+    Pandoc lifts footnotes to the end of the document, so a reader looking at a
+    paragraph has no way to see what hangs off it without hunting. They belong
+    in the paragraph's own list of references, which is what they are.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        at = source.find("\\footnote", i)
+        if at < 0:
+            return out
+        j = source.find("{", at)
+        if j < 0:
+            return out
+        depth, k = 0, j
+        while k < len(source):
+            if source[k] == "\\":
+                k += 2
+                continue
+            if source[k] == "{":
+                depth += 1
+            elif source[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        out.append(re.sub(r"\s+", " ", source[j + 1 : k]).strip())
+        i = k + 1
 
 
 def _cites_in_block(html: str, block_id: str) -> list[str]:

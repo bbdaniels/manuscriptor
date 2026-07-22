@@ -447,3 +447,10 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #headsave:empty { display: none; }
 #headsave .savestate { padding: .4rem 0 0; }
+
+/* The inspector body is a flex column, so its children shrink below their own
+   content once the stack is taller than the panel, and `overflow: hidden` on a
+   card then clips whatever was squeezed out. A button disappearing off the
+   bottom of its own card is not a layout the panel should be able to produce.
+   Cards keep their height; the panel scrolls. */
+.insp-body > * { flex: 0 0 auto; }

@@ -213,6 +213,7 @@
     blockState: {},         // block id -> queued|working|done|locked
     caret: null,            // {id, start, end, scrollTop}
     back: [],               // where a detour came from, newest last
+    insert: null,           // an insert form open inline on the References tab
     sock: null,
     sockState: 'connecting',
     saveTimer: null,
@@ -453,6 +454,16 @@
       if (S.back.length > 12) S.back.shift();
     }
     select(kind, key, blockId);
+  }
+
+  function openInsert(kind) {
+    S.insert = kind;
+    if (S.sel && S.sel.kind === 'block') { S.tab = 2; renderInspector(); }
+  }
+
+  function closeInsert() {
+    S.insert = null;
+    renderInspector();
   }
 
   function goBack() {
@@ -718,10 +729,43 @@
     return body;
   }
 
+  // Inserting used to replace the whole panel, which meant leaving the
+  // paragraph to add something to it. The form belongs beside the inventory it
+  // adds to, so it opens inline on this tab and closes back to it.
+  function insertInline(kind) {
+    var forms = {
+      cite: ['Insert a citation',
+        'Searches your library first, then Crossref and OpenAlex. Nothing is inserted on a key that fails the identity gate: DOI, Crossref and OpenAlex agreeing, and a Zotero record with indexed fulltext.',
+        'persistence of provider behaviour after subsidy withdrawal',
+        'Writes three places: the \\citep at your cursor, an entry in references.bib, and a Zotero record if it is new.'],
+      value: ['Insert a number',
+        'There is no field for a literal. A value enters the manuscript only as an \\input of a file some script wrote.',
+        'the control-group mean of statin prescription in the year before enrolment',
+        'Writes three places: a new fragment file, a write_frag line in the producing script, and the \\input at your cursor.'],
+      exhibit: ['Insert an exhibit',
+        'A new block after this paragraph, not an edit to it. Where the float finally prints is LaTeX\u2019s decision.',
+        'Table 2 again but split by patient sex, with the interaction p-value in a note',
+        'Writes four places, and the fourth matters most: the runfile line, without which the exhibit goes stale on the next rebuild.'],
+      footnote: ['Insert a footnote',
+        'Spliced at your cursor. It touches no other file, so it lands immediately.',
+        'the text of the note',
+        'Writes one place: \\footnote{} at your cursor in this block.']
+    };
+    var f = forms[kind];
+    if (!f) return '';
+    return card(f[0], 'inline',
+      '<p class="meta">' + esc(f[1]) + '</p>' +
+      '<div class="composer" style="margin-top:.55rem">' +
+      '<textarea data-role="insert" placeholder="' + esc(f[2]) + '"></textarea>' +
+      '<div class="row"><button class="btn pri" type="button" data-act="ins:go">Show me what it will write</button>' +
+      '<button class="btn" type="button" data-act="ins:close">Cancel</button></div></div>' +
+      '<p class="meta" style="margin-top:.5rem">' + esc(f[3]) + '</p>');
+  }
+
   function refsTab(id, b) {
     var values = b.values || [];
     var cites = b.cites || [];
-    var out = '';
+    var out = S.insert ? insertInline(S.insert) : '';
 
     out += card('Computed values', String(values.length),
       values.length
@@ -746,6 +790,15 @@
           }).join('')
         : '<p class="meta">None in this block.</p>' +
           '<div class="row" style="margin-top:.6rem"><button class="btn" data-open="insert:cite">Insert a citation</button></div>');
+
+    var notes = b.footnotes || [];
+    out += card('Footnotes', String(notes.length),
+      notes.length
+        ? notes.map(function (n, i) {
+            return '<div class="hit" style="cursor:default">' +
+              '<b>note ' + (i + 1) + '</b><span>' + esc(n.length > 260 ? n.slice(0, 260) + '…' : n) + '</span></div>';
+          }).join('')
+        : '<p class="meta">None in this block.</p>');
 
     if ((b.includes || []).length) {
       out += card('Include directives', String(b.includes.length),
@@ -1272,6 +1325,8 @@
     if (kind === 'block') { select('block', normId(rest), normId(rest)); return; }
     if (kind === 'cite') { selectDetour('cite', rest, S.sel && S.sel.blockId); return; }
     if (kind === 'value') { selectDetour('value', rest, S.sel && S.sel.blockId); return; }
+    // An insert opens inline on References rather than taking over the panel.
+    if (kind === 'insert') { openInsert(rest); return; }
     selectDetour('panel', key, S.sel && S.sel.blockId);
   }
 
@@ -1358,6 +1413,21 @@
     }
     if (act === 'discard' && id) { clearDraft(id); renderInspector(); return; }
     if (act === 'ins:footnote') { insertAtCursor('\\footnote{}', 1); return; }
+    if (act === 'ins:close') { closeInsert(); return; }
+    if (act === 'ins:go') {
+      var f = ibodyEl.querySelector('[data-role="insert"]');
+      var said = f ? f.value.trim() : '';
+      if (!said) return;
+      // The protocol carries `edit`, which writes one block. A citation, a
+      // number and an exhibit are each a coordinated write across three or four
+      // files, so the request goes to the block's chat rather than pretending a
+      // button can do it. Naming what will happen beats a control that lies.
+      send({ type: 'chat', block: S.sel.key, body: 'Insert a ' + S.insert + ' here: ' + said });
+      closeInsert();
+      S.tab = 1;
+      renderInspector();
+      return;
+    }
     if (act.indexOf('send:') === 0) { sendComposer(act.slice(5)); return; }
     if (act === 'ask:rerun' && id) { select('block', id, id, 1); return; }
     if (act.indexOf('compile:') === 0) {
