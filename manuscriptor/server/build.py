@@ -97,6 +97,7 @@ def build(
     blob = {
         "title": _title(main_tex, post["html"]),
         "path": str(main_tex),
+        "read_only": False,
         "html": post["html"],
         "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir) for b in bl},
         "outline": _outline(bl),

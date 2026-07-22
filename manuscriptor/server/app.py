@@ -40,10 +40,12 @@ HOLDER = "author"
 class Session:
     """One manuscript, its current build, and the clients watching it."""
 
-    def __init__(self, manuscript_dir: Path, *, main: str | None = None, bib: str | None = None):
+    def __init__(self, manuscript_dir: Path, *, main: str | None = None,
+                 bib: str | None = None, read_only: bool = False):
         self.dir = Path(manuscript_dir).resolve()
         self.main = main
         self.bib = bib
+        self.read_only = read_only
         self.log = self.dir / "comments.jsonl"
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
@@ -83,6 +85,9 @@ class Session:
 
     async def on_edit(self, block_id: str, source: str) -> dict:
         """Splice one block back to disk. The watcher handles the redraw."""
+        if self.read_only:
+            return {"type": "held", "block": block_id,
+                    "reason": "This manuscript is open read-only, so nothing here can write to it."}
         block = self.build.by_id.get(block_id)
         if block is None:
             return {"type": "held", "block": block_id, "reason": "unknown block"}
@@ -99,6 +104,9 @@ class Session:
         return {"type": "saved", "block": block_id, "at": chat.now()}
 
     async def on_chat(self, block_id: str, body: str) -> dict:
+        if self.read_only:
+            return {"type": "held", "block": block_id,
+                    "reason": "This manuscript is open read-only, so the comment log is not written either."}
         block = self.build.by_id.get(block_id)
         rec = chat.append(
             self.log,
@@ -271,10 +279,11 @@ def serve(
     open_window: bool = True,
     main: str | None = None,
     bib: str | None = None,
+    read_only: bool = False,
 ) -> None:
     from manuscriptor.server.watch import watch_tree
 
-    session = Session(manuscript_dir, main=main, bib=bib)
+    session = Session(manuscript_dir, main=main, bib=bib, read_only=read_only)
     app = make_app(session)
 
     async def run():
@@ -291,7 +300,7 @@ def serve(
             lambda _paths: asyncio.run_coroutine_threadsafe(session.on_change(), loop),
         )
         b = session.build.blob
-        print(f"manuscriptor  {url}")
+        print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "
               f"{b['stats']['cites']} citations · {b['stats']['values']} computed values")
         diag = b.get("diagnostics", {})

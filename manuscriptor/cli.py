@@ -98,6 +98,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         open_window=not args.no_window,
         main=args.main,
         bib=args.bib,
+        read_only=args.read_only,
     )
     return 0
 
@@ -211,6 +212,8 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--no-window", action="store_true", help="Do not open a window; just serve")
     p_serve.add_argument("--main", help="Main .tex filename")
     p_serve.add_argument("--bib", help="Bibliography filename")
+    p_serve.add_argument("--read-only", action="store_true",
+                         help="Render and browse without the manuscript ever being written to.")
     p_serve.set_defaults(func=cmd_serve)
 
     p_blocks = sub.add_parser("blocks", help="Print the block table for a manuscript (flatten and segment only).")

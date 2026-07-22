@@ -18,8 +18,18 @@ The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edi
 | `manuscriptor proc` | M5, the drain, not yet built |
 
 ```bash
-manuscriptor serve ~/Projects/estonia-ecm/latex
+manuscriptor serve ~/Projects/manuscriptor-demo/latex          # a copy, edit freely
+manuscriptor serve ~/Projects/estonia-ecm/latex --read-only    # a real one, safely
 ```
+
+`serve` is read-write: an edit in the page is written to the `.tex` file on a
+typing pause. `--read-only` renders and browses without any path reaching the
+filesystem, not the manuscript and not the comment log, so pointing it at real
+work is safe by construction rather than by remembering.
+
+`~/Projects/manuscriptor-demo` is a copy of estonia-ecm kept as its own git
+repo. Break it however you like and `git -C ~/Projects/manuscriptor-demo
+checkout .` puts it back.
 
 Not yet built: the drain (`proc` and the wake job), so chats land in
 `comments.jsonl` and nothing reads them; descriptions for computed values; the

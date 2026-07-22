@@ -155,3 +155,42 @@ def test_insert_at_cursor_refuses_an_unplaced_caret():
     fn = fn[: fn.index("\n  }")]
     assert "caretKnown" in fn, "insertAtCursor must not trust an unplaced caret"
     assert "src.value.length" in fn, "and must fall back to the end, never the start"
+
+
+# ------------------------------------------------------------- read-only mode
+
+
+def test_read_only_refuses_every_write(tmp_path):
+    """Pointing the editor at a real manuscript should be safe by construction,
+    not by remembering. In read-only mode no path may reach the filesystem."""
+    import asyncio
+
+    manuscript(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(tmp_path, read_only=True)
+    before = (tmp_path / "main.tex").read_text(encoding="utf-8")
+    bid = next(b.id for b in s.build.blocks if b.editable)
+
+    reply = asyncio.run(s.on_edit(bid, "REWRITTEN"))
+    assert reply["type"] == "held"
+    assert "read-only" in reply["reason"].lower()
+    assert (tmp_path / "main.tex").read_text(encoding="utf-8") == before
+
+    chat_reply = asyncio.run(s.on_chat(bid, "a note"))
+    assert chat_reply["type"] == "held"
+    assert not (tmp_path / "comments.jsonl").exists(), "not even the log"
+
+
+def test_read_write_is_still_the_default(tmp_path):
+    import asyncio
+
+    manuscript(tmp_path)
+    from manuscriptor.server.app import Session
+
+    s = Session(tmp_path)
+    bid = next(b.id for b in s.build.blocks if b.editable)
+    src = s.build.by_id[bid].source_text
+    reply = asyncio.run(s.on_edit(bid, src + " edited."))
+    assert reply["type"] == "saved"
+    assert "edited." in (tmp_path / "main.tex").read_text(encoding="utf-8")
