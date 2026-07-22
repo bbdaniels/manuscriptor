@@ -70,7 +70,9 @@ def cmd_blocks(args: argparse.Namespace) -> int:
 def cmd_build(args: argparse.Namespace) -> int:
     from importlib import resources
     from jinja2 import Template
+
     from manuscriptor.server import build as build_mod
+    from manuscriptor.templates.ext import load as _extensions
 
     out = Path(args.output).resolve() if args.output else None
     b = build_mod.build(Path(args.manuscript).resolve(), main=args.main, bib=args.bib, output_dir=out)
@@ -79,7 +81,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
     css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
     js = resources.files("manuscriptor.templates.static").joinpath("viewer.js").read_text(encoding="utf-8")
-    page = Template(tpl).render(ms=b.blob, styles_css=css, viewer_js=js)
+    page = Template(tpl).render(ms=b.blob, styles_css=css, viewer_js=js, extensions=_extensions())
     (out / "index.html").write_text(page, encoding="utf-8")
 
     st = b.blob["stats"]

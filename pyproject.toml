@@ -33,7 +33,7 @@ where = ["."]
 include = ["manuscriptor*"]
 
 [tool.setuptools.package-data]
-manuscriptor = ["templates/*.j2", "templates/static/*"]
+manuscriptor = ["templates/*.j2", "templates/static/*", "templates/static/ext/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

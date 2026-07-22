@@ -276,6 +276,7 @@
     ticker: [],             // what actually happened, newest first
     tickerKey: '',          // so a refresh ages the entries without re-animating
     caret: null,            // {id, start, end, scrollTop}
+    extView: null,          // an extension's panel, when one is open
     back: [],               // where a detour came from, newest last
     insert: null,           // an insert form open inline on the References tab
     sock: null,
@@ -570,6 +571,7 @@
     if (S.sel.kind === 'block') view = viewBlock(S.sel.key);
     else if (S.sel.kind === 'cite') view = viewCite(S.sel.key);
     else if (S.sel.kind === 'value') view = viewValue(S.sel.key);
+    else if (S.sel.kind === 'ext' && S.extView) view = S.extView.build(api.ext);
     else view = viewPanel(S.sel.key);
     if (!view) return;
 
@@ -658,7 +660,9 @@
         { name: 'Source', body: sourceTab(id, b) },
         { name: 'Chat', n: chat.length || 0, body: chatTab(id, chat) },
         { name: 'References', n: values.length + cites.length || 0, body: refsTab(id, b) }
-      ]
+      ].concat(EXT.map(function (e) {
+        return e.tab ? e.tab(id, b, api.ext) : null;
+      }).filter(Boolean))
     };
   }
 
@@ -1381,6 +1385,10 @@
 
   function handle(msg) {
     if (!msg || !msg.type) return;
+    for (var e = 0; e < EXT.length; e++) {
+      var fr = EXT[e].frame && EXT[e].frame[msg.type];
+      if (fr) { try { fr(msg, api.ext); } catch (err) { /* one extension must not break the page */ } }
+    }
     switch (msg.type) {
       case 'patch':
         onPatch(msg);
@@ -1574,6 +1582,11 @@
   // ------------------------------------------------------------------ events
 
   function openKey(key) {
+    for (var e = 0; e < EXT.length; e++) {
+      var fn = EXT[e].open && EXT[e].open[key];
+      if (fn) { S.extView = { key: key, build: fn }; select('ext', key, S.sel && S.sel.blockId); return; }
+    }
+
     var parts = String(key).split(':');
     var kind = parts[0];
     var rest = parts.slice(1).join(':');
@@ -1627,7 +1640,13 @@
     var act = e.target.closest('[data-act]');
     if (act) {
       e.preventDefault(); e.stopPropagation();
-      doAct(act.getAttribute('data-act'));
+      var name = act.getAttribute('data-act');
+      var claimed = false;
+      for (var e = 0; e < EXT.length; e++) {
+        var fn = EXT[e].act && EXT[e].act[name];
+        if (fn) { claimed = true; try { fn(api.ext); } catch (err) { /* ignore */ } }
+      }
+      if (!claimed) doAct(name);
       return;
     }
 
@@ -1838,6 +1857,45 @@
   api.agentState = function () {
     return { queue: S.queue.slice(), ticker: S.ticker.slice() };
   };
+
+  /* ------------------------------------------------------------ extensions
+
+     Four features want to add a panel, a toolbar action or a frame handler,
+     and four of them editing this file would be four sets of conflicting
+     edits to one 1400-line module. An extension registers instead, in its own
+     script, and is handed exactly what it needs.
+
+       MSViewer.extend({
+         name: 'compile',
+         act: {'compile:pdf': fn},          // data-act handlers
+         open: {'review': fn},              // data-open panels -> view object
+         frame: {'compiled': fn},           // inbound websocket frames
+         tab: function (id, block) {...}    // an extra inspector tab, or null
+       })
+
+     The viewer calls these; extensions never reach into S. Anything an
+     extension needs that is not passed to it is a gap in this contract, and
+     the fix is to widen the contract rather than to reach around it. */
+  var EXT = [];
+
+  api.extend = function (ext) {
+    if (!ext || !ext.name) return;
+    EXT.push(ext);
+    if (S.sel) renderInspector();
+  };
+
+  api.ext = {
+    send: send,
+    escape: esc,
+    card: card,
+    block: function (id) { return S.blocks[normId(id)] || null; },
+    selection: function () { return S.sel ? { kind: S.sel.kind, key: S.sel.key, blockId: S.sel.blockId } : null; },
+    ms: function () { return S.ms; },
+    notify: function (text) { pushTicker({ text: text, at: Date.now() }); },
+    refresh: function () { if (S.sel) renderInspector(); }
+  };
+
+  api._extensions = EXT;
 
   return api;
 });

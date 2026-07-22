@@ -172,5 +172,8 @@
 window.MS = {{ MS | tojson }};
 </script>
 <script>{{ viewer_js | default('', true) | safe }}</script>
+{%- for name, code in (extensions | default({}, true)).items() %}
+<script data-ext="{{ name }}">{{ code | safe }}</script>
+{%- endfor %}
 </body>
 </html>

@@ -30,6 +30,8 @@ from pathlib import Path
 from aiohttp import WSMsgType, web
 from jinja2 import Template
 
+from manuscriptor.templates.ext import load as _extensions
+
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 from manuscriptor.source import splice as splice_mod
@@ -312,7 +314,7 @@ def _page(session: Session) -> str:
     tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
     css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
     js = resources.files("manuscriptor.templates.static").joinpath("viewer.js").read_text(encoding="utf-8")
-    return Template(tpl).render(ms=session.blob, styles_css=css, viewer_js=js)
+    return Template(tpl).render(ms=session.blob, styles_css=css, viewer_js=js, extensions=_extensions())
 
 
 def make_app(session: Session) -> web.Application:
