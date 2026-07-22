@@ -41,15 +41,65 @@ def _resolve_manuscript_paths(manuscript_dir: Path, main: str | None, bib: str |
 
 
 def cmd_blocks(args: argparse.Namespace) -> int:
-    sys.exit(_NOT_YET.format(milestone="M1, flatten and segment"))
+    from manuscriptor.source.blocks import segment
+    from manuscriptor.source.flatten import flatten
+    from manuscriptor.server import producers
+
+    main_tex = Path(args.main_tex).resolve()
+    flat = flatten(main_tex)
+    blocks = producers.apply(
+        segment(flat), producers.scan(main_tex.parent), root_file=main_tex
+    )
+    for b in blocks:
+        lock = "  " if b.editable else "RO"
+        head = " ".join(b.source_text.split())[:64]
+        print(f"{lock} {b.id:16s} {b.kind:10s} {b.file.name}:{b.line_start:<5d} {head}")
+    n_ed = sum(1 for b in blocks if b.editable)
+    print(f"\n{len(blocks)} blocks · {n_ed} editable · "
+          f"{len({b.file for b in blocks})} files · "
+          f"{sum(len(b.includes) for b in blocks)} inline includes")
+    if flat.missing:
+        print(f"unresolved includes: {sorted(set(flat.missing))}")
+    return 0
 
 
 def cmd_build(args: argparse.Namespace) -> int:
-    sys.exit(_NOT_YET.format(milestone="M2, render"))
+    from importlib import resources
+    from jinja2 import Template
+    from manuscriptor.server import build as build_mod
+
+    out = Path(args.output).resolve() if args.output else None
+    b = build_mod.build(Path(args.manuscript).resolve(), main=args.main, bib=args.bib, output_dir=out)
+    out = out or Path(args.manuscript).resolve() / "build" / "manuscriptor"
+
+    tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
+    css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
+    js = resources.files("manuscriptor.templates.static").joinpath("viewer.js").read_text(encoding="utf-8")
+    page = Template(tpl).render(ms=b.blob, styles_css=css, viewer_js=js)
+    (out / "index.html").write_text(page, encoding="utf-8")
+
+    st = b.blob["stats"]
+    print(f"{len(b.blob['blocks'])} blocks · {st['files']} files · {st['cites']} citations · "
+          f"{st['values']} computed values · {st['exhibits']} exhibits")
+    for key, label in (("unanchored", "unanchored"), ("unresolved_refs", "unresolved refs"),
+                       ("missing_includes", "missing includes")):
+        if b.blob["diagnostics"].get(key):
+            print(f"  {len(b.blob['diagnostics'][key])} {label}")
+    print(f"done -> {out / 'index.html'}")
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    sys.exit(_NOT_YET.format(milestone="M3, serve and watch"))
+    from manuscriptor.server.app import serve
+
+    serve(
+        Path(args.manuscript).resolve(),
+        port=args.port,
+        open_window=not args.no_window,
+        main=args.main,
+        bib=args.bib,
+    )
+    return 0
 
 
 def cmd_proc(args: argparse.Namespace) -> int:
@@ -128,6 +178,8 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("manuscript", help="Path to the manuscript directory")
     p_serve.add_argument("--port", type=int, default=0, help="Port (default: pick a free one)")
     p_serve.add_argument("--no-window", action="store_true", help="Do not open a window; just serve")
+    p_serve.add_argument("--main", help="Main .tex filename")
+    p_serve.add_argument("--bib", help="Bibliography filename")
     p_serve.set_defaults(func=cmd_serve)
 
     p_blocks = sub.add_parser("blocks", help="Print the block table for a manuscript (flatten and segment only).")
@@ -137,6 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     p_build = sub.add_parser("build", help="Render a static, anchored HTML copy of the manuscript.")
     p_build.add_argument("manuscript", help="Path to the manuscript directory")
     p_build.add_argument("--output", "-o", help="Output directory")
+    p_build.add_argument("--main", help="Main .tex filename")
+    p_build.add_argument("--bib", help="Bibliography filename")
     p_build.set_defaults(func=cmd_build)
 
     p_proc = sub.add_parser("proc", help="Drain pending comments once. Manual fallback for the live watcher.")

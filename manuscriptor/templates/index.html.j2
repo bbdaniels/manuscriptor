@@ -1,71 +1,146 @@
+{#-
+  The viewer.
+
+  It takes ONE variable, `ms`: a plain dict matching the data contract, which
+  is embedded verbatim as `window.MS`. Everything the page knows arrives that
+  way, so there is exactly one thing to keep in sync between the server and
+  the client.
+
+      ms = {
+        "title": str,
+        "html": str,           # rendered manuscript, every block carrying data-mx
+        "blocks": {id: {id,kind,file,line_start,line_end,source,editable,
+                        parent_heading,includes,cites,values}},
+        "outline": [{level,text,id}],
+        "chats":   {block_id: [{id,who,body,ts,state}]},
+        "todos":   [{text,done}],
+        "activity":[{text,when}],
+        "stats":   {files,cites,values,exhibits},
+      }
+
+  `styles_css` and `viewer_js` are the two static files, inlined so the page
+  is a single self-contained artefact that can be opened straight off disk.
+
+  The manuscript html is written into the document server-side rather than
+  injected by script: it is what makes the page readable before anything runs,
+  and it is what carries the `data-mx` anchors into real markup where the
+  margin can address them.
+
+  The fallback below keeps the older `title` + `manuscript_html` call shape
+  (manuscriptor/evidence/render.py, the static export) rendering a readable
+  page instead of raising. It degrades to an empty inspector, which is honest:
+  that call has no block map to inspect.
+-#}
+{%- set MS = ms if ms is defined and ms else {
+  'title': title | default('Manuscript', true),
+  'html': manuscript_html | default('', true),
+  'blocks': {}, 'outline': [], 'chats': {}, 'todos': [], 'activity': [], 'stats': {}
+} -%}
+{%- set stats = MS.get('stats', {}) or {} -%}
+{%- set todos = MS.get('todos', []) or [] -%}
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{ title }} — manuscriptor</title>
-  <style>{{ styles_css | safe }}</style>
+  <title>{{ MS.get('title', 'Manuscript') }} — manuscriptor</title>
+  <style>{{ styles_css | default('', true) | safe }}</style>
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-row">
-      <h1 class="doc-title">{{ title }}</h1>
-      <div class="topbar-stats">
-        <span class="stat">{{ n_pairs }} cite-instances</span>
-        <span class="badge badge-verbatim">{{ n_verbatim }} verbatim</span>
-        <span class="badge badge-paraphrase">{{ n_paraphrase }} paraphrase</span>
-        <span class="badge badge-missing">{{ n_missing }} missing</span>
+<div class="app" data-skin="instrument" id="app">
+
+  <div class="titlebar">
+    <div class="dots"><i></i><i></i><i></i></div>
+    <span class="name">Manuscriptor</span>
+    <span class="path" id="doc-path">{{ MS.get('path', '') }}</span>
+    <span class="live" id="live"><span class="pulse"></span> <span id="live-text">watching</span></span>
+  </div>
+
+  <div class="toolbar">
+    <span class="grp">
+      <button class="tb" type="button" data-act="compile:pdf">Compile PDF</button>
+      <button class="tb" type="button" data-act="compile:docx">Compile Word</button>
+    </span>
+    <span class="sep"></span>
+    <span class="grp">
+      <button class="tb accent" type="button" data-open="import:reviewer">Read in comments…</button>
+    </span>
+    <span class="skinctl">
+      <button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button>
+      <button class="tb" type="button" data-skin="glass" aria-pressed="false">Glass</button>
+      <span class="hues"><input type="color" class="wheel" id="hue-wheel" value="#5597DB" aria-label="space colour"></span>
+    </span>
+    <span class="tb-meta" id="toolbar-meta"></span>
+  </div>
+
+  <div class="cols">
+
+    <!-- ================= rail ================= -->
+    <nav class="rail" id="rail">
+      <div>
+        <h3>Manuscript</h3>
+        <div class="outline" id="outline">
+          {%- for h in MS.get('outline', []) %}
+          <a data-goto="{{ h.get('id', '') }}" class="lvl{{ h.get('level', 1) }}" tabindex="0">{{ h.get('text', '') }}</a>
+          {%- endfor %}
+        </div>
       </div>
-    </div>
-    <div class="topbar-row">
-      <input type="search" id="filter-input" placeholder="Filter citations by key, author, or title…" autocomplete="off">
-      <div class="topbar-meta">
-        <span>{{ generated_at }}</span>
-        <span class="meta-sep">·</span>
-        <a href="#about-tool">about this tool</a>
+
+      <div>
+        <h3>Sources</h3>
+        <div class="outline">
+          <a>{{ stats.get('files', 0) }} tex files</a>
+          <a>{{ stats.get('cites', 0) }} citations</a>
+          <a>{{ stats.get('values', 0) }} computed values</a>
+          <a>{{ stats.get('exhibits', 0) }} exhibits</a>
+        </div>
       </div>
-    </div>
-  </header>
 
-  <main class="split">
-    <article class="manuscript" id="manuscript">
-      {{ manuscript_html | safe }}
+      <div>
+        <h3>To do <span class="n">{{ todos | selectattr('done') | list | length }} of {{ todos | length }}</span></h3>
+        <div class="todo" id="todos">
+          {%- for t in todos %}
+          <label><input type="checkbox"{% if t.get('done') %} checked{% endif %}> {% if t.get('done') %}<s>{{ t.get('text', '') }}</s>{% else %}{{ t.get('text', '') }}{% endif %}</label>
+          {%- endfor %}
+        </div>
+      </div>
 
-      <section id="about-tool" class="about">
-        <h2>About this view</h2>
-        <p>
-          Each citation in this manuscript is linked to verbatim quotes extracted from
-          the cited paper's fulltext. Click any citation to open the evidence panel.
-        </p>
-        <ul>
-          <li><span class="badge badge-verbatim">verbatim</span> the quoted passage is an exact substring of the cited paper.</li>
-          <li><span class="badge badge-paraphrase">paraphrase</span> the model reported a supporting passage, but the exact text could not be matched in the cited paper. Treat with care.</li>
-          <li><span class="badge badge-missing">missing</span> no supporting passage was found, or the cited paper has no indexed fulltext in the local library.</li>
-        </ul>
-        <p class="caveat">
-          This is a review aid. The verbatim check catches hallucinated quotes but does not
-          guarantee that a verbatim quote is used in a context that supports the claim.
-          Read the cited paper before relying on any claim flagged here.
-        </p>
-      </section>
-    </article>
+      <div>
+        <h3>Activity</h3>
+        <div class="feed" id="activity">
+          {%- for e in MS.get('activity', []) %}
+          <div class="ev{% if loop.first %} now{% endif %}">{{ e.get('text', '') }}<time>{{ e.get('when', '') }}</time></div>
+          {%- endfor %}
+        </div>
+      </div>
+    </nav>
 
-    <aside class="panel" id="evidence-panel">
-      <div class="panel-placeholder">
-        <p>Click any citation in the manuscript to see the supporting evidence.</p>
-        <p class="hint">Citation borders show the strongest evidence status across the cited papers.</p>
+    <!-- ================= manuscript ================= -->
+    <main class="doc" id="doc">
+      <div class="doc-inner" id="doc-inner">{{ MS.get('html', '') | safe }}</div>
+    </main>
+
+    <!-- ================= inspector ================= -->
+    <aside class="insp" id="insp">
+      <div class="insp-head">
+        <div class="eyebrow" id="eyebrow">Nothing open</div>
+        <h4 id="ititle">{{ MS.get('title', 'Manuscript') }}</h4>
+        <div class="sub" id="isub"></div>
+        <button class="jump" id="jump" type="button" hidden>↑ back to the paragraph this belongs to</button>
+      </div>
+      <div class="tabs" id="tabs"></div>
+      <div class="insp-body" id="ibody">
+        <p class="empty">Click a paragraph to see its source and its chat, a citation to see its
+        evidence, or a violet number to see the code that produced it.</p>
       </div>
     </aside>
-  </main>
 
-  <script>
-    window.CITE_EVIDENCE = {
-      title: {{ title_json | safe }},
-      claims: {{ claims_json | safe }},
-      citations_by_key: {{ citations_by_key_json | safe }},
-      evidence_by_pair: {{ evidence_by_pair_json | safe }}
-    };
-  </script>
-  <script>{{ viewer_js | safe }}</script>
+  </div>
+</div>
+
+<script id="ms-data">
+window.MS = {{ MS | tojson }};
+</script>
+<script>{{ viewer_js | default('', true) | safe }}</script>
 </body>
 </html>
