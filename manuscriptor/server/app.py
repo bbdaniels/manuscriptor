@@ -214,6 +214,34 @@ class Session:
             return {"type": "held", "block": block_id, "reason": str(exc)}
         return {"type": "saved", "block": block_id, "at": chat.now()}
 
+    def _todos_frame(self) -> dict:
+        todos = build_mod.todos_view(self.log, doc=self.doc)
+        if self.build is not None:
+            self.build.blob["todos"] = todos
+        return {"type": "todos", "todos": todos}
+
+    async def on_todo(self, text: str) -> dict:
+        """Add a to-do. A record in the shared log, like everything else."""
+        if self.read_only:
+            return {"type": "held", "block": "",
+                    "reason": "This manuscript is open read-only, so the log is not written."}
+        text = str(text).strip()
+        if not text:
+            return self._todos_frame()
+        n = sum(1 for r in chat.read_records(self.log) if r.get("kind") == "todo")
+        chat.append(self.log, {"id": f"t-{n + 1:04d}", "kind": "todo",
+                               "text": text, "doc": self.doc, "author": "bb"})
+        return self._todos_frame()
+
+    async def on_todo_toggle(self, todo_id: str, done: bool) -> dict:
+        """Toggle a to-do: a new state record, never a rewrite."""
+        if self.read_only:
+            return {"type": "held", "block": "",
+                    "reason": "This manuscript is open read-only, so the log is not written."}
+        chat.append(self.log, {"id": str(todo_id), "kind": "todo-state",
+                               "done": bool(done)})
+        return self._todos_frame()
+
     async def on_chat(self, block_id: str, body: str) -> dict:
         if self.read_only:
             return {"type": "held", "block": block_id,
@@ -382,6 +410,14 @@ def make_app(session: Session) -> web.Application:
                     await ws.send_json(await session.on_edit(data.get("block", ""), data.get("source", "")))
                 elif kind == "chat":
                     await session.broadcast(await session.on_chat(data.get("block", ""), data.get("body", "")))
+                elif kind == "todo":
+                    frame = await session.on_todo(data.get("text", ""))
+                    await (ws.send_json(frame) if frame["type"] == "held"
+                           else session.broadcast(frame))
+                elif kind == "todo_toggle":
+                    frame = await session.on_todo_toggle(data.get("id", ""), data.get("done"))
+                    await (ws.send_json(frame) if frame["type"] == "held"
+                           else session.broadcast(frame))
         finally:
             session.clients.discard(ws)
         return ws
@@ -453,9 +489,55 @@ def make_app(session: Session) -> web.Application:
             "read_only": session.read_only,
         })
 
+    # The evidence pass, triggered from the toolbar. The pass itself is the
+    # CLI command (its extract stage calls a model, which nothing in server/
+    # may do); the server spawns it as a subprocess exactly as a compile
+    # spawns latex, streams its stdout over the websocket, and re-reads the
+    # files it wrote when it finishes. One at a time: a second click while a
+    # run is live would race the first over the same record files.
+    evidence_running: dict = {"proc": None}
+
+    async def evidence_handler(_request):
+        import sys as _sys
+
+        if session.read_only:
+            return web.json_response(
+                {"error": "This manuscript is open read-only; the evidence pass writes records."},
+                status=403)
+        live = evidence_running["proc"]
+        if live is not None and live.returncode is None:
+            return web.json_response({"error": "an evidence run is already underway"}, status=409)
+
+        proc = await asyncio.create_subprocess_exec(
+            _sys.executable, "-m", "manuscriptor.cli", "evidence",
+            str(session.dir), "--main", session.doc,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            cwd=str(session.dir),
+        )
+        evidence_running["proc"] = proc
+
+        async def pump():
+            async for raw in proc.stdout:
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                if line:
+                    await session.broadcast({"type": "evidence", "line": line})
+            rc = await proc.wait()
+            async with session.lock:
+                try:
+                    session.rebuild()
+                except Exception:
+                    pass  # a manuscript mid-edit may not render; the watcher will
+            await session.broadcast({"type": "cites",
+                                     "cites": session.blob.get("cites", {})})
+            await session.broadcast({"type": "evidence", "done": True, "ok": rc == 0})
+
+        asyncio.ensure_future(pump())
+        return web.json_response({"started": True})
+
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/import", import_handler)
+    app.router.add_post("/evidence", evidence_handler)
     # A compile is a subprocess, so it is the server's to run. Progress goes
     # back over the websocket above, not down a second channel.
     app.router.add_post("/compile", compile_mod.route(session))

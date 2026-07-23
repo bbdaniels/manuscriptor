@@ -83,11 +83,19 @@
     <span class="sep"></span>
     <span class="grp">
       <button class="tb accent" type="button" data-open="import:reviewer">Import comments…</button>
+      <button class="tb" type="button" data-act="evidence:run" id="evidence-run">Run evidence…</button>
     </span>
     <span class="skinctl">
       <button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button>
       <button class="tb" type="button" data-skin="glass" aria-pressed="false">Glass</button>
-      <span class="hues"><input type="color" class="wheel" id="hue-wheel" value="#5597DB" aria-label="space colour"></span>
+      {#- The hue picker is the page's own popover, not a native colour input:
+          the platform panel anchors wherever it pleases (seen opening over
+          the source editor, nowhere near the swatch) and offers a preset
+          grid the design explicitly rejected. One wheel, no presets. -#}
+      <span class="hues">
+        <button type="button" class="wheel" id="hue-wheel" aria-label="space colour" aria-haspopup="true" aria-expanded="false"></button>
+        <div class="huepop" id="hue-pop" hidden><div class="huedisc" id="hue-disc" role="slider" aria-label="hue and saturation"></div></div>
+      </span>
     </span>
     <span class="tb-meta" id="toolbar-meta"></span>
   </div>
@@ -131,12 +139,13 @@
       </div>
 
       <div>
-        <h3>To do <span class="n">{{ todos | selectattr('done') | list | length }} of {{ todos | length }}</span></h3>
+        <h3>To do <span class="n" id="todo-count">{{ todos | selectattr('done') | list | length }} of {{ todos | length }}</span></h3>
         <div class="todo" id="todos">
           {%- for t in todos %}
           <label><input type="checkbox"{% if t.get('done') %} checked{% endif %}> {% if t.get('done') %}<s>{{ t.get('text', '') }}</s>{% else %}{{ t.get('text', '') }}{% endif %}</label>
           {%- endfor %}
         </div>
+        <input class="todo-add" id="todo-add" type="text" placeholder="Add a to-do…" aria-label="add a to-do">
       </div>
 
       <div>

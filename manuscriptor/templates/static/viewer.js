@@ -190,6 +190,19 @@
     return ((out % 360) + 360) % 360;
   }
 
+  function hslToHex(h, s, l) {
+    h = ((h % 360) + 360) % 360;
+    var c = (1 - Math.abs(2 * l - 1)) * s,
+        x = c * (1 - Math.abs(((h / 60) % 2) - 1)),
+        m = l - c / 2,
+        rgb = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+            : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return '#' + rgb.map(function (v) {
+      var b = Math.round((v + m) * 255);
+      return (b < 16 ? '0' : '') + b.toString(16);
+    }).join('');
+  }
+
   function ago(iso) {
     if (!iso) return '';
     var then = Date.parse(iso);
@@ -883,6 +896,36 @@
     restoreUI(ui, true);
   }
 
+  function renderTodos(todos) {
+    var box = document.getElementById('todos');
+    if (!box) return;
+    S.ms.todos = todos;
+    box.innerHTML = todos.map(function (t) {
+      return '<label><input type="checkbox" data-todo="' + esc(t.id) + '"' +
+        (t.done ? ' checked' : '') + '> ' +
+        (t.done ? '<s>' + esc(t.text) + '</s>' : esc(t.text)) + '</label>';
+    }).join('');
+    var n = document.getElementById('todo-count');
+    if (n) {
+      n.textContent = todos.filter(function (t) { return t.done; }).length +
+        ' of ' + todos.length;
+    }
+  }
+
+  function runEvidence() {
+    var btn = document.getElementById('evidence-run');
+    if (btn && btn.disabled) return;
+    fetch('/evidence', { method: 'POST' })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (out) {
+        if (out && out.error) { pushTicker({ text: out.error, when: new Date().toISOString() }); return; }
+        if (btn) { btn.disabled = true; btn.textContent = 'Evidence running…'; }
+      })
+      .catch(function () {
+        pushTicker({ text: 'could not start the evidence pass', when: new Date().toISOString() });
+      });
+  }
+
   // Inserting used to replace the whole panel, which meant leaving the
   // paragraph to add something to it. The form belongs beside the inventory it
   // adds to, so it opens inline on this tab and closes back to it.
@@ -1533,6 +1576,30 @@
         else if (!S.sel && cid === '') renderHome();
         break;
       }
+      case 'todos': {
+        renderTodos(msg.todos || []);
+        break;
+      }
+      case 'cites': {
+        // The evidence pass finished and the server re-read its records:
+        // recolour every underline in place, no reload.
+        S.ms.cites = msg.cites || {};
+        hydrateSpans(docInner);
+        if (S.sel && S.sel.kind === 'cite') renderInspector();
+        break;
+      }
+      case 'evidence': {
+        var btn = document.getElementById('evidence-run');
+        if (msg.done) {
+          if (btn) { btn.disabled = false; btn.textContent = 'Run evidence…'; }
+          pushTicker({ text: msg.ok ? 'evidence pass finished' : 'evidence pass failed; see the terminal',
+                       when: new Date().toISOString() });
+        } else if (msg.line) {
+          if (btn) { btn.disabled = true; btn.textContent = 'Evidence running…'; }
+          pushTicker({ text: String(msg.line), when: new Date().toISOString() });
+        }
+        break;
+      }
       case 'saved': {
         var sid = normId(msg.block);
         var b = S.blocks[sid];
@@ -1763,10 +1830,30 @@
     if (blk) {
       var bid = blk.getAttribute('data-mx');
       select('block', bid, bid);
+      return;
     }
+
+    // A click on the document's own background, between and beside the
+    // paragraphs, is the way back out to the document chat.
+    if (e.target.closest('.doc')) deselect();
+  }
+
+  /* Selection has always had a way in and never a way out: once a paragraph
+     was open there was no returning to the document chat. Escape and a click
+     on the document's own background both come back here. */
+  function deselect() {
+    if (!S.sel) return;
+    S.sel = null;
+    S.extView = null;
+    S.insert = null;
+    var on = document.querySelectorAll('.blk.sel, .exhibit.sel');
+    for (var i = 0; i < on.length; i++) on[i].classList.remove('sel');
+    anchorEl = null;
+    renderHome();
   }
 
   function doAct(act) {
+    if (act === 'evidence:run') { runEvidence(); return; }
     var id = S.sel && S.sel.blockId;
     if (act === 'revert' && id) {
       var b = S.blocks[id];
@@ -1809,6 +1896,15 @@
         t.matches('.blk, .exhibit, .cite, .val, [data-goto]')) {
       e.preventDefault();
       t.click();
+    }
+    if (e.key === 'Escape') {
+      var pop = document.getElementById('hue-pop');
+      if (pop && !pop.hidden) { pop.hidden = true; return; }
+      // Escape in a field leaves the field; a second Escape leaves the
+      // selection. Deselecting under a half-typed draft would be rude even
+      // though the draft itself survives by construction.
+      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) { t.blur(); return; }
+      deselect();
     }
   }
 
@@ -1944,8 +2040,63 @@
     var savedSkin = load(MS_PREF_PREFIX + 'skin');
     applySkin(savedSkin === 'glass' ? 'glass' : 'instrument');
     var savedHue = load(MS_PREF_PREFIX + 'hue');
-    if (savedHue && hueWheel) { hueWheel.value = savedHue; applyHue(savedHue); }
-    if (hueWheel) hueWheel.addEventListener('input', function () { applyHue(hueWheel.value); });
+    if (savedHue) applyHue(savedHue);
+
+    /* The hue picker is the page's own popover. The native <input type=color>
+       panel anchored wherever the platform pleased (seen opening over the
+       source editor, nowhere near the swatch) and offered a preset grid the
+       design rejected: one wheel, no presets, no second surface. Angle is
+       hue, radius is saturation, lightness is fixed; the pick still round-
+       trips through applyHue so the saved preference and the clamp behave
+       identically to a typed hex. */
+    var huePop = document.getElementById('hue-pop');
+    var hueDisc = document.getElementById('hue-disc');
+    if (hueWheel && huePop && hueDisc) {
+      hueWheel.addEventListener('click', function () {
+        huePop.hidden = !huePop.hidden;
+        hueWheel.setAttribute('aria-expanded', huePop.hidden ? 'false' : 'true');
+      });
+      document.addEventListener('pointerdown', function (e) {
+        if (!huePop.hidden && !e.target.closest('.hues')) {
+          huePop.hidden = true;
+          hueWheel.setAttribute('aria-expanded', 'false');
+        }
+      });
+      var picking = false;
+      var pickFrom = function (e) {
+        var r = hueDisc.getBoundingClientRect();
+        var dx = e.clientX - r.left - r.width / 2;
+        var dy = e.clientY - r.top - r.height / 2;
+        var hue = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+        var sat = Math.min(1, Math.sqrt(dx * dx + dy * dy) / (r.width / 2));
+        applyHue(hslToHex(hue, Math.max(0.08, sat), 0.55));
+      };
+      hueDisc.addEventListener('pointerdown', function (e) {
+        picking = true;
+        try { hueDisc.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+        pickFrom(e);
+      });
+      hueDisc.addEventListener('pointermove', function (e) { if (picking) pickFrom(e); });
+      hueDisc.addEventListener('pointerup', function () { picking = false; });
+    }
+
+    renderTodos(S.ms.todos || []);
+    var todosBox = document.getElementById('todos');
+    if (todosBox) {
+      todosBox.addEventListener('change', function (e) {
+        var cb = e.target.closest('input[data-todo]');
+        if (cb) send({ type: 'todo_toggle', id: cb.getAttribute('data-todo'), done: cb.checked });
+      });
+    }
+    var todoAdd = document.getElementById('todo-add');
+    if (todoAdd) {
+      todoAdd.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter') return;
+        var text = todoAdd.value.trim();
+        if (!text) return;
+        if (send({ type: 'todo', text: text })) todoAdd.value = '';
+      });
+    }
 
     markOutline();
     connect();
@@ -2005,7 +2156,7 @@
     block: function (id) { return S.blocks[normId(id)] || null; },
     selection: function () { return S.sel ? { kind: S.sel.kind, key: S.sel.key, blockId: S.sel.blockId } : null; },
     ms: function () { return S.ms; },
-    notify: function (text) { pushTicker({ text: String(text), when: Date.now() }); },
+    notify: function (text) { pushTicker({ text: String(text), when: new Date().toISOString() }); },
     refresh: function () { if (S.sel) renderInspector(); }
   };
 

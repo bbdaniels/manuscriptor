@@ -161,6 +161,10 @@ select.docswitch[hidden] { display: none; }
 .outline a.lvl3 { padding-left: 1.6rem; font-size: .74rem; }
 .outline .n { font-family: var(--mono); font-size: .68rem; color: var(--faint); font-variant-numeric: tabular-nums; }
 .todo { display: flex; flex-direction: column; gap: .3rem; }
+.todo-add { margin-top: .45rem; width: 100%; font: inherit; font-size: .75rem;
+  padding: .3rem .45rem; border: 1px solid var(--rule); border-radius: 5px;
+  background: var(--surface); color: var(--ink); }
+.todo-add::placeholder { color: var(--faint); }
 .todo label { display: flex; align-items: flex-start; gap: .4rem; font-size: .75rem; color: var(--ink); line-height: 1.35; cursor: pointer; }
 .todo input { margin: .2rem 0 0; accent-color: var(--accent); flex: none; }
 .todo s { color: var(--faint); text-decoration-thickness: 1px; }
@@ -350,10 +354,22 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 /* ---------- the skin switcher, in the toolbar ---------- */
 .skinctl { margin-left: auto; display: flex; align-items: center; gap: .3rem; }
 .skinctl .tb[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 500; }
-.hues { display: flex; align-items: center; padding-left: .45rem; margin-left: .2rem; border-left: 1px solid var(--rule); }
-.wheel { width: 1.6rem; height: 1.6rem; padding: 0; border: 1px solid var(--rule); border-radius: 6px; background: none; cursor: pointer; }
-.wheel::-webkit-color-swatch-wrapper { padding: 2px; }
-.wheel::-webkit-color-swatch { border: none; border-radius: 4px; }
+.hues { position: relative; display: flex; align-items: center; padding-left: .45rem; margin-left: .2rem; border-left: 1px solid var(--rule); }
+/* The swatch is a button showing the accent it sets; the picker is the
+   page's own popover anchored to it, because the native colour panel opened
+   wherever the platform pleased and offered a preset grid. */
+.wheel { width: 1.6rem; height: 1.6rem; padding: 0; border: 1px solid var(--rule); border-radius: 6px; background: var(--accent); cursor: pointer; }
+.wheel:hover { border-color: var(--accent); }
+.huepop { position: absolute; top: calc(100% + .5rem); right: 0; z-index: 40;
+  padding: .6rem; background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 8px; box-shadow: var(--shadow); }
+.huepop[hidden] { display: none; }
+.huedisc { width: 168px; height: 168px; border-radius: 50%; cursor: crosshair;
+  touch-action: none;
+  background:
+    radial-gradient(closest-side, hsl(0 0% 100%) 0%, hsl(0 0% 100% / 0) 78%),
+    conic-gradient(from 0deg, hsl(0 100% 55%), hsl(60 100% 55%), hsl(120 100% 55%),
+      hsl(180 100% 55%), hsl(240 100% 55%), hsl(300 100% 55%), hsl(360 100% 55%)); }
 
 /* =====================================================================
    GLASS. The Kanban Pro language, applied only where it belongs: a tinted

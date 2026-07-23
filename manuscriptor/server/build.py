@@ -10,6 +10,7 @@ every rebuild afterwards, and a test can call it without opening a socket.
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -119,11 +120,16 @@ def build(
         "outline": _outline(bl),
         "chats": reanchor_chats(chat.by_block(log, doc=doc), bl,
                                 chat.read_chats(log, doc=doc)),
+        # The evidence pass's verdicts, when it has run. The pass is a CLI
+        # command (it calls a model, which the server never may); the server
+        # only reads the files it wrote into the build directory. No files
+        # means every underline stays neutral, claiming nothing.
+        "cites": evidence_cites(out),
         # The standing agent state, so a page loading mid-run does not open on
         # "idle" while a session is halfway through the author's third comment.
         "queue": queue_view(log, bl, root=manuscript_dir, doc=doc),
         "ticker": ticker_view(log, bl, root=manuscript_dir, doc=doc),
-        "todos": [],
+        "todos": todos_view(log, doc=doc),
         "activity": [],
         "stats": {
             "files": len({b.file for b in bl}),
@@ -193,6 +199,78 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
                     target = match
         out.setdefault(target, []).extend(msgs)
     return out
+
+
+# ------------------------------------------------------------- the evidence
+
+
+def evidence_cites(out: Path) -> dict:
+    """The evidence pass's verdicts, in the shape the page consumes.
+
+    `manuscriptor evidence` writes `citations.json` (one entry per key) and
+    `evidence.json` (one entry per claim-and-key pair) into the build
+    directory. Folded per key: the strongest status across pairs wins the
+    underline, because "supported verbatim somewhere" is the claim the colour
+    makes. A key the pass examined and could not support is `missing` (red);
+    a key the pass never saw has no record at all and stays neutral, which is
+    the difference between "checked, nothing found" and "not checked".
+
+    A corrupt or absent file yields no records rather than no build: the
+    manuscript must render whether or not the evidence pass has ever run.
+    """
+    try:
+        citations = json.loads((Path(out) / "citations.json").read_text(encoding="utf-8"))
+        ev_path = Path(out) / "evidence.json"
+        evidence = json.loads(ev_path.read_text(encoding="utf-8")) if ev_path.exists() else []
+    except (OSError, json.JSONDecodeError, ValueError):
+        return {}
+    if not isinstance(citations, list) or not isinstance(evidence, list):
+        return {}
+
+    RANK = {"verbatim": 2, "paraphrase": 1}
+    cites: dict[str, dict] = {}
+    for c in citations:
+        key = c.get("cite_key")
+        if not key:
+            continue
+        cites[key] = {"status": "missing", "title": c.get("title") or "", "quotes": []}
+    for r in evidence:
+        rec = cites.get(r.get("cite_key"))
+        if rec is None:
+            continue
+        for q in r.get("quotes", []):
+            if not q.get("text"):
+                continue
+            status = q.get("status") or "paraphrase"
+            rec["quotes"].append({"text": q["text"], "status": status})
+            if RANK.get(status, 0) > RANK.get(rec["status"], 0):
+                rec["status"] = status
+    return cites
+
+
+# --------------------------------------------------------------- the to-dos
+
+
+def todos_view(log: Path, *, doc: str | None = None) -> list[dict]:
+    """The rail's to-do list, folded from the log.
+
+    A `todo` record creates one, a `todo-state` record toggles it, and the
+    latest state wins: append-only like everything else the page and the
+    agent share, so neither writer can conflict with the other. Scoped to the
+    document the way comments are, with doc-less records belonging to
+    whichever document is being read.
+    """
+    base: dict[str, dict] = {}
+    done: dict[str, bool] = {}
+    for rec in chat.read_records(log):
+        if rec.get("kind") == "todo" and rec.get("text"):
+            if doc is not None and rec.get("doc", "") not in ("", doc):
+                continue
+            base.setdefault(rec["id"], rec)
+        elif rec.get("kind") == "todo-state":
+            done[rec.get("id", "")] = bool(rec.get("done"))
+    return [{"id": tid, "text": rec.get("text", ""), "done": done.get(tid, False)}
+            for tid, rec in base.items()]
 
 
 # --------------------------------------------------------------- the queue

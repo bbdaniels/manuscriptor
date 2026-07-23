@@ -896,3 +896,63 @@ def test_the_drain_presents_a_document_comment_as_document_work(tmp_path):
     assert it.editable is False
     text = drain.as_text(items)
     assert "Check the tenses" in text
+
+
+# ------------------------------------------------------------------- to-dos
+#
+# The rail's to-do list was rendered from a blob field nothing ever wrote, so
+# it read "0 of 0" forever and there was no way to add one. They live in
+# comments.jsonl like everything else the page and the agent share: a `todo`
+# record to create, a `todo-state` record to toggle, append-only, scoped to
+# the document.
+
+
+def test_a_todo_is_stored_and_folded_into_the_blob(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    frame = asyncio.run(s.on_todo("Recheck the balance table before circulating"))
+    assert frame["type"] == "todos"
+    assert frame["todos"][0]["text"].startswith("Recheck")
+    assert frame["todos"][0]["done"] is False
+    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    assert rec["kind"] == "todo" and rec["doc"] == "main.tex"
+
+    fresh = build_mod.build(tmp_path)
+    assert fresh.blob["todos"][0]["text"].startswith("Recheck")
+
+
+def test_toggling_a_todo_appends_rather_than_rewrites(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    tid = asyncio.run(s.on_todo("check tenses"))["todos"][0]["id"]
+    frame = asyncio.run(s.on_todo_toggle(tid, True))
+    assert frame["todos"][0]["done"] is True
+    frame = asyncio.run(s.on_todo_toggle(tid, False))
+    assert frame["todos"][0]["done"] is False
+    kinds = [r["kind"] for r in chat.read_records(tmp_path / "comments.jsonl")]
+    assert kinds.count("todo") == 1 and kinds.count("todo-state") == 2
+
+
+def test_todos_are_scoped_to_their_document(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    (tmp_path / "appendix.tex").write_text(APPENDIX, encoding="utf-8")
+    s = Session(tmp_path, main="appendix.tex")
+    asyncio.run(s.on_todo("appendix-only chore"))
+    assert build_mod.build(tmp_path).blob["todos"] == []
+    assert build_mod.build(tmp_path, main="appendix.tex").blob["todos"][0]["text"] == "appendix-only chore"
+
+
+def test_a_read_only_page_cannot_write_todos(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path, read_only=True)
+    frame = asyncio.run(s.on_todo("nope"))
+    assert frame["type"] == "held"
+    assert not (tmp_path / "comments.jsonl").exists()

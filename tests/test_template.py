@@ -490,3 +490,37 @@ def test_the_home_panel_is_the_document_chat():
     # A block chat renders through the same message helper, so the two panels
     # cannot drift apart in how they show a conversation.
     assert js.count("function chatMsgs") == 1
+
+
+def test_the_evidence_button_and_frames_are_wired():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'data-act="evidence:run"' in html
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "'/evidence'" in js
+    # The two frames the run produces must be named in the client, or the
+    # page ignores what the server streams.
+    assert "case 'evidence':" in js
+    assert "case 'cites':" in js
+
+
+def test_the_hue_picker_is_the_pages_own_popover():
+    # The native <input type=color> panel anchored wherever the platform
+    # pleased and offered a preset grid the design rejected.
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'type="color"' not in html
+    assert 'id="hue-pop"' in html
+    assert 'id="hue-disc"' in html
+
+
+def test_todos_have_an_input_and_a_frame():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="todo-add"' in html
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "case 'todos':" in js
+    assert "todo_toggle" in js
+
+
+def test_selection_has_a_way_out():
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "function deselect" in js
+    assert "'Escape'" in js
