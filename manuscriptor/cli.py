@@ -584,6 +584,14 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_projects(args: argparse.Namespace) -> int:
+    import json
+    from manuscriptor.source.projects import list_projects
+    vault = args.vault or os.environ.get("MANUSCRIPTOR_VAULT") or "~/Documents/Obsidian"
+    print(json.dumps(list_projects(Path(vault))))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="manuscriptor",
@@ -699,6 +707,10 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.add_argument("build", help="Path to build directory to remove")
     p_clean.add_argument("--cache", action="store_true", help="Also clear the evidence cache")
     p_clean.set_defaults(func=cmd_clean)
+
+    p_projects = sub.add_parser("projects", help="List vault manuscripts as JSON {name, root, main}.")
+    p_projects.add_argument("--vault", default=None, help="Vault path (default ~/Documents/Obsidian or $MANUSCRIPTOR_VAULT).")
+    p_projects.set_defaults(func=cmd_projects)
 
     args = parser.parse_args(argv)
     return args.func(args)

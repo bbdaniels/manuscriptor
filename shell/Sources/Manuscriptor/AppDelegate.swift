@@ -6,7 +6,7 @@ import WebKit
 /// The server is the product; this is a client, and any number of clients can
 /// attach to the same port. Nothing here renders, parses or edits anything: it
 /// starts a process, loads a URL, and gets out of the way.
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler, NSWindowDelegate {
 
     /// Paths handed over on the command line, for `Manuscriptor.app/.../Manuscriptor file.tex`.
     var openArguments: [String] = []
@@ -29,15 +29,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var openHandled = false
     private var retried = false
     private var signalSources: [DispatchSourceSignal] = []
+    private var openRecentItem: NSMenuItem?
+    private var statusItem: NSStatusItem?
 
     private static let frameName = "ManuscriptorMainWindow"
     private static let lastKey = "LastManuscript"
+    private static let recentsKey = "RecentManuscripts"
+    private static let recentsMax = 12
+
+    // MARK: - recents
+
+    /// The recently opened manuscript roots, most-recent-first, filtered to
+    /// paths that still exist.
+    func recents() -> [String] {
+        let raw = UserDefaults.standard.stringArray(forKey: AppDelegate.recentsKey) ?? []
+        return raw.filter { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    func pushRecent(_ path: String) {
+        var list = UserDefaults.standard.stringArray(forKey: AppDelegate.recentsKey) ?? []
+        list.removeAll { $0 == path }
+        list.insert(path, at: 0)
+        list = Array(list.prefix(AppDelegate.recentsMax))
+        UserDefaults.standard.set(list, forKey: AppDelegate.recentsKey)
+    }
 
     // MARK: - launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         buildWindow()
+        buildStatusItem()
         catchTerminationSignals()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -56,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                fm.fileExists(atPath: last) {
                 self.open(path: last)
             } else {
-                self.showOpenPanel(nil)
+                self.loadHome()
             }
         }
     }
@@ -67,9 +89,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         open(path: first.path)
     }
 
-    /// Closing the window quits, and quitting stops the server. A window is the
-    /// only thing on screen saying that a manuscript is being held open.
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// The app persists in the menubar with no window, so closing the window no
+    /// longer quits. The server is still stopped on window close (see
+    /// `windowWillClose`) — the invariant is that the server never outlives its
+    /// window, not that the app dies with it.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+
+    /// Closing the window stops the server and drops the app to a menubar-only
+    /// launcher. A server outliving its window is a process quietly holding a
+    /// manuscript open with nothing on screen to say so.
+    func windowWillClose(_ notification: Notification) {
+        server.stop()                            // the server never outlives its window
+        currentRoot = nil
+        serverURL = nil
+        NSApp.setActivationPolicy(.accessory)    // live on as a menubar launcher
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         server.stop()
@@ -95,6 +131,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         // Persistent, so the drafts the viewer mirrors into localStorage
         // survive a relaunch the way they survive a reload.
         config.websiteDataStore = .default()
+        // The home surface posts open/openPanel actions back over this channel.
+        config.userContentController.add(self, name: "ms")
+        // In the app, the real macOS title bar is transparent and the web
+        // content runs up under it (below), so the viewer's own title row IS
+        // the top bar. This class lets the viewer inset for the real traffic
+        // lights and hide its decorative fake dots — only in the app, never in
+        // a browser or the static export.
+        config.userContentController.addUserScript(WKUserScript(
+            source: "document.documentElement.classList.add('ms-native-titlebar')",
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 860),
                             configuration: config)
@@ -107,15 +153,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             backing: .buffered,
             defer: false)
         window.title = "Manuscriptor"
+        // Unify the title bar: transparent + full-height content so the viewer's
+        // own title row (with the idle/watching indicators) rises into the top
+        // bar beside the real traffic lights, instead of sitting as a second bar
+        // below it. The top band stays draggable (it is still the real title bar).
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.styleMask.insert(.fullSizeContentView)
         window.contentView = webView
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 720, height: 480)
+        // The app persists in the menubar after the window closes, so the window
+        // must survive its own close to be reshown from the quill.
+        window.isReleasedWhenClosed = false
+        window.delegate = self
         // Restore before naming: setFrameAutosaveName saves the current frame
         // as a side effect, which would overwrite what we are trying to read.
         window.setFrameUsingName(AppDelegate.frameName)
         window.setFrameAutosaveName(AppDelegate.frameName)
         if window.frame.isEmpty { window.center() }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - the home surface
+
+    /// The cold-open front door: a bundled page listing vault projects and
+    /// recents, each routed back through `open(path:)`. Falls back to the open
+    /// panel if the resource is somehow missing, so the app stays usable.
+    private func loadHome() {
+        guard let url = Bundle.main.url(forResource: "home", withExtension: "html") else {
+            showOpenPanel(nil); return   // fallback keeps the app usable
+        }
+        let projectsJSON = ServerProcess.projectsJSON()          // "[]" on failure
+        let recentsJSON = (try? JSONSerialization.data(withJSONObject: recents()))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let inject = "window.__ms_data__={projects:\(projectsJSON),recents:\(recentsJSON)};"
+        let js = WKUserScript(source: inject, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        // Re-injecting fresh data on every home load, not stacking stale copies.
+        webView.configuration.userContentController.removeAllUserScripts()
+        webView.configuration.userContentController.addUserScript(js)
+        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "ms", let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+        let arg = body["arg"] as? String ?? ""
+        switch action {
+        case "open" where !arg.isEmpty: openHandled = true; open(path: arg)
+        case "openPanel": showOpenPanel(nil)
+        default: break
+        }
     }
 
     // MARK: - opening a manuscript
@@ -130,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }
 
         UserDefaults.standard.set(resolved.root.path, forKey: AppDelegate.lastKey)
+        pushRecent(resolved.root.path)
+        rebuildOpenRecentMenu()
         window.title = resolved.root.lastPathComponent
         window.representedFilename = resolved.root.path
 
@@ -157,6 +247,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         retried = false
         show(status: "Rendering \(resolved.root.lastPathComponent)…")
 
+        // A manuscript window is open: become a regular app so the Dock icon and
+        // the Edit-menu key equivalents (Cmd-V into the source editor) are live.
+        NSApp.setActivationPolicy(.regular)
         server.start(binary: binary,
                      directory: resolved.root,
                      main: resolved.main,
@@ -344,6 +437,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Open…", action: #selector(showOpenPanel(_:)), keyEquivalent: "o")
             .target = self
+        let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        fileMenu.addItem(recent)
+        openRecentItem = recent
+        rebuildOpenRecentMenu()
         fileMenu.addItem(withTitle: "Close Window",
                          action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileItem.submenu = fileMenu
@@ -372,6 +469,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.mainMenu = main
     }
 
+    private func rebuildOpenRecentMenu() {
+        let submenu = NSMenu(title: "Open Recent")
+        for path in recents() {
+            let title = (path as NSString).lastPathComponent
+            let item = NSMenuItem(title: title, action: #selector(openRecentPath(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = path
+            submenu.addItem(item)
+        }
+        openRecentItem?.submenu = submenu
+        openRecentItem?.isEnabled = !recents().isEmpty
+    }
+
+    @objc private func openRecentPath(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        openHandled = true
+        open(path: path)
+    }
+
     @objc func showOpenPanel(_ sender: Any?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -387,5 +503,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     @objc func reload(_ sender: Any?) {
         if let url = serverURL { webView.load(URLRequest(url: url)) } else { webView.reload() }
+    }
+
+    // MARK: - menubar quill
+
+    /// The always-present menubar launcher. The app lives here with no window,
+    /// so the quill is how a manuscript is opened once every window is closed.
+    private func buildStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // The menubar mark is the quill's own nib tip — a cursor. It is taller
+        // than wide, so scale to a fixed height and keep the aspect (18x18 would
+        // squash it). isTemplate lets the menu bar recolor it for light/dark.
+        if let img = NSImage(named: "quill") ?? Bundle.main.image(forResource: "quill") {
+            img.isTemplate = true
+            let h: CGFloat = 17
+            let ar = img.size.height > 0 ? img.size.width / img.size.height : 1
+            img.size = NSSize(width: h * ar, height: h)
+            item.button?.image = img
+        } else {
+            item.button?.title = "✒"
+        }
+        // Differentiated clicks: left = focus the work, right/control-click = the
+        // menu. So we do NOT set item.menu (that pops the menu on ANY click); we
+        // take a button action and inspect the event instead.
+        item.button?.target = self
+        item.button?.action = #selector(statusClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem = item
+    }
+
+    @objc private func statusClicked(_ sender: Any?) {
+        let ev = NSApp.currentEvent
+        let wantsMenu = ev?.type == .rightMouseUp
+            || (ev?.modifierFlags.contains(.control) ?? false)
+        if wantsMenu, let button = statusItem?.button {
+            let menu = buildStatusMenu()
+            menu.popUp(positioning: nil,
+                       at: NSPoint(x: 0, y: button.bounds.height + 4),
+                       in: button)
+        } else {
+            showWindow(nil)   // left-click: focus the window, or open the home
+        }
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        for it in projectsMenuItems() { menu.addItem(it) }
+        for path in recents() {
+            let m = NSMenuItem(title: (path as NSString).lastPathComponent,
+                               action: #selector(openRecentPath(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = path; menu.addItem(m)
+        }
+        menu.addItem(.separator())
+        let open = NSMenuItem(title: "Open Folder…", action: #selector(showOpenPanel(_:)), keyEquivalent: "")
+        open.target = self; menu.addItem(open)
+        let show = NSMenuItem(title: "Show Window", action: #selector(showWindow(_:)), keyEquivalent: "")
+        show.target = self; menu.addItem(show)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Manuscriptor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        return menu
+    }
+
+    private func projectsMenuItems() -> [NSMenuItem] {
+        guard let data = ServerProcess.projectsJSON().data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { p in
+            guard let name = p["name"] as? String, let root = p["root"] as? String else { return nil }
+            let m = NSMenuItem(title: name, action: #selector(openProject(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = root; return m
+        }
+    }
+
+    @objc private func openProject(_ sender: NSMenuItem) {
+        guard let root = sender.representedObject as? String else { return }
+        openHandled = true; open(path: root)
+    }
+
+    /// Left-clicking the quill (or "Show Window"): bring the manuscript window
+    /// forward, or present the home surface if no window is showing.
+    @objc func showWindow(_ sender: Any?) {
+        NSApp.setActivationPolicy(.regular)
+        if let w = window, w.isVisible {
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            loadHome()
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

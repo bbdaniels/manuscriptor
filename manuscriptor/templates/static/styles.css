@@ -85,6 +85,12 @@ body {
 }
 .dots { display: flex; gap: .4rem; }
 .dots i { width: 11px; height: 11px; border-radius: 50%; background: var(--rule); display: block; }
+/* In the Manuscriptor app the real macOS title bar is transparent and this row
+   IS the top bar, so hide the decorative fake dots and inset past the real
+   traffic lights. Only in the app (the shell adds `.ms-native-titlebar`); a
+   browser or the static export keeps its own faux title bar. */
+.ms-native-titlebar .titlebar { padding-left: 78px; padding-top: .35rem; padding-bottom: .35rem; }
+.ms-native-titlebar .titlebar .dots { display: none; }
 .titlebar .name { font-size: .82rem; color: var(--muted); font-weight: 500; }
 .titlebar .path { font-family: var(--mono); font-size: .74rem; color: var(--faint); }
 .titlebar .live { margin-left: auto; display: flex; align-items: center; gap: .4rem; font-size: .74rem; color: var(--muted); }

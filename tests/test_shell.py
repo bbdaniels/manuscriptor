@@ -36,6 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 SHELL = REPO / "shell"
 PLIST = SHELL / "Resources" / "Info.plist"
 BUILD_SH = SHELL / "build.sh"
+INSTALL_SH = SHELL / "install.sh"
 SOURCES = SHELL / "Sources" / "Manuscriptor"
 APP_BIN = SHELL / "build" / "Manuscriptor.app" / "Contents" / "MacOS" / "Manuscriptor"
 
@@ -298,6 +299,14 @@ def test_build_script_produces_the_documented_bundle():
     assert "Info.plist" in text
 
 
+def test_install_script_present_and_executable():
+    assert INSTALL_SH.exists(), "shell/install.sh must exist"
+    assert os.access(INSTALL_SH, os.X_OK), "shell/install.sh must be executable"
+    body = INSTALL_SH.read_text()
+    assert "build.sh" in body, "install must build first"
+    assert "/Applications" in body, "install must copy into /Applications"
+
+
 # ------------------------------------------------- invariants only Swift holds
 #
 # These are greps. They cannot prove the behaviour; they exist so that
@@ -339,6 +348,43 @@ def test_swift_jumps_to_the_opened_file():
     """Serving the root is only half of it; the page has to land on the file."""
     src = _swift_source()
     assert "MSViewer" in src
+
+
+def test_recents_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    assert "RecentManuscripts" in src, "recents must use a dedicated UserDefaults key"
+    assert "func pushRecent" in src and "func recents" in src
+    assert "Open Recent" in src, "File menu must offer Open Recent"
+    # bounded so the list cannot grow without limit
+    assert "prefix(" in src, "recents must be bounded"
+
+
+def test_home_screen_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    home = SHELL / "Resources" / "home.html"
+    assert home.exists(), "bundled home.html must exist"
+    assert "WKScriptMessageHandler" in src
+    assert "manuscriptor" in home.read_text() or "ms.open" in home.read_text()
+    # cold open loads the home, not a bare NSOpenPanel
+    assert "loadHome" in src, "cold open must present the home surface"
+
+
+def test_menubar_and_lifecycle_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    assert "NSStatusItem" in src, "must add a menubar status item"
+    assert "quill" in src, "menubar uses the quill template image"
+    assert "isTemplate = true" in src, "menubar image must be a template image"
+    # left-click focuses, right/control-click pops the menu (menu not bound to item)
+    assert "sendAction(on:" in src or "rightMouseUp" in src, "clicks must be differentiated"
+    assert "popUp" in src, "right-click must pop the project/recents menu"
+    assert "setActivationPolicy(.accessory)" in src and "setActivationPolicy(.regular)" in src, \
+        "activation policy must switch regular<->accessory"
+    # the app no longer quits when the last window closes
+    assert "applicationShouldTerminateAfterLastWindowClosed" in src
+    assert "return false" in src.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][:120], \
+        "must persist in the menubar after the window closes"
+    # the server invariant is preserved: still stopped on window close
+    assert "windowWillClose" in src or "server.stop()" in src
 
 
 # ------------------------------------------------- the Swift/Python parity check
