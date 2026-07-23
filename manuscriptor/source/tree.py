@@ -133,3 +133,23 @@ def discover(root: Path, *, max_depth: int = MAX_DEPTH) -> list[Document]:
             ))
     found.sort(key=_folder_sort_key)
     return found
+
+
+def current_root(served_dir: Path, main: str | None = None) -> Path:
+    """The directory the document opened on is served from, for a top-level serve.
+
+    Mirrors the choice `Session._default_current` makes, so a consumer outside
+    the server (the drain agent's launch) can bind to the same place the page
+    writes its `comments.jsonl`: an explicit `--main` names a file in the served
+    directory itself, so its root is the served directory; otherwise the first
+    discovered document's `root_dir` -- a subfolder when the paper sits deeper
+    than the project root; and when discovery finds nothing the served directory
+    stands (the single-directory root rule handles the lone-fragment case
+    downstream). For an ordinary flat manuscript this is `served_dir`, so nothing
+    about a single-directory serve changes.
+    """
+    served = Path(served_dir).resolve()
+    if main:
+        return served
+    docs = discover(served)
+    return Path(docs[0].root_dir) if docs else served
