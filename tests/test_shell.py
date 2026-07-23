@@ -36,6 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 SHELL = REPO / "shell"
 PLIST = SHELL / "Resources" / "Info.plist"
 BUILD_SH = SHELL / "build.sh"
+INSTALL_SH = SHELL / "install.sh"
 SOURCES = SHELL / "Sources" / "Manuscriptor"
 APP_BIN = SHELL / "build" / "Manuscriptor.app" / "Contents" / "MacOS" / "Manuscriptor"
 
@@ -296,6 +297,14 @@ def test_build_script_produces_the_documented_bundle():
     assert text.startswith("#!"), "no shebang"
     assert "build/Manuscriptor.app" in text
     assert "Info.plist" in text
+
+
+def test_install_script_present_and_executable():
+    assert INSTALL_SH.exists(), "shell/install.sh must exist"
+    assert os.access(INSTALL_SH, os.X_OK), "shell/install.sh must be executable"
+    body = INSTALL_SH.read_text()
+    assert "build.sh" in body, "install must build first"
+    assert "/Applications" in body, "install must copy into /Applications"
 
 
 # ------------------------------------------------- invariants only Swift holds
