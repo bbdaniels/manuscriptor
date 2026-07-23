@@ -198,17 +198,29 @@ def reply(manuscript_dir: Path, chat_id: str, body: str, *, author: str = "claud
 
 
 def wait(manuscript_dir: Path, *, timeout: float | None = None) -> bool:
-    """Block until the comment log grows. True when it did, False on timeout.
+    """Block until there is work. True when there is, False on timeout.
 
     Meant to run inside a backgrounded Claude Code job: the process exiting is
     the wake signal, so the session is re-invoked with the new comment already
     on disk.
+
+    A NON-EMPTY QUEUE RETURNS IMMEDIATELY, before any watching. The question
+    the park asks is "is there work", not "did the file grow": a comment that
+    landed while the session was working sits inside the size baseline, and a
+    park that watched only for growth slept through it until some third record
+    happened along. Found by the persistent session's own control-flow test.
     """
     import time
 
     from manuscriptor.server.watch import block_until_log_grows
 
     log = Path(manuscript_dir).resolve() / "comments.jsonl"
+    try:
+        doc = build_mod.find_main_tex(Path(manuscript_dir).resolve()).name
+    except (LookupError, FileNotFoundError):
+        doc = None
+    if chat.pending(log, doc=doc):
+        return True
     start = log.stat().st_size if log.exists() else 0
     if timeout is None:
         block_until_log_grows(log, from_offset=start)

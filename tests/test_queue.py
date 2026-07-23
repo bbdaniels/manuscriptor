@@ -1128,3 +1128,23 @@ def test_a_manuscript_outside_any_repo_adds_nothing(tmp_path):
     ms.mkdir()
     script = cli.agent_loop_script(ms, claude="c", manuscriptor="m", add_dirs=[])
     assert "--add-dir" not in script
+
+
+def test_the_park_returns_at_once_when_work_is_already_pending(tmp_path):
+    # The race the persistent session exposed: a comment landing WHILE the
+    # session works is inside the park's size baseline, so "wait for the log
+    # to grow" never fires for it and it sits unworked until a third record
+    # arrives. The park's real question is "is there work", so a non-empty
+    # queue returns immediately.
+    d, bid, b = setup(tmp_path)                  # c-0001 pending
+    t0 = time.monotonic()
+    assert drain.wait(tmp_path, timeout=10) is True
+    assert time.monotonic() - t0 < 3, "the park blocked despite pending work"
+
+
+def test_the_park_still_blocks_on_a_quiet_queue(tmp_path):
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    build_mod.build(tmp_path)
+    t0 = time.monotonic()
+    assert drain.wait(tmp_path, timeout=1.2) is False
+    assert time.monotonic() - t0 >= 1.0
