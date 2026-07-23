@@ -57,11 +57,18 @@ def run(*, build_dir: Path) -> int:
                 text=True,
                 timeout=120,
             )
-            if result.returncode == 0:
+            # Exit status alone over-reports: `item find-pdf` exits 0 for
+            # NOT_FOUND too, and the first live run printed "ok" for lookups
+            # that found nothing. The verdict is the first word of stdout.
+            verdict = (result.stdout or "").strip()
+            if result.returncode == 0 and verdict.startswith("OK"):
                 print("ok")
                 n_fixed += 1
+            elif result.returncode == 0 and verdict.startswith("NOT_FOUND"):
+                print("NOT_FOUND (no open-access copy)")
+                n_failed += 1
             else:
-                print(f"FAILED ({result.stderr.strip()[:80]})")
+                print(f"FAILED ({(result.stderr or verdict).strip()[:80]})")
                 n_failed += 1
         except subprocess.TimeoutExpired:
             print("TIMEOUT")

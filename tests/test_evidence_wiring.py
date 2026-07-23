@@ -117,7 +117,8 @@ def test_repair_invokes_the_item_subcommand(tmp_path, monkeypatch):
     import time
 
     (tmp_path / "missing.json").write_text(json.dumps(
-        [{"cite_key": "barrows1993", "doi": "10.1/x", "zotero_key": "KEY123"}]),
+        [{"cite_key": "barrows1993", "doi": "10.1/x", "zotero_key": "KEY123"},
+         {"cite_key": "king2019", "doi": "10.1/y", "zotero_key": "KEY456"}]),
         encoding="utf-8")
     calls = []
 
@@ -125,11 +126,46 @@ def test_repair_invokes_the_item_subcommand(tmp_path, monkeypatch):
         returncode = 0
         stderr = ""
 
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = ["OK: PDF attached", "NOT_FOUND: no PDF available"]
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zotero-cli")
     monkeypatch.setattr(time, "sleep", lambda _: None)
-    monkeypatch.setattr(sp, "run", lambda argv, **kw: calls.append(argv) or Done())
+    monkeypatch.setattr(sp, "run",
+                        lambda argv, **kw: (calls.append(argv), Done(answers[len(calls) - 1]))[1])
     rc = repair.run(build_dir=tmp_path)
     assert rc == 0
     assert calls, "no lookup was attempted"
     assert calls[0][:3] == ["zotero-cli", "item", "find-pdf"]
     assert calls[0][3] == "KEY123"
+
+
+def test_repair_reports_not_found_as_not_found(tmp_path, monkeypatch, capsys):
+    # `zotero-cli item find-pdf` exits 0 for NOT_FOUND too, so exit status
+    # alone over-reports: the first live run printed "ok" for lookups that
+    # found nothing. The verdict is the first word of stdout.
+    from manuscriptor.evidence import repair
+    import shutil
+    import subprocess as sp
+    import time
+
+    (tmp_path / "missing.json").write_text(json.dumps(
+        [{"cite_key": "a", "zotero_key": "K1"},
+         {"cite_key": "b", "zotero_key": "K2"}]), encoding="utf-8")
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    answers = iter(["OK: attached", "NOT_FOUND: nothing open-access"])
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zotero-cli")
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(sp, "run", lambda argv, **kw: Done(next(answers)))
+    repair.run(build_dir=tmp_path)
+    out = capsys.readouterr().out
+    assert "fixed: 1   failed: 1" in out
+    assert "NOT_FOUND" in out
