@@ -28,6 +28,23 @@ repository. Break it however you like and put it back with
 `git -C ~/Projects/manuscriptor-demo checkout .`. Use it to try anything you
 have not tried before.
 
+## Several documents in one directory
+
+A directory often holds more than one document: the paper, an online appendix,
+a response to reviewers, a highlights page. Any `.tex` that declares its own
+`\documentclass` counts, and when there is more than one, a switcher appears at
+the left of the toolbar. Pick a document and the page rebuilds around it,
+Overleaf-style; the directory, the comment log, and the git history stay
+shared.
+
+Comments know which document they were left on. A note you leave on the
+response queues against the response, and a session draining the paper never
+sees it; `manuscriptor proc --main response.tex` drains that document's queue.
+
+With no `main.tex` and several documents, `serve` asks you to pick with
+`--main` rather than guessing. Double-clicking a document in Finder is never
+ambiguous: a file that declares a documentclass opens as itself.
+
 ## The page
 
 Three columns, each scrolling on its own. The window itself never scrolls.
@@ -89,6 +106,18 @@ script instead.
 Open a paragraph's **Chat** tab and type what you want changed. That is the
 whole gesture; there is no separate markup step and nothing to extract
 afterwards.
+
+The inspector's resting panel, before you select anything, is a chat about the
+**whole manuscript**. A note typed there is a comment with no paragraph: "check
+the tenses across the results section", or a question about the paper. The
+session decomposes it into per-paragraph work itself, and each of those writes
+still touches exactly one block.
+
+The agent answers in words as well as edits. A reply lands in the same chat the
+comment was typed into, so a question gets an answer and an edit that needed a
+judgment call comes with its reasoning. The session also reads the manuscript's
+project notes in the Obsidian vault before working, so an edit respects the
+decisions recorded there, not just the paragraph in front of it.
 
 Comments queue. The header carries the standing state, `3 queued · 1 working`,
 and the ticker names what was touched by its section rather than an id.
@@ -155,7 +184,7 @@ itself, so compiling never grows your `git status`.
 
 ## Bringing in a reviewer
 
-**Read in comments…** takes a marked-up PDF or a `.docx` with tracked changes.
+**Import comments…** takes a marked-up PDF or a `.docx` with tracked changes.
 
 Annotations are anchored by **the text the reviewer highlighted**, not the page
 number, so they survive you rewriting everything around them. That is the whole

@@ -69,7 +69,11 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
     with a note saying so, never silently discarded.
     """
     manuscript_dir = Path(manuscript_dir).resolve()
-    waiting = chat.pending(manuscript_dir / "comments.jsonl")
+    # Scoped to the document being drained: the log is shared by every
+    # document in the directory, and working the appendix's comments against
+    # the paper's blocks would re-anchor them onto the wrong paragraphs.
+    doc = build_mod.find_main_tex(manuscript_dir, main).name
+    waiting = chat.pending(manuscript_dir / "comments.jsonl", doc=doc)
     if not waiting:
         return []
 
@@ -79,6 +83,23 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
 
     items: list[Item] = []
     for c in sorted(waiting, key=lambda c: c.ts):
+        # A comment with no block is about the document, not a paragraph. It
+        # is orchestration work: decompose it into per-block tasks, each of
+        # which still writes exactly one block. The constraint the design
+        # rests on is per write, not per comment.
+        if not c.block:
+            items.append(
+                Item(
+                    chat_id=c.id, block_id="", body=c.body, state=c.state,
+                    file="", line_start=0, line_end=0, editable=False,
+                    source="", section=None,
+                    note=("document-level: no single block to edit. Decompose into "
+                          "per-block subagent tasks; every write is still one block. "
+                          "Answer in words with `manuscriptor reply` when the right "
+                          "response is an answer rather than an edit."),
+                )
+            )
+            continue
         bid, note = _locate(c, b, records)
         if bid is None:
             items.append(
@@ -122,6 +143,20 @@ def mark(manuscript_dir: Path, chat_id: str, state: str, *, edit: dict | None = 
     rec = {"id": chat_id, "kind": "state", "state": state}
     if edit:
         rec["edit"] = edit
+    return chat.append(Path(manuscript_dir).resolve() / "comments.jsonl", rec)
+
+
+def reply(manuscript_dir: Path, chat_id: str, body: str, *, author: str = "claude") -> dict:
+    """Answer a comment in words, into the same chat.
+
+    States say that something happened; a reply says what, or why not. It is
+    how the agent declines ("this needs the producing script, not the prose"),
+    reports a decision, or answers a question the comment asked. Same log,
+    same append-only discipline, joined to its comment by id.
+    """
+    if not str(body).strip():
+        raise ValueError("an empty reply says nothing; use a state for that")
+    rec = {"id": chat_id, "kind": "reply", "body": str(body), "author": author}
     return chat.append(Path(manuscript_dir).resolve() / "comments.jsonl", rec)
 
 
@@ -178,6 +213,10 @@ def as_text(items: list[Item]) -> str:
         "",
         "    manuscriptor state <dir> <chat-id> working",
         "    manuscriptor state <dir> <chat-id> done",
+        "",
+        "A comment can be answered in words as well as with an edit:",
+        "",
+        "    manuscriptor reply <dir> <chat-id> \"what happened, or why not\"",
         "",
     ]
     for it in items:

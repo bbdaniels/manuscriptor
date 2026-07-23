@@ -1,4 +1,4 @@
-/* Read in comments: a referee's marked-up PDF, a coauthor's tracked changes.
+/* Import comments: a referee's marked-up PDF, a coauthor's tracked changes.
 
    The button existed and did nothing, which is the half of the author's problem
    that stayed open: he could comment TO the tool and a referee still could not
@@ -163,7 +163,7 @@
   function paintButton() {
     var el = document.querySelector('[data-open="import:reviewer"]');
     if (!el) return;
-    var base = 'Read in comments…';
+    var base = 'Import comments…';
     el.textContent = S.tray.length ? base + '  ' + S.tray.length : base;
     el.setAttribute('title', S.tray.length
       ? S.tray.length + ' imported ' + (S.tray.length === 1 ? 'mark is' : 'marks are') +
@@ -298,7 +298,7 @@
       : 'a referee PDF, or a coauthor\'s tracked changes';
 
     return {
-      eyebrow: 'Read in comments',
+      eyebrow: 'Import comments',
       chip: S.tray.length ? ['c', S.tray.length + ' waiting'] : null,
       title: 'Bring outside markup in',
       sub: sub,
@@ -383,7 +383,7 @@
 
   /* Read once on boot, so the count on the toolbar is right before anyone opens
      anything. Verified in a browser: without it a page loaded with two marks
-     waiting showed a bare "Read in comments…" until the panel was opened, which
+     waiting showed a bare "Import comments…" until the panel was opened, which
      is the one moment the count would have been worth having. */
   function boot() { paintButton(); load(null); }
   if (document.readyState === 'loading') {

@@ -155,6 +155,25 @@ def case_orphan_fragment(tmp: Path):
     return f, tmp / "repo" / "loose", "", "frag.tex"
 
 
+def case_opened_document_is_the_document(tmp: Path):
+    """A file that itself declares a documentclass IS the document, even beside
+    a main.tex. estonia-ecm keeps `Highlights for JPubE.tex` next to the paper;
+    opening it must serve the highlights, not the paper with a jump to a file
+    the paper does not contain."""
+    _write(tmp / "paper" / "main.tex", DOC)
+    f = _write(tmp / "paper" / "highlights.tex", DOC)
+    return f, tmp / "paper", "highlights.tex", "highlights.tex"
+
+
+def case_opened_document_settles_an_ambiguous_directory(tmp: Path):
+    """Two roots is not a root when walking up from a fragment, but opening one
+    of the roots directly is not ambiguous at all."""
+    (tmp / "repo" / ".git").mkdir(parents=True)
+    f = _write(tmp / "repo" / "paper" / "a.tex", DOC)
+    _write(tmp / "repo" / "paper" / "b.tex", DOC)
+    return f, tmp / "repo" / "paper", "a.tex", "a.tex"
+
+
 CASES = [
     case_main_beside,
     case_nested_appendix,
@@ -168,6 +187,8 @@ CASES = [
     case_git_root_is_itself_the_manuscript,
     case_directory_given,
     case_orphan_fragment,
+    case_opened_document_is_the_document,
+    case_opened_document_settles_an_ambiguous_directory,
 ]
 
 

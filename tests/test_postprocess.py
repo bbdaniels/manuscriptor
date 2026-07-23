@@ -438,3 +438,62 @@ def test_the_whole_render_track_against_the_reference_manuscript(tmp_path):
     # is telling the margin something untrue about what it can address.
     present = set(re.findall(r'data-mx="([^"]+)"', out["html"]))
     assert set(out["unanchored"]) == {b.id for b in blocks} - present
+
+
+# ---------------------------------------------------------------- front matter
+#
+# The render pass rewrites \maketitle and the abstract into constructs pandoc
+# keeps, and tags them with tokens. Postprocess turns each token into a class
+# on its element, so the stylesheet can set the title apart from a section
+# heading, and no token may ever reach the reader.
+
+
+def test_frontmatter_tokens_become_classes(tmp_path, harvester):
+    html = (
+        f'<h1 class="unnumbered">⟦MXTITLE⟧A Title</h1>'
+        f"<p>⟦MXBYLINE⟧A. Author, B. Coauthor</p>"
+        f"<h2>⟦MXABSTRACT⟧Abstract</h2>"
+        f"<p>{mark(A)}The abstract text.</p>"
+    )
+    out = postprocess(
+        html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out", labels={},
+    )
+    page = out["html"]
+    assert "⟦MXTITLE⟧" not in page
+    assert "⟦MXBYLINE⟧" not in page
+    assert "⟦MXABSTRACT⟧" not in page
+    assert re.search(r'<h1 class="doc-title unnumbered">\s*A Title</h1>', page)
+    assert re.search(r'<p class="doc-byline">\s*A. Author', page)
+    assert re.search(r'<h2 class="doc-abstract-label">\s*Abstract</h2>', page)
+
+
+def test_a_stray_token_is_stripped_not_shipped(tmp_path, harvester):
+    # A token that lands somewhere unexpected must still never reach the page.
+    out = postprocess(
+        f"<p>{mark(A)}Prose with a stray ⟦MXTITLE⟧ token.</p>",
+        blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out", labels={},
+    )
+    assert "⟦MXTITLE⟧" not in out["html"]
+    assert "Prose with a stray" in out["html"]
+
+
+def test_a_chain_of_empty_anchors_does_not_strand_the_hoist(tmp_path, harvester):
+    # estonia-ecm renders `\newpage` then `\section{Introduction}` as two
+    # consecutive empty anchors before the <h1>. The first match consumed the
+    # second anchor's tag as its "following element", so the heading never
+    # received an id and the Introduction was unclickable on the live page
+    # (2026-07-22). The nearest preceding anchor must win the element.
+    html = (
+        f"<p>{mark(A)}Prose.</p>"
+        f'<p data-mx="{B}"></p><p data-mx="{C}"></p><h1 id="x">Heading</h1>'
+    )
+    out = postprocess(
+        html, blocks=(FakeBlock(A), FakeBlock(B), FakeBlock(C)),
+        manuscript_dir=tmp_path, output_dir=tmp_path / "out", labels={},
+    )
+    page = out["html"]
+    assert f'<h1 id="x" data-mx="{C}">' in page, page
+    assert f'<p data-mx="{B}"></p>' in page  # the farther anchor stays put
+    assert out["unanchored"] == []

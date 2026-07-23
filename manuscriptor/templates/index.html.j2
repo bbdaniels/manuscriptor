@@ -70,13 +70,19 @@
   </div>
 
   <div class="toolbar">
+    {#- The document switcher, Overleaf-style: one directory, several documents
+        (the paper, the appendix, a response to reviewers), pick which to
+        serve. Hydrated from MS.docs and hidden by the viewer when the
+        directory holds only one document, so the ordinary manuscript never
+        shows a control with nothing to choose. -#}
+    <select class="tb docswitch" id="doc-switch" aria-label="document" hidden></select>
     <span class="grp">
       <button class="tb" type="button" data-act="compile:pdf">Compile PDF</button>
       <button class="tb" type="button" data-act="compile:docx">Compile Word</button>
     </span>
     <span class="sep"></span>
     <span class="grp">
-      <button class="tb accent" type="button" data-open="import:reviewer">Read in comments…</button>
+      <button class="tb accent" type="button" data-open="import:reviewer">Import comments…</button>
     </span>
     <span class="skinctl">
       <button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button>

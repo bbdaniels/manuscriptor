@@ -56,7 +56,9 @@
      harvest that forgets to put it back would leave every block unaddressable.
      Accept both spellings and treat the prefixed form as canonical. */
   function normId(v) {
-    if (v === null || v === undefined) return '';
+    // Empty stays empty: '' is the document chat's key, and prefixing it
+    // would file document messages under a block named "b-".
+    if (v === null || v === undefined || v === '') return '';
     v = String(v);
     return v.slice(0, 2) === 'b-' ? v : 'b-' + v;
   }
@@ -171,6 +173,23 @@
     return { h: Math.round(h), s: Math.max(0.25, Math.min(1.6, sat * 1.35)) };
   }
 
+  /* The status colours are excluded from the hue rotation, but the wheel can
+     still PICK the computed violet as the accent, and then every button, tab
+     underline and link occupies the channel that means "this number came from
+     code". Computed is the one status rendered as coloured inline content
+     (the other three only ever mark underlines and dots), so its band alone
+     is reserved: a pick inside it is steered to the nearer band edge, keeping
+     the chosen saturation and lightness. */
+  var COMPUTED_HUE = 257, COMPUTED_BAND = 24;
+  function clampHue(h) {
+    var d = h - COMPUTED_HUE;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    if (Math.abs(d) >= COMPUTED_BAND) return h;
+    var out = COMPUTED_HUE + (d >= 0 ? COMPUTED_BAND : -COMPUTED_BAND);
+    return ((out % 360) + 360) % 360;
+  }
+
   function ago(iso) {
     if (!iso) return '';
     var then = Date.parse(iso);
@@ -250,6 +269,7 @@
     draftKey: draftKey,
     spliceAt: spliceAt,
     hexToHS: hexToHS,
+    clampHue: clampHue,
     queueSummary: queueSummary,
     tickerText: tickerText,
     renameQueue: renameQueue,
@@ -379,6 +399,26 @@
     var mine = el.querySelectorAll(':scope > .tag, :scope > .pin, :scope > .add');
     for (var i = 0; i < mine.length; i++) mine[i].remove();
 
+    /* A block whose LaTeX renders nothing (\newpage, a spacing run) keeps its
+       anchor in the DOM but must not occupy a line or take a click: the
+       2026-07-22 audit found them as invisible 11px clickable slivers.
+       styles.css collapses `p[data-mx]:empty`, but the ¶ tag inserted below
+       defeats :empty forever after; the class is the same rule made
+       hydration-proof. A void block that carries a chat or a state is kept
+       visible, because a pin pointing at nothing the author can find is worse
+       than a sliver. */
+    var st = S.blockState[id];
+    var chat = (S.chats[id] || []).length;
+    var isVoid = !isExhibit && !st && !chat &&
+      el.textContent.trim() === '' &&
+      !el.querySelector('img, table, math, figure');
+    el.classList.toggle('is-void', isVoid);
+    if (isVoid) {
+      el.setAttribute('tabindex', '-1');
+      markDirty(id, draftOf(id) !== null);
+      return id;
+    }
+
     if (!isExhibit && !el.classList.contains('is-heading')) {
       var tag = document.createElement('span');
       tag.className = 'tag';
@@ -386,8 +426,6 @@
       el.insertBefore(tag, el.firstChild);
     }
 
-    var st = S.blockState[id];
-    var chat = (S.chats[id] || []).length;
     if (st || chat) {
       var pin = document.createElement('button');
       pin.type = 'button';
@@ -441,6 +479,15 @@
       S.order.push(hydrateBlock(els[i], n));
     }
     hydrateSpans(docInner);
+    // A collapsed block is deliberate for layout commands and a defect for
+    // anything else; say which ids were hidden so a vanished paragraph is
+    // diagnosable from the console rather than genuinely invisible.
+    var voids = docInner.querySelectorAll('.is-void');
+    if (voids.length && window.console) {
+      var ids = [];
+      for (var v = 0; v < voids.length; v++) ids.push(voids[v].getAttribute('data-mx'));
+      console.info('collapsed ' + ids.length + ' void block(s): ' + ids.join(' '));
+    }
   }
 
   function blockEl(id) {
@@ -781,6 +828,14 @@
     }
   }
 
+  function chatMsgs(msgs) {
+    return '<div class="chat">' + msgs.map(function (m) {
+      return '<div class="msg' + (m.who === 'you' ? ' bb' : '') + '">' +
+        '<div class="who">' + esc(m.who) + (m.ts ? ' · ' + esc(ago(m.ts)) : '') +
+        (m.state ? ' · ' + esc(m.state) : '') + '</div>' + esc(m.body) + '</div>';
+    }).join('') + '</div>';
+  }
+
   function chatTab(id, chat) {
     // The composer goes at the TOP: the thing you came here to do is type.
     var key = 'chat:' + id;
@@ -789,16 +844,43 @@
         load(draftKey(S.docKey, key)) || ''));
     if (chat.length) {
       body += card('Earlier', chat.length + ' message' + (chat.length === 1 ? '' : 's'),
-        '<div class="chat">' + chat.map(function (m) {
-          return '<div class="msg' + (m.who === 'you' ? ' bb' : '') + '">' +
-            '<div class="who">' + esc(m.who) + (m.ts ? ' · ' + esc(ago(m.ts)) : '') +
-            (m.state ? ' · ' + esc(m.state) : '') + '</div>' + esc(m.body) + '</div>';
-        }).join('') + '</div>');
+        chatMsgs(chat));
     } else {
       body += card('', '', '<p class="empty">No chat on this block yet. A note here becomes a comment ' +
         'anchored to these bytes, not to a page number.</p>');
     }
     return body;
+  }
+
+  /* The document chat: the inspector's resting state is a conversation about
+     the manuscript, not a blank panel. A note typed here is a comment with no
+     block; the drain presents it as document-level work for the session to
+     decompose, and the agent's replies land back in this panel. Still nothing
+     but the log between the two sides. */
+  function renderHome() {
+    if (S.sel) return;
+    var ui = captureUI();
+    if (backBtn) backBtn.hidden = true;
+    if (jumpBtn) jumpBtn.hidden = true;
+    eyebrowEl.textContent = 'Manuscript';
+    ititleEl.textContent = String(S.ms.title || 'Manuscript');
+    isubEl.textContent = String(S.ms.main || '');
+    if (headSaveEl) headSaveEl.innerHTML = '';
+    tabsEl.innerHTML = '';
+    var msgs = S.chats[''] || [];
+    var body = card('Ask for a change anywhere', '⌘↵',
+      composer('chat:', 'Check the tenses across the results section, or ask a question about the paper.',
+        load(draftKey(S.docKey, 'chat:')) || ''));
+    body += card('', '', '<p class="empty">Click a paragraph to see its source and its chat, ' +
+      'a citation to see its evidence, or a violet number to see the code that produced it. ' +
+      'A note typed above becomes a comment on the whole manuscript, worked by the same queue.</p>');
+    if (msgs.length) {
+      body += card('Earlier', msgs.length + ' message' + (msgs.length === 1 ? '' : 's'),
+        chatMsgs(msgs));
+    }
+    ibodyEl.innerHTML = '<div data-role="banners"></div>' + body;
+    wireInspector();
+    restoreUI(ui, true);
   }
 
   // Inserting used to replace the whole panel, which meant leaving the
@@ -1050,7 +1132,7 @@
       : card('', '', '<p class="empty">Select a paragraph first, so the request has somewhere to anchor.</p>');
 
     return {
-      eyebrow: key.split(':')[0] === 'import' ? 'Read in comments' : 'Insert',
+      eyebrow: key.split(':')[0] === 'import' ? 'Import comments' : 'Insert',
       chip: d.chip,
       title: d.title,
       sub: b ? 'at the cursor · ' + fileLine(b) : '',
@@ -1163,8 +1245,11 @@
     if (!box) return;
     var body = box.value.trim();
     if (!body) return;
-    var id = S.sel && S.sel.blockId;
-    if (!id) return;
+    // No selection means the document chat: a comment about the manuscript,
+    // sent with no block. The server records it block-less and the drain
+    // presents it as document-level work.
+    var id = S.sel ? S.sel.blockId : '';
+    if (id === null || id === undefined) return;
     if (!send({ type: 'chat', block: id, body: body })) return;
     // Optimistic, so the message does not appear to vanish; the server's own
     // chat frame replaces it when it arrives.
@@ -1174,7 +1259,7 @@
     });
     box.value = '';
     drop(draftKey(S.docKey, role));
-    renderInspector();
+    if (S.sel) renderInspector(); else renderHome();
     hydrate();
   }
 
@@ -1445,6 +1530,7 @@
         if (at >= 0) bag[at] = incoming; else bag.push(incoming);
         hydrate();
         if (S.sel && S.sel.blockId === cid) renderInspector();
+        else if (!S.sel && cid === '') renderHome();
         break;
       }
       case 'saved': {
@@ -1485,7 +1571,7 @@
      something, so they must not rotate with the decoration. */
   function applyHue(hex) {
     var hs = hexToHS(hex);
-    document.documentElement.style.setProperty('--h', String(hs.h));
+    document.documentElement.style.setProperty('--h', String(clampHue(hs.h)));
     document.documentElement.style.setProperty('--sat', hs.s.toFixed(2));
     store(MS_PREF_PREFIX + 'hue', hex);
   }
@@ -1785,7 +1871,30 @@
     S.ms = window.MS || {};
     S.blocks = S.ms.blocks || {};
     S.chats = S.ms.chats || {};
-    S.docKey = String(S.ms.title || window.location.pathname || 'doc');
+    // Keyed by the document, not the page: one directory can serve several
+    // documents (blob "main"/"docs"), and a draft typed on the appendix must
+    // not surface on the paper.
+    S.docKey = String(S.ms.main || S.ms.title || window.location.pathname || 'doc');
+
+    // The document switcher. Hidden when there is nothing to choose; changing
+    // it navigates, because a different document is a different page.
+    var docSwitch = document.getElementById('doc-switch');
+    if (docSwitch) {
+      var docs = S.ms.docs || [];
+      if (docs.length > 1) {
+        for (var di = 0; di < docs.length; di++) {
+          var opt = document.createElement('option');
+          opt.value = docs[di];
+          opt.textContent = docs[di].replace(/\.tex$/, '');
+          if (docs[di] === S.ms.main) opt.selected = true;
+          docSwitch.appendChild(opt);
+        }
+        docSwitch.hidden = false;
+        docSwitch.addEventListener('change', function () {
+          window.location.search = '?main=' + encodeURIComponent(docSwitch.value);
+        });
+      }
+    }
     // Seeded from the blob so a page opened while a session is halfway through
     // the third comment does not open on "idle" and an empty ticker.
     S.queue = S.ms.queue || [];
@@ -1793,6 +1902,7 @@
 
     restoreDrafts();
     hydrate();
+    renderHome();
     updateMeta();
     renderAgent();
     // "how long it has been in that state" has to keep being true. Ages only:

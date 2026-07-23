@@ -88,21 +88,60 @@ def _hoist_empty_anchors(html: str) -> str:
     An element that already carries a block id is never overwritten; in that
     case the empty paragraph stays, because two blocks fighting over one element
     is worse than one empty line.
-    """
 
-    def one(m: re.Match) -> str:
+    The scan resumes AT the following tag rather than past it, because the
+    following tag may itself be an empty anchor. `\\newpage` then
+    `\\section{Introduction}` render as two empty anchors before one <h1>; a
+    match that consumed the second anchor as its "following element" left the
+    heading with no id at all, and the Introduction was unclickable on the
+    live page. The nearest preceding anchor wins the element; the farther one
+    stays as an empty anchor, which the viewer collapses.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _EMPTY_ANCHOR_RE.search(html, i)
+        if m is None:
+            out.append(html[i:])
+            return "".join(out)
         block_id, open_tag, attrs = m.group(1), m.group(2), m.group(4)
         if "data-mx=" in attrs:
-            return m.group(0)
-        return open_tag[:-1].rstrip() + f' data-mx="{block_id}">'
+            out.append(html[i: m.start(2)])
+            i = m.start(2)
+            continue
+        out.append(html[i: m.start()])
+        out.append(open_tag[:-1].rstrip() + f' data-mx="{block_id}">')
+        i = m.end()
 
-    # Repeated, because a single pass consumes the following tag as part of its
-    # match: two empty anchors in a row would leave the second one behind.
-    for _ in range(6):
-        out = _EMPTY_ANCHOR_RE.sub(one, html)
-        if out == html:
-            return out
-        html = out
+
+# The render pass rewrites \maketitle and the abstract into constructs pandoc
+# keeps (render/pandoc.py, front matter), tagging each with a token. The token
+# becomes a class on its element so the stylesheet can set the title apart
+# from a section heading; and whatever happens, no token reaches the reader.
+_FRONTMATTER_CLASSES = (
+    ("⟦MXTITLE⟧", "doc-title"),
+    ("⟦MXBYLINE⟧", "doc-byline"),
+    ("⟦MXABSTRACT⟧", "doc-abstract-label"),
+)
+
+
+def _frontmatter_classes(html: str) -> str:
+    for token, cls in _FRONTMATTER_CLASSES:
+        pattern = re.compile(
+            r"(<(?:h[1-6]|p)\b[^>]*?)(\s*>)\s*" + re.escape(token) + r"\s*"
+        )
+
+        def one(m: re.Match, cls: str = cls) -> str:
+            open_tag = m.group(1)
+            if 'class="' in open_tag:
+                open_tag = open_tag.replace('class="', f'class="{cls} ', 1)
+            else:
+                open_tag += f' class="{cls}"'
+            return open_tag + ">"
+
+        html = pattern.sub(one, html)
+        # A token that landed anywhere else is stripped rather than shipped.
+        html = html.replace(token, "")
     return html
 
 
@@ -140,6 +179,7 @@ def postprocess(
 
     html, reported = _harvest(html)
     html = _hoist_empty_anchors(html)
+    html = _frontmatter_classes(html)
     html, unresolved = resolve(html, labels)
     html = _tag_citations(html)
     assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir))

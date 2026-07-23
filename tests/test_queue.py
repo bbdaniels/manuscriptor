@@ -681,3 +681,218 @@ def test_an_extension_can_say_a_whole_sentence_in_the_ticker():
     notify = notify[: notify.index("\n")]
     assert "when:" in notify, "and carry the field the renderer actually reads"
     assert "at:" not in notify
+
+
+# ------------------------------------------------- documents sharing one log
+#
+# A directory can hold several documents (the paper, the appendix, a response
+# to reviewers), Overleaf-style, and they share the one comments.jsonl. A
+# comment left on the response must never be presented while the paper is
+# being served or drained. New records carry the document they were left on;
+# a record without one (the whole existing corpus) belongs to whichever
+# document is being read, which is exact for the single-document manuscripts
+# that wrote those records.
+
+APPENDIX = r"""\documentclass{article}
+\begin{document}
+\section{Robustness}
+The appendix paragraph, different words so its block ids differ from the paper's.
+
+A second appendix paragraph, also its own words entirely.
+\end{document}
+"""
+
+
+def two_docs(tmp_path: Path):
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    (tmp_path / "appendix.tex").write_text(APPENDIX, encoding="utf-8")
+    return build_mod.build(tmp_path), build_mod.build(tmp_path, main="appendix.tex")
+
+
+def test_a_comment_is_scoped_to_the_document_it_was_left_on(tmp_path):
+    paper, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
+    a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
+                      "quote": p0.source_text[:120], "body": "on the paper",
+                      "author": "bb", "doc": "main.tex"})
+    chat.append(log, {"id": "c-0002", "kind": "comment", "block": a0.id,
+                      "quote": a0.source_text[:120], "body": "on the appendix",
+                      "author": "bb", "doc": "appendix.tex"})
+
+    q_paper = build_mod.queue_view(log, paper.blocks, doc="main.tex")
+    q_appx = build_mod.queue_view(log, appendix.blocks, doc="appendix.tex")
+    assert [e["id"] for e in q_paper] == ["c-0001"]
+    assert [e["id"] for e in q_appx] == ["c-0002"]
+    # No doc argument reads everything, which is what a whole-log audit wants.
+    assert len(build_mod.queue_view(log, paper.blocks)) == 2
+
+
+def test_a_legacy_record_belongs_to_the_document_being_read(tmp_path):
+    # Every record written before documents existed has no doc field. Treating
+    # those as global would spray one manuscript's comments across another;
+    # treating them as this-doc is exact for the single-document manuscripts
+    # that wrote them.
+    paper, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
+                      "quote": p0.source_text[:120], "body": "written last month",
+                      "author": "bb"})
+    assert [c.id for c in chat.pending(log, doc="main.tex")] == ["c-0001"]
+    assert [c.id for c in chat.pending(log, doc="appendix.tex")] == ["c-0001"]
+
+
+def test_the_ticker_only_reports_this_documents_work(tmp_path):
+    paper, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
+    a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
+                      "quote": p0.source_text[:120], "body": "paper",
+                      "author": "bb", "doc": "main.tex"})
+    chat.append(log, {"id": "c-0002", "kind": "comment", "block": a0.id,
+                      "quote": a0.source_text[:120], "body": "appendix",
+                      "author": "bb", "doc": "appendix.tex"})
+    drain.mark(tmp_path, "c-0001", "done")
+    drain.mark(tmp_path, "c-0002", "done")
+
+    t_paper = build_mod.ticker_view(log, paper.blocks, doc="main.tex")
+    assert [e["id"] for e in t_paper] == ["c-0001"]
+
+
+def test_the_blob_names_its_document_and_the_alternatives(tmp_path):
+    paper, appendix = two_docs(tmp_path)
+    assert paper.blob["main"] == "main.tex"
+    assert appendix.blob["main"] == "appendix.tex"
+    assert paper.blob["docs"] == ["main.tex", "appendix.tex"]
+
+
+def test_the_blob_scopes_its_chats_and_queue_to_its_document(tmp_path):
+    _, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
+                      "quote": a0.source_text[:120], "body": "appendix only",
+                      "author": "bb", "doc": "appendix.tex"})
+    paper = build_mod.build(tmp_path)
+    assert paper.blob["queue"] == []
+    assert paper.blob["chats"] == {}
+    appendix = build_mod.build(tmp_path, main="appendix.tex")
+    assert [e["id"] for e in appendix.blob["queue"]] == ["c-0001"]
+
+
+def test_the_drain_presents_only_the_documents_own_comments(tmp_path):
+    paper, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
+                      "quote": a0.source_text[:120], "body": "appendix only",
+                      "author": "bb", "doc": "appendix.tex"})
+    assert drain.collect(tmp_path) == []
+    got = drain.collect(tmp_path, main="appendix.tex")
+    assert [i.chat_id for i in got] == ["c-0001"]
+
+
+def test_a_comment_typed_on_the_page_records_its_document(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    (tmp_path / "appendix.tex").write_text(APPENDIX, encoding="utf-8")
+    s = Session(tmp_path, main="appendix.tex")
+    bid = [x.id for x in s.build.blocks if x.kind == "paragraph"][0]
+    asyncio.run(s.on_chat(bid, "note on the appendix"))
+    recs = chat.read_records(tmp_path / "comments.jsonl")
+    assert recs[-1]["doc"] == "appendix.tex"
+
+
+def test_the_session_switches_documents_and_refuses_a_stranger(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    (tmp_path / "appendix.tex").write_text(APPENDIX, encoding="utf-8")
+    s = Session(tmp_path)
+    assert s.blob["main"] == "main.tex"
+    s.switch("appendix.tex")
+    assert s.blob["main"] == "appendix.tex"
+    with pytest.raises(ValueError):
+        s.switch("../../../etc/passwd")
+    with pytest.raises(ValueError):
+        s.switch("nonexistent.tex")
+    assert s.blob["main"] == "appendix.tex", "a refused switch must change nothing"
+
+
+# ------------------------------------------------ the document chat, and replies
+#
+# Two gaps closed together. A chat about the manuscript rather than one
+# paragraph: a comment with no block, drained like any other but presented as
+# document-level work. And a voice for the agent: a `reply` record joins its
+# comment's chat as words, where before the agent could only signal states.
+
+
+def test_a_reply_joins_its_comments_chat(tmp_path):
+    d, bid, b = setup(tmp_path)
+    drain.reply(d, "c-0001", "Softened it and moved the caveat up front.")
+    msgs = chat.by_block(d / "comments.jsonl")[bid]
+    assert len(msgs) == 2
+    assert msgs[0]["who"] == "bb"
+    assert msgs[1]["who"] == "claude"
+    assert msgs[1]["body"].startswith("Softened it")
+    assert msgs[0]["id"] != msgs[1]["id"], "two messages sharing an id dedupe into one"
+
+
+def test_a_reply_is_scoped_with_its_comment(tmp_path):
+    paper, appendix = two_docs(tmp_path)
+    log = tmp_path / "comments.jsonl"
+    a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
+    chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
+                      "quote": a0.source_text[:120], "body": "on the appendix",
+                      "author": "bb", "doc": "appendix.tex"})
+    drain.reply(tmp_path, "c-0001", "Done.")
+    assert chat.by_block(log, doc="main.tex") == {}
+    assert len(chat.by_block(log, doc="appendix.tex")[a0.id]) == 2
+
+
+def test_a_reply_reaches_an_open_page(tmp_path):
+    from manuscriptor.server.app import Session
+
+    d, bid, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+    drain.reply(d, "c-0001", "Rewrote the second sentence.")
+    asyncio.run(s.on_log_change())
+    frames = [m for m in sent if m["type"] == "chat"]
+    assert frames, "a reply the page is never told about is a reply that did not happen"
+    assert frames[-1]["message"]["who"] == "claude"
+
+
+def test_a_document_comment_needs_no_block(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    asyncio.run(s.on_chat("", "The intro overclaims throughout; tone it down."))
+    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    assert rec["block"] == ""
+    assert rec["doc"] == "main.tex"
+    q = build_mod.queue_view(tmp_path / "comments.jsonl", s.build.blocks, doc="main.tex")
+    assert len(q) == 1 and q[0]["block"] is None
+
+
+def test_the_drain_presents_a_document_comment_as_document_work(tmp_path):
+    d, bid, b = setup(tmp_path)
+    chat.append(d / "comments.jsonl",
+                {"id": "c-0002", "kind": "comment", "block": "", "doc": "main.tex",
+                 "quote": "", "body": "Check the tenses across the results section.",
+                 "author": "bb"})
+    items = drain.collect(d)
+    doc_items = [i for i in items if i.chat_id == "c-0002"]
+    assert doc_items, "a document comment must never be silently dropped"
+    it = doc_items[0]
+    assert "document" in (it.note or "").lower()
+    assert "gone" not in (it.note or "").lower()
+    assert it.editable is False
+    text = drain.as_text(items)
+    assert "Check the tenses" in text

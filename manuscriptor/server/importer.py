@@ -500,7 +500,7 @@ def read_marks(data: bytes, source: str) -> list[Mark]:
     return reader(data, source)
 
 
-def ingest(data: bytes, source: str, *, blocks, log) -> dict:
+def ingest(data: bytes, source: str, *, blocks, log, doc: str = "") -> dict:
     """Read a marked-up file and write what it said into the comment log.
 
     Returns the report the page and the CLI both show: how many anchored, how
@@ -534,6 +534,7 @@ def ingest(data: bytes, source: str, *, blocks, log) -> dict:
         record = {
             "id": iid,
             "kind": "import",
+            "doc": doc,
             "source": source,
             "mark": p.mark.kind,
             "author": p.mark.author,
@@ -561,6 +562,7 @@ def ingest(data: bytes, source: str, *, blocks, log) -> dict:
                 "id": comment_id,
                 "kind": "comment",
                 "block": p.block,
+                "doc": doc,
                 "file": str(b.file),
                 "lines": [b.line_start, b.line_end],
                 # The block's own source, exactly as `on_chat` records it, so an
@@ -607,7 +609,7 @@ def body_of(mark: Mark) -> str:
 # -------------------------------------------------------------------- tray
 
 
-def tray(log, blocks=None) -> list[dict]:
+def tray(log, blocks=None, *, doc: str | None = None) -> list[dict]:
     """Marks still waiting to be placed, oldest first.
 
     Candidates are re-scored against the manuscript as it is now when blocks are
@@ -620,6 +622,11 @@ def tray(log, blocks=None) -> list[dict]:
     out: list[dict] = []
     for iid, rec in base.items():
         if rec.get("comment") or state.get(iid, {}).get("comment"):
+            continue
+        # The tray is per document: a mark imported against the response must
+        # not offer placements in the paper. Doc-less records predate documents
+        # and belong to whichever one is being read.
+        if doc is not None and rec.get("doc", "") not in ("", doc):
             continue
         item = {
             "id": iid,
@@ -650,7 +657,7 @@ def tray(log, blocks=None) -> list[dict]:
     return out
 
 
-def anchored_marks(log, blocks) -> dict[str, list[dict]]:
+def anchored_marks(log, blocks, *, doc: str | None = None) -> dict[str, list[dict]]:
     """Placed marks, keyed by the block their comment sits on NOW.
 
     Not by the block id recorded at import. Ids are content-derived, so the first
@@ -672,7 +679,8 @@ def anchored_marks(log, blocks) -> dict[str, list[dict]]:
         return {}
 
     log = Path(log)
-    where = build_mod.reanchor_chats(chat.by_block(log), blocks, chat.read_chats(log))
+    where = build_mod.reanchor_chats(chat.by_block(log, doc=doc), blocks,
+                                    chat.read_chats(log, doc=doc))
     live = {b.id for b in blocks}
     out: dict[str, list[dict]] = {}
     for block_id, msgs in where.items():
@@ -691,7 +699,7 @@ def anchored_marks(log, blocks) -> dict[str, list[dict]]:
     return out
 
 
-def place_mark(log, import_id: str, block_id: str, *, blocks) -> dict:
+def place_mark(log, import_id: str, block_id: str, *, blocks, doc: str = "") -> dict:
     """Put a waiting mark on the paragraph the author chose.
 
     Appends, never rewrites: a comment record for the work and an import record
@@ -717,7 +725,8 @@ def place_mark(log, import_id: str, block_id: str, *, blocks) -> dict:
     )
     cid = chat.next_id(log)
     chat.append(log, {
-        "id": cid, "kind": "comment", "block": block.id, "file": str(block.file),
+        "id": cid, "kind": "comment", "block": block.id, "doc": doc,
+        "file": str(block.file),
         "lines": [block.line_start, block.line_end],
         "quote": block.source_text[:120], "body": body_of(mark),
         "author": mark.author, "from": import_id,

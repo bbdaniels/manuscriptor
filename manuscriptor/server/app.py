@@ -64,10 +64,36 @@ class Session:
     def blob(self) -> dict:
         return self.build.blob
 
+    @property
+    def doc(self) -> str:
+        """The document being served, by name. Chats are scoped to it."""
+        return self.build.main_tex.name if self.build is not None else ""
+
     def rebuild(self):
         previous = self.build
         self.build = build_mod.build(self.dir, main=self.main, bib=self.bib)
         return previous
+
+    def switch(self, name: str) -> None:
+        """Serve a different document from the same directory, Overleaf-style.
+
+        Only a name the directory itself offers (`blob["docs"]`, the files
+        declaring a document class) is accepted: the value arrives off a URL
+        query, and a path is how a query walks out of the manuscript. A
+        refused switch changes nothing.
+        """
+        if name == self.doc:
+            return
+        offered = self.build.blob.get("docs", []) if self.build is not None else []
+        if name not in offered:
+            raise ValueError(f"{name!r} is not a document this directory serves")
+        previous_main = self.main
+        self.main = name
+        try:
+            self.rebuild()
+        except Exception:
+            self.main = previous_main
+            raise
 
     async def broadcast(self, msg: dict) -> None:
         dead = []
@@ -111,7 +137,8 @@ class Session:
         # the pin sat on `working` forever because `done` was addressed to a
         # block that had been renamed by the very edit being reported.
         anchored = build_mod.reanchor_chats(
-            chat.by_block(self.log), self.build.blocks, chat.read_chats(self.log)
+            chat.by_block(self.log, doc=self.doc), self.build.blocks,
+            chat.read_chats(self.log, doc=self.doc)
         ) if self.build is not None else chat.by_block(self.log)
 
         current = {}
@@ -148,7 +175,7 @@ class Session:
         # Re-anchored through the same pass as the frames above, or an entry
         # names a block the page has lost.
         queue = build_mod.queue_view(
-            self.log, self.build.blocks, anchored=anchored, root=self.dir
+            self.log, self.build.blocks, anchored=anchored, root=self.dir, doc=self.doc
         ) if self.build is not None else []
         ident = [(e["id"], e["block"], e["state"], e["since"]) for e in queue]
         if ident != self.seen_queue:
@@ -162,7 +189,8 @@ class Session:
             self.build.blob["chats"] = anchored
             self.build.blob["queue"] = queue
             self.build.blob["ticker"] = build_mod.ticker_view(
-                self.log, self.build.blocks, anchored=anchored, root=self.dir
+                self.log, self.build.blocks, anchored=anchored, root=self.dir,
+                doc=self.doc
             )
         self.seen_chats = current
 
@@ -197,6 +225,7 @@ class Session:
                 "id": chat.next_id(self.log),
                 "kind": "comment",
                 "block": block_id,
+                "doc": self.doc,
                 "file": str(block.file) if block else "",
                 "lines": [block.line_start, block.line_end] if block else [],
                 "quote": (block.source_text[:120] if block else ""),
@@ -322,7 +351,18 @@ def _page(session: Session) -> str:
 def make_app(session: Session) -> web.Application:
     app = web.Application()
 
-    async def index(_request):
+    async def index(request):
+        # `?main=appendix.tex` serves a sibling document from the same
+        # directory, Overleaf-style. The switch validates against the
+        # directory's own offer and rebuilds under the lock, so a watcher
+        # rebuild cannot interleave with it.
+        wanted = request.query.get("main", "")
+        if wanted and wanted != session.doc:
+            async with session.lock:
+                try:
+                    await asyncio.to_thread(session.switch, wanted)
+                except ValueError as exc:
+                    return web.Response(text=str(exc), status=404)
         return web.Response(text=_page(session), content_type="text/html")
 
     async def ws_handler(request):
@@ -380,10 +420,11 @@ def make_app(session: Session) -> web.Application:
             data = await part.read(decode=False)
             try:
                 report = await asyncio.to_thread(
-                    importer.ingest, data, name, blocks=blocks, log=session.log)
+                    importer.ingest, data, name, blocks=blocks, log=session.log,
+                    doc=session.doc)
             except importer.Unreadable as exc:
                 return web.json_response({"error": str(exc)}, status=415)
-            return web.json_response(dict(report, tray=importer.tray(session.log, blocks)))
+            return web.json_response(dict(report, tray=importer.tray(session.log, blocks, doc=session.doc)))
 
         try:
             data = await request.json()
@@ -398,16 +439,17 @@ def make_app(session: Session) -> web.Application:
                     status=403)
             try:
                 placed = importer.place_mark(
-                    session.log, data.get("import", ""), data.get("block", ""), blocks=blocks)
+                    session.log, data.get("import", ""), data.get("block", ""),
+                    blocks=blocks, doc=session.doc)
             except (KeyError, ValueError) as exc:
                 return web.json_response({"error": str(exc)}, status=400)
             return web.json_response(
-                dict(placed, tray=importer.tray(session.log, blocks),
-                     marks=importer.anchored_marks(session.log, blocks)))
+                dict(placed, tray=importer.tray(session.log, blocks, doc=session.doc),
+                     marks=importer.anchored_marks(session.log, blocks, doc=session.doc)))
 
         return web.json_response({
-            "tray": importer.tray(session.log, blocks),
-            "marks": importer.anchored_marks(session.log, blocks),
+            "tray": importer.tray(session.log, blocks, doc=session.doc),
+            "marks": importer.anchored_marks(session.log, blocks, doc=session.doc),
             "read_only": session.read_only,
         })
 

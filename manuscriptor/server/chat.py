@@ -45,6 +45,11 @@ class Chat:
     state: State
     author: str = "bb"
     ts: str = ""
+    # The document the comment was left on, when the directory holds several
+    # (the paper, the appendix, a response to reviewers). "" is a record from
+    # before documents existed, which belongs to whichever document is being
+    # read: exact for the single-document manuscripts that wrote those records.
+    doc: str = ""
 
 
 def now() -> str:
@@ -96,8 +101,15 @@ def next_id(log: Path) -> str:
     return f"c-{n + 1:04d}"
 
 
-def read_chats(log: Path) -> tuple[Chat, ...]:
-    """Fold the append-only log into current chat state."""
+def read_chats(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
+    """Fold the append-only log into current chat state.
+
+    With `doc`, only the chats belonging to that document: the log is shared
+    by every document in the directory, and presenting the appendix's comments
+    while the paper is being served or drained would queue work against
+    paragraphs the page does not have. A chat with no recorded document
+    belongs to whichever one is being read (see `Chat.doc`).
+    """
     base: dict[str, dict] = {}
     state: dict[str, str] = {}
     for rec in read_records(log):
@@ -117,21 +129,44 @@ def read_chats(log: Path) -> tuple[Chat, ...]:
             state=state.get(cid, "queued"),
             author=rec.get("author", "bb"),
             ts=rec.get("ts", ""),
+            doc=str(rec.get("doc", "")),
         )
         for cid, rec in base.items()
+        if doc is None or rec.get("doc", "") in ("", doc)
     )
 
 
-def by_block(log: Path) -> dict[str, list[dict]]:
-    """The shape the viewer wants: block id -> its messages, oldest first."""
+def by_block(log: Path, *, doc: str | None = None) -> dict[str, list[dict]]:
+    """The shape the viewer wants: block id -> its messages, oldest first.
+
+    A `reply` record is the agent answering in words rather than only in
+    states. It shares its comment's id in the log (that is the join), so each
+    reply message gets a synthetic id of its own: the page dedupes messages by
+    id, and two messages sharing one would collapse into one. A reply inherits
+    its comment's scope; it carries no doc of its own.
+    """
+    replies: dict[str, list[dict]] = {}
+    for rec in read_records(log):
+        if rec.get("kind") == "reply" and rec.get("body"):
+            replies.setdefault(rec["id"], []).append(rec)
+
     out: dict[str, list[dict]] = {}
-    for c in sorted(read_chats(log), key=lambda c: c.ts):
-        out.setdefault(c.block, []).append(
+    for c in sorted(read_chats(log, doc=doc), key=lambda c: c.ts):
+        msgs = out.setdefault(c.block, [])
+        msgs.append(
             {"id": c.id, "who": c.author, "body": c.body, "ts": c.ts, "state": c.state}
         )
+        for n, rec in enumerate(replies.get(c.id, []), start=1):
+            msgs.append({
+                "id": f"{c.id}#r{n}",
+                "who": rec.get("author", "claude"),
+                "body": rec.get("body", ""),
+                "ts": rec.get("ts", ""),
+                "state": None,
+            })
     return out
 
 
-def pending(log: Path) -> tuple[Chat, ...]:
+def pending(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
     """Chats awaiting work. This is what a drain reads."""
-    return tuple(c for c in read_chats(log) if c.state not in TERMINAL)
+    return tuple(c for c in read_chats(log, doc=doc) if c.state not in TERMINAL)

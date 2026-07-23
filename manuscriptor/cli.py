@@ -24,11 +24,12 @@ def _resolve_manuscript_paths(manuscript_dir: Path, main: str | None, bib: str |
     if main:
         main_path = manuscript_dir / main
     else:
-        candidates = sorted(manuscript_dir.glob("*.tex"))
-        candidates = [c for c in candidates if c.name == "main.tex"] or candidates
-        if not candidates:
-            sys.exit(f"No .tex file found in {manuscript_dir}; pass --main")
-        main_path = candidates[0]
+        from manuscriptor.source import root as root_mod
+
+        try:
+            main_path = manuscript_dir / root_mod.choose_main(manuscript_dir)
+        except (LookupError, FileNotFoundError) as exc:
+            sys.exit(str(exc))
     if not main_path.exists():
         sys.exit(f"main TeX not found: {main_path}")
 
@@ -104,10 +105,12 @@ def cmd_build(args: argparse.Namespace) -> int:
 
 AGENT_PROMPT = (
     "Drain the pending Manuscriptor comments in this directory. Use the "
-    "manuscriptor-drain skill: work the queue oldest first, mark each comment "
-    "working before you start and done when the edit has landed, and change "
-    "exactly one block per comment. Read as widely as you need. Do nothing the "
-    "comments did not ask for."
+    "manuscriptor-drain skill: load the owning project's vault context first, "
+    "work the queue oldest first, mark each comment working before you start "
+    "and done when the edit has landed, and change exactly one block per "
+    "write. Answer in words with `manuscriptor reply` when a comment asks a "
+    "question or the edit needs explaining. Read as widely as you need. Do "
+    "nothing the comments did not ask for."
 )
 
 
@@ -446,6 +449,16 @@ def cmd_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reply(args: argparse.Namespace) -> int:
+    """Answer a comment in words, into the same chat."""
+    from manuscriptor.server import drain
+
+    rec = drain.reply(Path(args.manuscript).resolve(), args.chat_id,
+                      " ".join(args.body))
+    print(f"{rec['id']} <- reply ({len(rec['body'])} chars)")
+    return 0
+
+
 def cmd_evidence(args: argparse.Namespace) -> int:
     """The absorbed cite-evidence pipeline. Read-only against Zotero."""
     from .evidence import parse, resolve, fetch, extract, render
@@ -572,6 +585,12 @@ def main(argv: list[str] | None = None) -> int:
     p_state.add_argument("chat_id", help="The chat id, e.g. c-0007")
     p_state.add_argument("state", choices=["queued", "working", "done", "orphaned"])
     p_state.set_defaults(func=cmd_state)
+
+    p_reply = sub.add_parser("reply", help="Answer a comment in words, into the same chat")
+    p_reply.add_argument("manuscript", help="Path to the manuscript directory")
+    p_reply.add_argument("chat_id", help="The chat id, e.g. c-0007")
+    p_reply.add_argument("body", nargs="+", help="The reply text")
+    p_reply.set_defaults(func=cmd_reply)
 
     p_ev = sub.add_parser(
         "evidence",

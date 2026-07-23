@@ -136,6 +136,10 @@ body {
 .tb.accent { border-color: var(--accent); color: var(--accent); }
 .tb.accent:hover { background: var(--accent-soft); }
 .tb-meta { font-family: var(--mono); font-size: .68rem; color: var(--faint); }
+/* The document switcher: a .tb that happens to be a <select>. Hidden by the
+   viewer when the directory serves only one document. */
+select.docswitch { font-family: var(--mono); font-size: .72rem; }
+select.docswitch[hidden] { display: none; }
 
 /* Each column owns its own scroll. min-height:0 is what actually lets a grid
    child scroll rather than stretch its parent. */
@@ -169,7 +173,10 @@ body {
 
 /* ---------- manuscript ---------- */
 .doc { min-width: 0; overflow: auto; min-height: 0; padding: 2rem 1.6rem 3rem; padding-right: 3.4rem; border-right: 1px solid var(--rule); }
-.doc-inner { overflow-wrap: anywhere; max-width: 38rem; margin: 0 auto; }
+/* 34rem at the 17px body lands the measure near 72 characters a line. The
+   38rem/16px original measured 85 to 90, which is past what an afternoon of
+   reading should be asked to track (2026-07-22 audit). */
+.doc-inner { overflow-wrap: anywhere; max-width: 34rem; margin: 0 auto; }
 .doc h1, .doc h2, .doc h3, .doc h4 { font-family: var(--serif); font-weight: 600; letter-spacing: .01em; }
 .doc h1 { font-size: 1.4rem; margin: 0 0 1.1rem; }
 .doc h2 { font-size: 1.15rem; margin: 2rem 0 1.1rem; }
@@ -182,12 +189,12 @@ body {
 .doc figcaption { font-family: var(--serif); font-size: .85rem; color: var(--muted); margin-top: .5rem; }
 .doc code, .doc kbd { font-family: var(--mono); font-size: .85em; }
 .doc blockquote { margin: 0 0 1.15rem; padding-left: .9rem; border-left: 2px solid var(--rule); color: var(--muted); }
-.doc ul, .doc ol { font-family: var(--serif); font-size: 1rem; line-height: 1.68; padding-left: 1.4rem; }
+.doc ul, .doc ol { font-family: var(--serif); font-size: 1.0625rem; line-height: 1.68; padding-left: 1.4rem; }
 .doc hr { border: 0; border-top: 1px solid var(--rule); margin: 1.6rem 0; }
 .doc .footnotes { font-size: .85rem; color: var(--muted); border-top: 1px solid var(--rule); margin-top: 2.5rem; padding-top: .8rem; }
 
 /* Every addressable element gets .blk on hydration, whatever tag pandoc chose. */
-.blk { position: relative; font-family: var(--serif); font-size: 1rem; line-height: 1.68; margin: 0 0 1.15rem; padding: .35rem .6rem .35rem .7rem; border-radius: 5px; border-left: 2px solid transparent; cursor: text; }
+.blk { position: relative; font-family: var(--serif); font-size: 1.0625rem; line-height: 1.68; margin: 0 0 1.15rem; padding: .35rem .6rem .35rem .7rem; border-radius: 5px; border-left: 2px solid transparent; cursor: text; }
 .blk:hover { background: var(--sunken); border-left-color: var(--rule); }
 .blk.sel { background: var(--accent-soft); border-left-color: var(--accent); }
 .blk .tag { position: absolute; left: -3.6rem; top: .5rem; font-family: var(--mono); font-size: .62rem; color: var(--faint); opacity: 0; font-variant-numeric: tabular-nums; }
@@ -364,12 +371,16 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
   --accent: hsl(var(--h) calc(62% * var(--sat)) 60%); --accent-soft: hsl(var(--h) calc(38% * var(--sat)) 26%);
   --verbatim: #5FC59A; --paraphrase: #E3B458; --missing: #EC8377; --computed: #A99BE8;
   --computed-soft: hsl(var(--h) calc(26% * var(--sat)) 24%);
+  /* The glows are what the panel blur has to work on: with a flat ground
+     behind it, backdrop-filter reads as nothing and the skin collapses into
+     Instrument-dark (2026-07-22 audit). They are deliberately strong. */
   background:
-    radial-gradient(120% 90% at 12% -10%, hsl(var(--h) calc(44% * var(--sat)) 27%) 0%, transparent 60%),
-    radial-gradient(100% 80% at 100% 0%, hsl(calc(var(--h) + 24) calc(40% * var(--sat)) 22%) 0%, transparent 55%),
-    hsl(var(--h) calc(42% * var(--sat)) 14%);
+    radial-gradient(120% 95% at 12% -10%, hsl(var(--h) calc(52% * var(--sat)) 32%) 0%, transparent 62%),
+    radial-gradient(105% 85% at 100% 0%, hsl(calc(var(--h) + 30) calc(46% * var(--sat)) 27%) 0%, transparent 58%),
+    radial-gradient(90% 70% at 50% 110%, hsl(calc(var(--h) - 18) calc(44% * var(--sat)) 20%) 0%, transparent 55%),
+    hsl(var(--h) calc(42% * var(--sat)) 13%);
   border-color: hsl(var(--h) calc(30% * var(--sat)) 29%);
-  box-shadow: 0 1px 0 rgba(255,255,255,.07) inset;
+  box-shadow: 0 1px 0 rgba(255,255,255,.12) inset;
   color-scheme: dark;
 }
 .app[data-skin="glass"] .titlebar,
@@ -378,8 +389,8 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .app[data-skin="glass"] .doc { background: transparent; border-color: rgba(255,255,255,.06); }
 /* the inspector floats over the page */
 .app[data-skin="glass"] .insp {
-  background: hsl(var(--h) calc(38% * var(--sat)) 27% / .5); backdrop-filter: blur(24px) saturate(140%);
-  box-shadow: -1px 0 0 rgba(255,255,255,.08), 0 1px 0 rgba(255,255,255,.09) inset;
+  background: hsl(var(--h) calc(38% * var(--sat)) 27% / .42); backdrop-filter: blur(24px) saturate(140%);
+  box-shadow: -1px 0 0 rgba(255,255,255,.10), 0 1px 0 rgba(255,255,255,.12) inset;
 }
 .app[data-skin="glass"] .insp-head,
 .app[data-skin="glass"] .tabs { background: transparent; border-color: rgba(255,255,255,.08); }
@@ -394,7 +405,6 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .app[data-skin="glass"] .tb { border-radius: 999px; border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.05); box-shadow: 0 1px 0 rgba(255,255,255,.08) inset; }
 .app[data-skin="glass"] .btn.pri { background: var(--accent); border-color: hsl(var(--h) 62% 68%); color: hsl(var(--h) 45% 12%); }
 .app[data-skin="glass"] .ins { border-radius: 999px; }
-.app[data-skin="glass"] .blk { font-size: 1.02rem; }
 .app[data-skin="glass"] .blk:hover { background: rgba(255,255,255,.05); }
 .app[data-skin="glass"] .blk.sel { background: hsl(var(--h) 55% 55% / .18); }
 .app[data-skin="glass"] .exhibit { background: rgba(255,255,255,.04); border-radius: 10px; }
@@ -405,10 +415,18 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    is booktabs in HTML: a heavy rule above and below, a light one under the
    header, and no vertical rules at all, because that is what these tables are
    in the PDF and what the author is used to checking against. */
-.doc table { border-collapse: collapse; width: 100%; margin: .2rem 0 1rem;
+/* border-collapse must be `separate` here: a collapsed border belongs to the
+   grid rather than the cell, so it would stay behind when the sticky header
+   below carries its cell away. Only horizontal per-cell rules are used, so
+   nothing doubles. */
+.doc table { border-collapse: separate; border-spacing: 0; width: 100%; margin: .2rem 0 1rem;
   font-family: var(--serif); font-size: .82rem; line-height: 1.35;
   font-variant-numeric: tabular-nums; }
-.doc .table-scroll { overflow-x: auto; max-width: 100%; min-width: 0; margin-bottom: 1.15rem; }
+/* A table taller than the viewport scrolls inside itself, so a six-column
+   regression table two screens deep keeps its column labels in sight
+   (2026-07-22 audit). Short tables never show a scrollbar and are unchanged. */
+.doc .table-scroll { overflow: auto; max-height: 78vh; max-width: 100%; min-width: 0; margin-bottom: 1.15rem; }
+.doc table thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
 .doc table caption { font-family: var(--serif); font-size: .84rem; color: var(--muted);
   text-align: left; padding: 0 0 .5rem; caption-side: top; }
 .doc table caption strong, .doc table caption b { color: var(--ink); }
@@ -442,12 +460,28 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .doc math[display="inline"] mfrac { font-size: 1.06em; }
 .doc math[display="block"] { display: block; margin: .9rem 0; text-align: center; }
 
-/* A block that renders nothing (\clearpage, \maketitle, a run of them before a
-   section) still needs its anchor in the DOM so the margin can address it and
-   the anchor audit passes. It must not occupy a line in the manuscript. */
+/* A block that renders nothing (\clearpage, a spacing run before a section)
+   still needs its anchor in the DOM so the margin can address it and the
+   anchor audit passes. It must not occupy a line in the manuscript. The
+   :empty form covers the pre-hydration page; hydration then inserts the ¶ tag
+   into every block, after which :empty never matches again, so hydrateBlock
+   marks the same condition with .is-void. Losing either half brings back the
+   invisible 11px clickable slivers the 2026-07-22 audit found. */
 .doc p[data-mx]:empty { height: 0; min-height: 0; margin: 0; padding: 0;
   border: 0; overflow: hidden; }
 .doc p[data-mx]:empty:hover { background: none; }
+.blk.is-void { height: 0; min-height: 0; margin: 0; padding: 0;
+  border: 0; overflow: hidden; cursor: default; }
+.blk.is-void:hover { background: none; border-left-color: transparent; }
+
+/* Front matter, rebuilt by the render pass (pandoc drops \maketitle and the
+   abstract outright). The title is the one heading that is not a section. */
+.doc h1.doc-title { font-size: 1.55rem; line-height: 1.3; margin: 0 0 .5rem; }
+.doc .doc-byline { font-family: var(--serif); font-size: .95rem;
+  color: var(--muted); margin: 0 0 2.2rem; }
+.doc h2.doc-abstract-label { font-family: var(--ui); font-size: .68rem;
+  text-transform: uppercase; letter-spacing: .09em; color: var(--faint);
+  margin: 2.2rem 0 .6rem; }
 
 /* ---------- collapsible navigation ---------- */
 .outline .sec { display: flex; align-items: center; gap: .1rem; }

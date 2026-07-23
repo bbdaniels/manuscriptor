@@ -458,3 +458,94 @@ def test_a_single_block_renders_far_faster_than_the_whole_document():
     print(f"\nfull render: {full:.2f}s   single block: {single:.3f}s   ratio {full / single:.0f}x")
     assert single < 1.0, f"block render took {single:.3f}s; the hot path must be sub-second"
     assert single < full / 5, f"block {single:.3f}s vs full {full:.2f}s is not a material gain"
+
+
+# ------------------------------------------------------------- front matter
+#
+# Pandoc reads \title, \author, and the abstract environment into document
+# metadata, and a fragment render shows metadata nowhere. Measured on
+# estonia-ecm 2026-07-22: the page opened on the Introduction with no title
+# and no abstract, and the three blocks carrying them rendered as empty
+# anchors — clickable slivers around nothing. The front matter has to be
+# rewritten into constructs pandoc keeps.
+
+
+FRONTMATTER = """\\documentclass{article}
+\\title{In Sickness and In Health\\thanks{We thank the funder.}}
+\\author{A.~Author\\thanks{One University} \\and B.~Coauthor}
+\\begin{document}
+⟦MX00a1⟧\\maketitle
+
+⟦MX00a2⟧\\begin{abstract}
+The abstract text survives into the page.
+\\end{abstract}
+
+⟦MX00a3⟧Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+
+def test_the_title_reaches_the_page_as_a_heading(tmp_path):
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    assert "In Sickness and In Health" in html
+    assert "<h1" in html
+    assert "\\maketitle" not in html
+
+
+def test_the_byline_reaches_the_page_without_its_thanks(tmp_path):
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    assert "Author" in html
+    assert "Coauthor" in html
+    # \thanks is a footnote on the title page, not text of the title or byline.
+    assert "We thank the funder" not in html
+    assert "One University" not in html
+
+
+def test_the_abstract_text_reaches_the_page(tmp_path):
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    assert "The abstract text survives into the page." in html
+    assert "Abstract" in html
+
+
+def test_the_abstract_keeps_its_anchor_on_its_own_text(tmp_path):
+    # The marker before \begin{abstract} must end up on the abstract's prose,
+    # not stranded on the label heading, or the block cannot be clicked.
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    at_marker = html.find("⟦MX00a2⟧")
+    at_text = html.find("The abstract text survives")
+    assert at_marker != -1
+    assert at_marker < at_text
+    label_at = html.find("Abstract")
+    assert label_at < at_marker, "the label heading must precede the anchor"
+
+
+def test_a_maketitle_with_no_title_is_left_alone(tmp_path):
+    src = "\\documentclass{article}\n\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    html = render_document(src, cwd=tmp_path, bib=None)
+    # Nothing to show and nothing invented: no heading appears.
+    assert "<h1" not in html
+    assert "Prose." in html
+
+
+def test_frontmatter_tokens_are_carried_for_postprocess(tmp_path):
+    # The rewritten title and byline carry tokens the postprocess pass turns
+    # into classes; render alone must leave them in place, not lose them.
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    assert "⟦MXTITLE⟧" in html
+    assert "⟦MXBYLINE⟧" in html
+    assert "⟦MXABSTRACT⟧" in html
+
+
+def test_a_forced_break_in_the_title_is_a_space_not_a_comma(tmp_path):
+    # `\title{In Sickness: \\ Motivating...}` is print layout. Joining it with
+    # the author-list comma shipped "In Sickness: , Motivating" on the first
+    # live render of the reference manuscript.
+    src = (
+        "\\documentclass{article}\n"
+        "\\title{In Sickness: \\\\ Motivating Care}\n"
+        "\\author{A One \\\\ B Two}\n"
+        "\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "In Sickness: Motivating Care" in html
+    assert "A One, B Two" in html

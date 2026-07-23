@@ -166,6 +166,13 @@ enum ManuscriptRoot {
         // to /private/var on this platform.
         let p = raw.resolvingSymlinksInPath()
         let start = isDir.boolValue ? p : p.deletingLastPathComponent()
+        // A file that itself declares a documentclass IS the document, even
+        // beside a main.tex: the author opened a document, not a fragment of
+        // some other one. estonia-ecm keeps `Highlights for JPubE.tex` next
+        // to the paper.
+        if !isDir.boolValue, p.pathExtension == "tex", hasDocumentClass(p) {
+            return Resolved(root: start, main: p.lastPathComponent, rel: p.lastPathComponent)
+        }
         let (root, main) = findRoot(start)
         if isDir.boolValue { return Resolved(root: root, main: main, rel: "") }
         let base = root.path == "/" ? "" : root.path

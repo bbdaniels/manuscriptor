@@ -177,6 +177,7 @@ def normalize_for_pandoc(source: str) -> str:
     them in place costs either the whole render or, worse, one table and no
     error message. Block markers, prose, math, and citations are untouched.
     """
+    source = _render_frontmatter(source)
     declared = _declared_column_types(source)
     source = _strip_newcolumntypes(source)
     source = _expand_sym(source)
@@ -190,6 +191,103 @@ def normalize_for_pandoc(source: str) -> str:
         source = _unwrap_environment(source, name, args)
     source = _plain_multicolumn_specs(source, declared)
     return _plain_table_specs(source, declared)
+
+
+# ------------------------------------------------------------- front matter
+#
+# Pandoc reads `\title`, `\author`, and the abstract environment into document
+# METADATA, and a fragment render shows metadata nowhere. So the page opened on
+# the Introduction with no title and no abstract above it, and the blocks
+# carrying them rendered as empty anchors: clickable 11px slivers around
+# nothing (found by the 2026-07-22 design audit). The front matter has to be
+# rewritten into constructs pandoc keeps.
+#
+# The title becomes a starred section and the byline a plain paragraph, each
+# tagged with a token that `render/postprocess.py` turns into a class, so the
+# stylesheet can set them apart from a section heading. The tokens use the
+# sentinel brackets because those are proven to survive pandoc, and they spell
+# no hex, so `anchors.MARKER_RE` can never mistake one for a block marker.
+
+TITLE_TOKEN = "⟦MXTITLE⟧"
+BYLINE_TOKEN = "⟦MXBYLINE⟧"
+ABSTRACT_TOKEN = "⟦MXABSTRACT⟧"
+
+_MAKETITLE_RE = re.compile(r"\\maketitle\b")
+_ABSTRACT_BEGIN_RE = re.compile(r"\\begin\s*\{abstract\}\s*")
+_ABSTRACT_END_RE = re.compile(r"\\end\s*\{abstract\}")
+_THANKS_RE = re.compile(r"\\thanks\s*(?=\{)")
+# The block marker standing immediately before the construct being rewritten.
+# Same pattern as anchors.MARKER_RE, including the `-2` disambiguation suffix.
+_MARKER_BEFORE_RE = re.compile(r"⟦MX[0-9a-f]+(?:-\d+)?⟧\s*$")
+
+
+def _render_frontmatter(source: str) -> str:
+    m = _MAKETITLE_RE.search(source)
+    if m:
+        title = _command_text(source, "title", break_as=" ")
+        if title:
+            byline = _command_text(source, "author", break_as=", ")
+            repl = "\\section*{" + TITLE_TOKEN + title + "}"
+            if byline:
+                repl += "\n\n" + BYLINE_TOKEN + byline + "\n"
+            source = source[: m.start()] + repl + source[m.end():]
+        # No \title: nothing to show and nothing to invent. The empty block is
+        # collapsed by the viewer's void pass rather than papered over here.
+
+    m = _ABSTRACT_BEGIN_RE.search(source)
+    if m:
+        end = _ABSTRACT_END_RE.search(source, m.end())
+        if end:
+            body = source[m.end(): end.start()].strip()
+            head = "\\subsection*{" + ABSTRACT_TOKEN + "Abstract}\n\n"
+            before = source[: m.start()]
+            # The block's anchor sits just before `\begin{abstract}`. The label
+            # heading goes in FRONT of the marker, so the marker lands on the
+            # abstract's own prose and the paragraph stays clickable; stranded
+            # on the label it would select a heading around nothing.
+            mk = _MARKER_BEFORE_RE.search(before)
+            at = mk.start() if mk else m.start()
+            source = (
+                before[:at] + head + before[at:]
+                + body + "\n" + source[end.end():]
+            )
+    return source
+
+
+def _command_text(source: str, name: str, *, break_as: str = " ") -> str | None:
+    """The cleaned text of a preamble command's argument, or None."""
+    m = re.search(r"\\" + name + r"\s*(?=\{)", source)
+    if m is None:
+        return None
+    end = _skip_group(source, m.end())
+    if end == m.end():
+        return None
+    return _clean_inline(source[m.end() + 1: end - 1], break_as=break_as) or None
+
+
+def _clean_inline(text: str, *, break_as: str = " ") -> str:
+    """Reduce a `\\title`/`\\author` argument to its displayable text.
+
+    `\\thanks{...}` is a footnote on the title page, not text of the title, so
+    it is dropped with its balanced argument. A forced break is print layout:
+    in a title it joins as a space, in an author list it separates names and
+    joins as a comma, which is what `break_as` carries. `\\and` always
+    separates authors.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _THANKS_RE.search(text, i)
+        if m is None:
+            out.append(text[i:])
+            break
+        out.append(text[i: m.start()])
+        i = _skip_group(text, m.end())
+    text = "".join(out)
+    text = re.sub(r"\\and\b", ", ", text)
+    text = re.sub(r"\\\\(\[[^\]]*\])?", break_as, text)
+    text = re.sub(r"\s+", " ", text)
+    return re.sub(r"\s+([,.;])", r"\1", text).strip(" ,")
 
 
 _SYM_DEF_RE = re.compile(r"\\def\\sym\s*#1\s*\{[^\n]*\^\{#1\}[^\n]*\}[ \t]*\n?")

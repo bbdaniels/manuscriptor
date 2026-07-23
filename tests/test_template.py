@@ -430,3 +430,63 @@ def test_all_three_scrolls_are_captured_and_restored():
     for col in ("railEl", "docEl", "inspEl"):
         assert col in js
     assert "captureUI" in js and "restoreUI" in js
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_accent_cannot_impersonate_the_computed_violet():
+    # The status colours are excluded from the hue rotation, but the wheel
+    # could still PICK the computed violet as the accent, and then every
+    # button and link occupies the channel that means "this number came from
+    # code". Computed is the one status rendered as coloured inline content,
+    # so its band is reserved; a pick inside it is steered to the band edge.
+    assert node_call("clampHue", 257) != 257
+    assert abs(node_call("clampHue", 257) - 257) >= 20
+    assert node_call("clampHue", 214) == 214
+    assert node_call("clampHue", 40) == 40
+    assert node_call("clampHue", 0) == 0
+
+
+def test_void_blocks_are_collapsed_hydration_proof():
+    # styles.css collapses `p[data-mx]:empty`, but hydration inserts the ¶ tag
+    # into every block, after which :empty never matches again. The class is
+    # the same rule made hydration-proof; losing either half brings back the
+    # invisible 11px clickable slivers the 2026-07-22 audit found.
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "is-void" in js
+    css = STYLES.read_text(encoding="utf-8")
+    assert ".blk.is-void" in css
+
+
+def test_the_document_switcher_is_present_and_wired():
+    # One directory can serve several documents (blob "main"/"docs"); the
+    # toolbar carries the switcher and the viewer hydrates it, hides it when
+    # there is nothing to choose, and navigates by query on change.
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="doc-switch"' in html
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "S.ms.docs" in js
+    assert "'?main=' + encodeURIComponent" in js
+
+
+def test_drafts_are_keyed_by_the_document_not_the_page_title():
+    # A draft typed on the appendix must not surface on the paper: the two
+    # share a directory, a log, and a page, and differ only in `main`.
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "S.docKey = String(S.ms.main ||" in js
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_document_chat_key_is_the_empty_id():
+    # '' is the document chat's key. normId used to prefix it into a block
+    # named "b-", which would file every document message under a phantom
+    # block.
+    assert node_call("normId", "") == ""
+
+
+def test_the_home_panel_is_the_document_chat():
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "function renderHome" in js
+    assert "Ask for a change anywhere" in js
+    # A block chat renders through the same message helper, so the two panels
+    # cannot drift apart in how they show a conversation.
+    assert js.count("function chatMsgs") == 1

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from manuscriptor.render import pandoc, postprocess, refs
-from manuscriptor.source import anchors, blocks as blocks_mod
+from manuscriptor.source import anchors, blocks as blocks_mod, root
 from manuscriptor.source.flatten import flatten
 from manuscriptor.server import chat, manifest, producers
 
@@ -38,18 +38,20 @@ _CITE_RE = re.compile(r'data-cites="([^"]+)"')
 
 
 def find_main_tex(manuscript_dir: Path, main: str | None = None) -> Path:
+    """An explicit `main` wins; otherwise the root rule decides.
+
+    The rule (source/root.py, shared with the shell and the doc switcher):
+    `main.tex`, else the sole file declaring an uncommented `\\documentclass`,
+    else a sole .tex of any kind. Several declared documents raises with the
+    choices named, because the alphabetical fallback this replaces once served
+    `abstract.tex` as the paper, silently.
+    """
     if main:
         p = manuscript_dir / main
         if not p.exists():
             raise FileNotFoundError(f"main TeX not found: {p}")
         return p
-    named = manuscript_dir / "main.tex"
-    if named.exists():
-        return named
-    candidates = sorted(manuscript_dir.glob("*.tex"))
-    if not candidates:
-        raise FileNotFoundError(f"no .tex file in {manuscript_dir}; pass --main")
-    return candidates[0]
+    return manuscript_dir / root.choose_main(manuscript_dir)
 
 
 def find_bib(manuscript_dir: Path, bib: str | None = None) -> Path | None:
@@ -100,19 +102,27 @@ def build(
         manuscript_dir, [inc.target for b in bl for inc in b.includes], cache_dir=out
     )
     log = manuscript_dir / "comments.jsonl"
+    doc = main_tex.name
     blob = {
         "title": _title(main_tex, post["html"]),
         "path": str(main_tex),
+        # The document being served, and the others this directory could
+        # serve: every .tex declaring a document class, Overleaf-style. The
+        # page's switcher is this list; chats, queue and ticker are scoped to
+        # `main` so the appendix's comments never queue against the paper.
+        "main": doc,
+        "docs": root.candidates(manuscript_dir),
         "read_only": False,
         "html": post["html"],
         "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir, values)
                    for b in bl},
         "outline": _outline(bl),
-        "chats": reanchor_chats(chat.by_block(log), bl, chat.read_chats(log)),
+        "chats": reanchor_chats(chat.by_block(log, doc=doc), bl,
+                                chat.read_chats(log, doc=doc)),
         # The standing agent state, so a page loading mid-run does not open on
         # "idle" while a session is halfway through the author's third comment.
-        "queue": queue_view(log, bl, root=manuscript_dir),
-        "ticker": ticker_view(log, bl, root=manuscript_dir),
+        "queue": queue_view(log, bl, root=manuscript_dir, doc=doc),
+        "ticker": ticker_view(log, bl, root=manuscript_dir, doc=doc),
         "todos": [],
         "activity": [],
         "stats": {
@@ -198,7 +208,8 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
 TICKER_LIMIT = 8
 
 
-def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None, now=None) -> list[dict]:
+def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None,
+               now=None, doc: str | None = None) -> list[dict]:
     """Every chat still awaiting work, oldest first.
 
     Oldest first because that is the order a drain should work them, so the list
@@ -212,12 +223,13 @@ def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None, no
     genuinely gone is listed with no block rather than dropped or attached to
     the wrong one.
     """
-    chats = chat.read_chats(log)
+    chats = chat.read_chats(log, doc=doc)
     if not chats:
         return []
     present = {b.id for b in blocks}
     where = _anchor_of(anchored if anchored is not None
-                       else reanchor_chats(chat.by_block(log), blocks, chats), present)
+                       else reanchor_chats(chat.by_block(log, doc=doc), blocks, chats),
+                       present)
     heads = {b.id: b.parent_heading for b in blocks}
     wheres = _wheres(blocks, root)
     starts = state_starts(log)
@@ -243,7 +255,8 @@ def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None, no
 
 
 def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
-                anchored: dict | None = None, root=None) -> list[dict]:
+                anchored: dict | None = None, root=None,
+                doc: str | None = None) -> list[dict]:
     """Recent agent activity, newest first, named the way the author names it.
 
     Read off the state records the agent actually appended, so it reports what
@@ -252,16 +265,22 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
     page from the `state` and `patch` frames; this is the seed, so a page opened
     mid-run does not start blank.
     """
-    chats = chat.read_chats(log)
+    chats = chat.read_chats(log, doc=doc)
     present = {b.id for b in blocks}
     where = _anchor_of(anchored if anchored is not None
-                       else reanchor_chats(chat.by_block(log), blocks, chats), present)
+                       else reanchor_chats(chat.by_block(log, doc=doc), blocks, chats),
+                       present)
     heads = {b.id: b.parent_heading for b in blocks}
     wheres = _wheres(blocks, root)
+    # State records carry no doc of their own; they belong to whatever comment
+    # they answer, so the in-scope chat ids are the filter.
+    in_scope = {c.id for c in chats} if doc is not None else None
 
     out: list[dict] = []
     for rec in chat.read_records(log):
         if rec.get("kind") != "state" or not rec.get("state"):
+            continue
+        if in_scope is not None and rec.get("id") not in in_scope:
             continue
         # `queued` is the standing state, and the header already counts it.
         # Found in a browser: three comments filled the ticker with three lines

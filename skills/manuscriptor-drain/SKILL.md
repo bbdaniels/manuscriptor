@@ -14,6 +14,27 @@ server's watcher notices your edit and redraws the author's page on its own.
 
 ## The procedure
 
+**0. Load the project's context, read-only.**
+
+The manuscript belongs to a research project whose live state is in the
+Obsidian vault, not in the repo. Resolve which project owns this directory the
+way the vault's own contract does: read the frontmatter of
+`~/Documents/Obsidian/*/Tasks.md` and find the project whose `cwds:` globs
+match the manuscript directory, longest match winning. Never match by name;
+`cwds:` ownership is the only sanctioned mapping, and a shared `reads:` path
+never attributes.
+
+When a project owns the directory, read its `Dashboard.md`, the `## Active`
+section of its `Tasks.md`, and its `Technical Notes.md` before working the
+queue. That is where the deadlines, the framing decisions, and the "we decided
+against X" notes live, and an edit that contradicts them is wrong even when it
+answers the comment. Carry the relevant constraints into the items you hand to
+subagents; workers do not re-read the vault. When no project owns the
+directory, proceed without.
+
+The vault is read-only here. The drain session's job is the manuscript;
+session logging belongs to the ingest hooks, not to you.
+
 **1. Read the queue.**
 
 ```bash
@@ -68,15 +89,22 @@ LaTeX source, so `\input{...}` directives in the block are the author's results
 pulled in from analysis code. **Never resolve one to its value.** That would
 hardcode a result, which is the single thing this tool exists to prevent.
 
-**6. Mark it done.**
+**6. Mark it done, and say what happened when words are needed.**
 
 ```bash
 manuscriptor state <manuscript-dir> c-0007 done
+manuscriptor reply <manuscript-dir> c-0007 "Moved the caveat into the first sentence rather than cutting it; the JPubE referee asked for it explicitly."
 ```
 
 The ticker shows the edit landing, not the claim that it would: a `done` with no
 change behind it reads differently from one with a patch after it. Do not mark
 work done that did not happen.
+
+A reply joins the comment's own chat and appears on the author's page. Use one
+whenever the edit is not self-explanatory: you chose between two readings of
+the comment, you declined ("this number comes from a script; the fix belongs
+there"), or the comment asked a question rather than for a change. A question
+answered only by a `done` state looks ignored.
 
 ## Concurrency: do not serialize
 
@@ -103,6 +131,15 @@ subagent editing `.tex` by hand should:
   that loses another worker's edit, and it is the only one that can.
 
 ## Things that will come up
+
+**A document-level comment** has no block: the author typed it into the
+manuscript panel rather than onto a paragraph, and its item says so. This is
+orchestration work. Decompose it into per-block subagent tasks yourself; the
+one-block-per-write constraint binds every worker exactly as before, and the
+comment is yours to mark `working` when the first worker starts and `done`
+when the last lands. Reply with what was changed and where, because there is
+no single margin pin for the author to watch. A document comment that is a
+question rather than an instruction gets a reply and a `done`, no edits.
 
 **`READ ONLY`** means the file is written by analysis code. Do not edit it. The
 fix belongs in the script named beside it; make that change instead, or explain
