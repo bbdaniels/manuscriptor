@@ -6,7 +6,7 @@ import WebKit
 /// The server is the product; this is a client, and any number of clients can
 /// attach to the same port. Nothing here renders, parses or edits anything: it
 /// starts a process, loads a URL, and gets out of the way.
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler, NSWindowDelegate {
 
     /// Paths handed over on the command line, for `Manuscriptor.app/.../Manuscriptor file.tex`.
     var openArguments: [String] = []
@@ -30,6 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var retried = false
     private var signalSources: [DispatchSourceSignal] = []
     private var openRecentItem: NSMenuItem?
+    private var statusItem: NSStatusItem?
 
     private static let frameName = "ManuscriptorMainWindow"
     private static let lastKey = "LastManuscript"
@@ -58,6 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     func applicationDidFinishLaunching(_ notification: Notification) {
         buildMenu()
         buildWindow()
+        buildStatusItem()
         catchTerminationSignals()
         NSApp.activate(ignoringOtherApps: true)
 
@@ -87,9 +89,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         open(path: first.path)
     }
 
-    /// Closing the window quits, and quitting stops the server. A window is the
-    /// only thing on screen saying that a manuscript is being held open.
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// The app persists in the menubar with no window, so closing the window no
+    /// longer quits. The server is still stopped on window close (see
+    /// `windowWillClose`) — the invariant is that the server never outlives its
+    /// window, not that the app dies with it.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+
+    /// Closing the window stops the server and drops the app to a menubar-only
+    /// launcher. A server outliving its window is a process quietly holding a
+    /// manuscript open with nothing on screen to say so.
+    func windowWillClose(_ notification: Notification) {
+        server.stop()                            // the server never outlives its window
+        currentRoot = nil
+        serverURL = nil
+        NSApp.setActivationPolicy(.accessory)    // live on as a menubar launcher
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         server.stop()
@@ -132,6 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         window.contentView = webView
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 720, height: 480)
+        // The app persists in the menubar after the window closes, so the window
+        // must survive its own close to be reshown from the quill.
+        window.isReleasedWhenClosed = false
+        window.delegate = self
         // Restore before naming: setFrameAutosaveName saves the current frame
         // as a side effect, which would overwrite what we are trying to read.
         window.setFrameUsingName(AppDelegate.frameName)
@@ -212,6 +232,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         retried = false
         show(status: "Rendering \(resolved.root.lastPathComponent)…")
 
+        // A manuscript window is open: become a regular app so the Dock icon and
+        // the Edit-menu key equivalents (Cmd-V into the source editor) are live.
+        NSApp.setActivationPolicy(.regular)
         server.start(binary: binary,
                      directory: resolved.root,
                      main: resolved.main,
@@ -465,5 +488,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     @objc func reload(_ sender: Any?) {
         if let url = serverURL { webView.load(URLRequest(url: url)) } else { webView.reload() }
+    }
+
+    // MARK: - menubar quill
+
+    /// The always-present menubar launcher. The app lives here with no window,
+    /// so the quill is how a manuscript is opened once every window is closed.
+    private func buildStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // TODO: replace with final quill art
+        if let img = NSImage(named: "quill") ?? Bundle.main.image(forResource: "quill") {
+            img.isTemplate = true
+            img.size = NSSize(width: 18, height: 18)
+            item.button?.image = img
+        } else {
+            item.button?.title = "✒"
+        }
+        // Differentiated clicks: left = focus the work, right/control-click = the
+        // menu. So we do NOT set item.menu (that pops the menu on ANY click); we
+        // take a button action and inspect the event instead.
+        item.button?.target = self
+        item.button?.action = #selector(statusClicked(_:))
+        item.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        statusItem = item
+    }
+
+    @objc private func statusClicked(_ sender: Any?) {
+        let ev = NSApp.currentEvent
+        let wantsMenu = ev?.type == .rightMouseUp
+            || (ev?.modifierFlags.contains(.control) ?? false)
+        if wantsMenu, let button = statusItem?.button {
+            let menu = buildStatusMenu()
+            menu.popUp(positioning: nil,
+                       at: NSPoint(x: 0, y: button.bounds.height + 4),
+                       in: button)
+        } else {
+            showWindow(nil)   // left-click: focus the window, or open the home
+        }
+    }
+
+    private func buildStatusMenu() -> NSMenu {
+        let menu = NSMenu()
+        for it in projectsMenuItems() { menu.addItem(it) }
+        for path in recents() {
+            let m = NSMenuItem(title: (path as NSString).lastPathComponent,
+                               action: #selector(openRecentPath(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = path; menu.addItem(m)
+        }
+        menu.addItem(.separator())
+        let open = NSMenuItem(title: "Open Folder…", action: #selector(showOpenPanel(_:)), keyEquivalent: "")
+        open.target = self; menu.addItem(open)
+        let show = NSMenuItem(title: "Show Window", action: #selector(showWindow(_:)), keyEquivalent: "")
+        show.target = self; menu.addItem(show)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Quit Manuscriptor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        return menu
+    }
+
+    private func projectsMenuItems() -> [NSMenuItem] {
+        guard let data = ServerProcess.projectsJSON().data(using: .utf8),
+              let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return arr.compactMap { p in
+            guard let name = p["name"] as? String, let root = p["root"] as? String else { return nil }
+            let m = NSMenuItem(title: name, action: #selector(openProject(_:)), keyEquivalent: "")
+            m.target = self; m.representedObject = root; return m
+        }
+    }
+
+    @objc private func openProject(_ sender: NSMenuItem) {
+        guard let root = sender.representedObject as? String else { return }
+        openHandled = true; open(path: root)
+    }
+
+    /// Left-clicking the quill (or "Show Window"): bring the manuscript window
+    /// forward, or present the home surface if no window is showing.
+    @objc func showWindow(_ sender: Any?) {
+        NSApp.setActivationPolicy(.regular)
+        if let w = window, w.isVisible {
+            w.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            loadHome()
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 }

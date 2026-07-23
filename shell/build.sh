@@ -18,8 +18,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Manuscriptor"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-# The bundled front-door page the app loads on cold open.
+# The bundled front-door page the app loads on cold open, and the menubar
+# quill template image.
 cp Resources/home.html "$APP/Contents/Resources/home.html"
+cp Resources/quill.png "$APP/Contents/Resources/quill.png"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Ad-hoc signature. Enough to launch and to be trusted by LaunchServices on the

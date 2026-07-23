@@ -369,6 +369,24 @@ def test_home_screen_invariants():
     assert "loadHome" in src, "cold open must present the home surface"
 
 
+def test_menubar_and_lifecycle_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    assert "NSStatusItem" in src, "must add a menubar status item"
+    assert "quill" in src, "menubar uses the quill template image"
+    assert "isTemplate = true" in src, "menubar image must be a template image"
+    # left-click focuses, right/control-click pops the menu (menu not bound to item)
+    assert "sendAction(on:" in src or "rightMouseUp" in src, "clicks must be differentiated"
+    assert "popUp" in src, "right-click must pop the project/recents menu"
+    assert "setActivationPolicy(.accessory)" in src and "setActivationPolicy(.regular)" in src, \
+        "activation policy must switch regular<->accessory"
+    # the app no longer quits when the last window closes
+    assert "applicationShouldTerminateAfterLastWindowClosed" in src
+    assert "return false" in src.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][:120], \
+        "must persist in the menubar after the window closes"
+    # the server invariant is preserved: still stopped on window close
+    assert "windowWillClose" in src or "server.stop()" in src
+
+
 # ------------------------------------------------- the Swift/Python parity check
 
 
