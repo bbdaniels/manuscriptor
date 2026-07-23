@@ -1,0 +1,39 @@
+<!doctype html><html><head><meta charset="utf-8">
+<!-- manuscriptor front door: the cold-open home surface -->
+<style>
+  :root{color-scheme:light dark}
+  body{font:14px -apple-system,system-ui,sans-serif;margin:0;padding:32px;
+       background:#faf9f7;color:#1c1917}
+  @media (prefers-color-scheme:dark){body{background:#1c1917;color:#faf9f7}}
+  h1{font:600 22px Georgia,serif;margin:0 0 4px}
+  .sub{color:#78716c;margin:0 0 24px}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#78716c;margin:24px 0 8px}
+  .row{padding:8px 10px;border-radius:8px;cursor:pointer;display:flex;justify-content:space-between}
+  .row:hover{background:rgba(120,113,108,.15)}
+  .row .path{color:#a8a29e;font-size:12px}
+  .actions{margin-top:24px}
+  button{font:inherit;padding:8px 14px;border-radius:8px;border:1px solid #d6d3d1;
+         background:transparent;color:inherit;cursor:pointer;margin-right:8px}
+</style></head><body>
+  <h1>Manuscriptor</h1><p class="sub">Open a manuscript</p>
+  <div id="projects"></div>
+  <div id="recents"></div>
+  <div class="actions"><button onclick="ms('openPanel')">Open Folder…</button></div>
+<script>
+  function ms(action, arg){ window.webkit.messageHandlers.ms.postMessage({action:action, arg:arg||""}); }
+  function section(elId, title, items, key){
+    var host=document.getElementById(elId); if(!items.length) return;
+    var h=document.createElement('h2'); h.textContent=title; host.appendChild(h);
+    items.forEach(function(it){
+      var row=document.createElement('div'); row.className='row';
+      var label=key==='project'? it.name : it.replace(/^.*\//,'');
+      var path = key==='project'? it.root : it;
+      row.innerHTML='<span>'+label+'</span><span class="path">'+path+'</span>';
+      row.onclick=function(){ ms('open', path); };
+      host.appendChild(row);
+    });
+  }
+  var d = window.__ms_data__ || {projects:[],recents:[]};
+  section('projects','Projects', d.projects, 'project');
+  section('recents','Recent', d.recents, 'recent');
+</script></body></html>

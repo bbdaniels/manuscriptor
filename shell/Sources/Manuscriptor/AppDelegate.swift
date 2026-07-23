@@ -6,7 +6,7 @@ import WebKit
 /// The server is the product; this is a client, and any number of clients can
 /// attach to the same port. Nothing here renders, parses or edits anything: it
 /// starts a process, loads a URL, and gets out of the way.
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMessageHandler {
 
     /// Paths handed over on the command line, for `Manuscriptor.app/.../Manuscriptor file.tex`.
     var openArguments: [String] = []
@@ -76,7 +76,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
                fm.fileExists(atPath: last) {
                 self.open(path: last)
             } else {
-                self.showOpenPanel(nil)
+                self.loadHome()
             }
         }
     }
@@ -115,6 +115,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         // Persistent, so the drafts the viewer mirrors into localStorage
         // survive a relaunch the way they survive a reload.
         config.websiteDataStore = .default()
+        // The home surface posts open/openPanel actions back over this channel.
+        config.userContentController.add(self, name: "ms")
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 860),
                             configuration: config)
@@ -136,6 +138,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         window.setFrameAutosaveName(AppDelegate.frameName)
         if window.frame.isEmpty { window.center() }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: - the home surface
+
+    /// The cold-open front door: a bundled page listing vault projects and
+    /// recents, each routed back through `open(path:)`. Falls back to the open
+    /// panel if the resource is somehow missing, so the app stays usable.
+    private func loadHome() {
+        guard let url = Bundle.main.url(forResource: "home", withExtension: "html") else {
+            showOpenPanel(nil); return   // fallback keeps the app usable
+        }
+        let projectsJSON = ServerProcess.projectsJSON()          // "[]" on failure
+        let recentsJSON = (try? JSONSerialization.data(withJSONObject: recents()))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let inject = "window.__ms_data__={projects:\(projectsJSON),recents:\(recentsJSON)};"
+        let js = WKUserScript(source: inject, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        // Re-injecting fresh data on every home load, not stacking stale copies.
+        webView.configuration.userContentController.removeAllUserScripts()
+        webView.configuration.userContentController.addUserScript(js)
+        webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+    }
+
+    func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == "ms", let body = message.body as? [String: Any],
+              let action = body["action"] as? String else { return }
+        let arg = body["arg"] as? String ?? ""
+        switch action {
+        case "open" where !arg.isEmpty: openHandled = true; open(path: arg)
+        case "openPanel": showOpenPanel(nil)
+        default: break
+        }
     }
 
     // MARK: - opening a manuscript

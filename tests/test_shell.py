@@ -359,6 +359,16 @@ def test_recents_invariants():
     assert "prefix(" in src, "recents must be bounded"
 
 
+def test_home_screen_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    home = SHELL / "Resources" / "home.html"
+    assert home.exists(), "bundled home.html must exist"
+    assert "WKScriptMessageHandler" in src
+    assert "manuscriptor" in home.read_text() or "ms.open" in home.read_text()
+    # cold open loads the home, not a bare NSOpenPanel
+    assert "loadHome" in src, "cold open must present the home surface"
+
+
 # ------------------------------------------------- the Swift/Python parity check
 
 
