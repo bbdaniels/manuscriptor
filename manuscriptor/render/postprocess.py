@@ -145,6 +145,52 @@ def _frontmatter_classes(html: str) -> str:
     return html
 
 
+# Pandoc emits <embed> for a PDF figure (and <img> only for raster formats),
+# the asset copier only knew <img>, and a browser paints nothing for an
+# unsized PDF embed: dsp-bias served with no figures at all. PDF figures are
+# rasterized into the build directory at 200dpi (the docx recipe) and the
+# element rewritten to a real <img>, which the figure CSS already styles.
+_PDF_FIG_RE = re.compile(
+    r'<(?:embed|img)\b[^>]*?\bsrc="([^"]+\.pdf)"[^>]*?/?>', re.I
+)
+
+
+def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tuple[str, list[str]]:
+    import shutil
+    import subprocess
+    from urllib.parse import unquote
+
+    if not shutil.which("pdftoppm"):
+        return html, []
+    manuscript_dir = Path(manuscript_dir).resolve()
+    made: list[str] = []
+
+    def one(m: re.Match) -> str:
+        src = m.group(1)
+        if src.startswith(("http:", "https:", "data:", "/")):
+            return m.group(0)
+        pdf = (manuscript_dir / unquote(src)).resolve()
+        # Same containment rule as the asset copier: a src that walks out of
+        # the manuscript directory is left alone, never followed.
+        if manuscript_dir not in pdf.parents or not pdf.exists():
+            return m.group(0)
+        rel_png = str(Path(unquote(src)).with_suffix(".png"))
+        dest = Path(output_dir) / rel_png
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists() or dest.stat().st_mtime < pdf.stat().st_mtime:
+            subprocess.run(
+                ["pdftoppm", "-png", "-r", "200", "-singlefile",
+                 str(pdf), str(dest.with_suffix(""))],
+                capture_output=True, timeout=60,
+            )
+        if not dest.exists():
+            return m.group(0)
+        made.append(rel_png)
+        return f'<img src="{rel_png}" />'
+
+    return _PDF_FIG_RE.sub(one, html), made
+
+
 _TABLE_OPEN_RE = re.compile(r"<table\b")
 
 
@@ -182,7 +228,8 @@ def postprocess(
     html = _frontmatter_classes(html)
     html, unresolved = resolve(html, labels)
     html = _tag_citations(html)
-    assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir))
+    html, rasterized = _pdf_figures_to_png(html, Path(manuscript_dir), Path(output_dir))
+    assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir)) + rasterized
 
     # Report in the caller's own vocabulary. The marker contract writes ids
     # without the `b-` prefix, so the harvester's orphans arrive in that form;

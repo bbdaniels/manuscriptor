@@ -497,3 +497,51 @@ def test_a_chain_of_empty_anchors_does_not_strand_the_hoist(tmp_path, harvester)
     assert f'<h1 id="x" data-mx="{C}">' in page, page
     assert f'<p data-mx="{B}"></p>' in page  # the farther anchor stays put
     assert out["unanchored"] == []
+
+
+# ---------------------------------------------------------------- PDF figures
+#
+# Pandoc emits <embed> for a PDF figure, the asset copier only knew <img>,
+# and a browser paints nothing for an unsized PDF embed: dsp-bias served
+# with no figures at all. The postprocess rasterizes PDF figures to PNG in
+# the build directory (the docx recipe, 200dpi) and rewrites the element.
+
+MINI_PDF = (b"%PDF-1.4\n"
+            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+            b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 24 24] >> endobj\n"
+            b"trailer << /Root 1 0 R >>\n%%EOF")
+
+
+def test_a_pdf_figure_becomes_a_png_img(tmp_path, harvester):
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "fig2.pdf").write_bytes(MINI_PDF)
+    html = f'<figure>{mark(A)}<embed src="outputs/fig2.pdf" /><figcaption>F</figcaption></figure>'
+    out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                      output_dir=tmp_path / "out", labels={})
+    assert '<embed' not in out["html"]
+    assert '<img src="outputs/fig2.png"' in out["html"]
+    assert (tmp_path / "out" / "outputs" / "fig2.png").exists()
+    assert "outputs/fig2.png" in out["assets"]
+
+
+def test_a_pdf_figure_is_rasterized_once_and_cached(tmp_path, harvester):
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "fig2.pdf").write_bytes(MINI_PDF)
+    html = f'<p>{mark(A)}x</p><embed src="outputs/fig2.pdf" />'
+    postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                output_dir=tmp_path / "out", labels={})
+    png = tmp_path / "out" / "outputs" / "fig2.png"
+    first = png.stat().st_mtime_ns
+    postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                output_dir=tmp_path / "out", labels={})
+    assert png.stat().st_mtime_ns == first, "an unchanged figure re-rasterized"
+
+
+def test_a_pdf_outside_the_manuscript_is_left_alone(tmp_path, harvester):
+    (tmp_path / "ms").mkdir()
+    (tmp_path / "secret.pdf").write_bytes(MINI_PDF)
+    html = f'<p>{mark(A)}x</p><embed src="../secret.pdf" />'
+    out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path / "ms",
+                      output_dir=tmp_path / "ms" / "out", labels={})
+    assert '<embed src="../secret.pdf" />' in out["html"]
