@@ -84,6 +84,10 @@
     <span class="grp">
       <button class="tb accent" type="button" data-open="import:reviewer">Import comments…</button>
       <button class="tb" type="button" data-act="evidence:run" id="evidence-run">Run evidence…</button>
+      {#- Appears only when the last run logged misses. Its click is the one
+          gesture that leads to a write of the Zotero library, so it is never
+          folded into the run itself. -#}
+      <button class="tb" type="button" data-act="repair:run" id="repair-run" hidden>Fetch missing PDFs…</button>
     </span>
     <span class="skinctl">
       <button class="tb" type="button" data-skin="instrument" aria-pressed="true">Instrument</button>

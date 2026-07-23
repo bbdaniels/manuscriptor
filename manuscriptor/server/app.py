@@ -497,20 +497,20 @@ def make_app(session: Session) -> web.Application:
     # run is live would race the first over the same record files.
     evidence_running: dict = {"proc": None}
 
-    async def evidence_handler(_request):
-        import sys as _sys
+    async def _finish_evidence(rc: int):
+        async with session.lock:
+            try:
+                session.rebuild()
+            except Exception:
+                pass  # a manuscript mid-edit may not render; the watcher will
+        await session.broadcast({"type": "cites",
+                                 "cites": session.blob.get("cites", {})})
+        await session.broadcast({"type": "evidence", "done": True, "ok": rc == 0,
+                                 "missing": session.blob.get("missing_fulltexts", 0)})
 
-        if session.read_only:
-            return web.json_response(
-                {"error": "This manuscript is open read-only; the evidence pass writes records."},
-                status=403)
-        live = evidence_running["proc"]
-        if live is not None and live.returncode is None:
-            return web.json_response({"error": "an evidence run is already underway"}, status=409)
-
+    async def _spawn_stream(argv: list, on_exit) -> None:
         proc = await asyncio.create_subprocess_exec(
-            _sys.executable, "-m", "manuscriptor.cli", "evidence",
-            str(session.dir), "--main", session.doc,
+            *argv,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
             cwd=str(session.dir),
         )
@@ -521,23 +521,76 @@ def make_app(session: Session) -> web.Application:
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 if line:
                     await session.broadcast({"type": "evidence", "line": line})
-            rc = await proc.wait()
-            async with session.lock:
-                try:
-                    session.rebuild()
-                except Exception:
-                    pass  # a manuscript mid-edit may not render; the watcher will
-            await session.broadcast({"type": "cites",
-                                     "cites": session.blob.get("cites", {})})
-            await session.broadcast({"type": "evidence", "done": True, "ok": rc == 0})
+            await on_exit(await proc.wait())
 
         asyncio.ensure_future(pump())
+
+    def _busy():
+        live = evidence_running["proc"]
+        return live is not None and live.returncode is None
+
+    async def evidence_handler(_request):
+        import sys as _sys
+
+        if session.read_only:
+            return web.json_response(
+                {"error": "This manuscript is open read-only; the evidence pass writes records."},
+                status=403)
+        if _busy():
+            return web.json_response({"error": "a run is already underway"}, status=409)
+        await _spawn_stream(
+            [_sys.executable, "-m", "manuscriptor.cli", "evidence",
+             str(session.dir), "--main", session.doc],
+            _finish_evidence,
+        )
+        return web.json_response({"started": True})
+
+    async def repair_handler(_request):
+        """Fetch the missing PDFs into Zotero, then re-run the evidence pass.
+
+        The ONLY route that leads to a write of the author's reference
+        library, which is why it exists as its own click rather than as part
+        of a run: a routine build must never mutate Zotero as a side effect.
+        The re-run afterwards is read-only and cheap (everything found before
+        is cached), and it is what upgrades the underlines.
+        """
+        import sys as _sys
+
+        if session.read_only:
+            return web.json_response(
+                {"error": "This manuscript is open read-only; repair writes your Zotero library."},
+                status=403)
+        if _busy():
+            return web.json_response({"error": "a run is already underway"}, status=409)
+        out = session.dir / "build" / "manuscriptor"
+        if not (out / "missing.json").exists():
+            return web.json_response({"error": "nothing to repair; run the evidence pass first"},
+                                     status=409)
+
+        async def then_rerun(rc: int):
+            if rc != 0:
+                await session.broadcast({"type": "evidence", "done": True, "ok": False,
+                                         "missing": session.blob.get("missing_fulltexts", 0)})
+                return
+            await session.broadcast({"type": "evidence",
+                                     "line": "repair finished; re-running the evidence pass"})
+            await _spawn_stream(
+                [_sys.executable, "-m", "manuscriptor.cli", "evidence",
+                 str(session.dir), "--main", session.doc],
+                _finish_evidence,
+            )
+
+        await _spawn_stream(
+            [_sys.executable, "-m", "manuscriptor.cli", "repair", str(out)],
+            then_rerun,
+        )
         return web.json_response({"started": True})
 
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/import", import_handler)
     app.router.add_post("/evidence", evidence_handler)
+    app.router.add_post("/repair", repair_handler)
     # A compile is a subprocess, so it is the server's to run. Progress goes
     # back over the websocket above, not down a second channel.
     app.router.add_post("/compile", compile_mod.route(session))

@@ -926,6 +926,32 @@
       });
   }
 
+  /* The one click that leads to a write of the Zotero library, so it is its
+     own button and never part of a run. The server chains a read-only
+     evidence re-run afterwards, which is what upgrades the underlines. */
+  function runRepair() {
+    var btn = document.getElementById('repair-run');
+    if (btn && btn.disabled) return;
+    fetch('/repair', { method: 'POST' })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (out) {
+        if (out && out.error) { pushTicker({ text: out.error, when: new Date().toISOString() }); return; }
+        if (btn) { btn.disabled = true; btn.textContent = 'Fetching PDFs…'; }
+      })
+      .catch(function () {
+        pushTicker({ text: 'could not start the repair', when: new Date().toISOString() });
+      });
+  }
+
+  function showRepair(missing) {
+    var btn = document.getElementById('repair-run');
+    if (!btn) return;
+    var n = Number(missing) || 0;
+    btn.hidden = n === 0;
+    btn.disabled = false;
+    btn.textContent = 'Fetch ' + n + ' missing PDF' + (n === 1 ? '' : 's') + '…';
+  }
+
   // Inserting used to replace the whole panel, which meant leaving the
   // paragraph to add something to it. The form belongs beside the inventory it
   // adds to, so it opens inline on this tab and closes back to it.
@@ -1592,6 +1618,7 @@
         var btn = document.getElementById('evidence-run');
         if (msg.done) {
           if (btn) { btn.disabled = false; btn.textContent = 'Run evidence…'; }
+          showRepair(msg.missing);
           pushTicker({ text: msg.ok ? 'evidence pass finished' : 'evidence pass failed; see the terminal',
                        when: new Date().toISOString() });
         } else if (msg.line) {
@@ -1854,6 +1881,7 @@
 
   function doAct(act) {
     if (act === 'evidence:run') { runEvidence(); return; }
+    if (act === 'repair:run') { runRepair(); return; }
     var id = S.sel && S.sel.blockId;
     if (act === 'revert' && id) {
       var b = S.blocks[id];
@@ -2081,6 +2109,7 @@
     }
 
     renderTodos(S.ms.todos || []);
+    showRepair(S.ms.missing_fulltexts);
     var todosBox = document.getElementById('todos');
     if (todosBox) {
       todosBox.addEventListener('change', function (e) {

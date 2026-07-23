@@ -86,3 +86,22 @@ def test_a_corrupt_record_file_does_not_take_down_the_build(tmp_path):
     (out / "citations.json").write_text("{not json", encoding="utf-8")
     b = build_mod.build(tmp_path)
     assert b.blob["cites"] == {}
+
+
+def test_the_blob_counts_missing_fulltexts(tmp_path):
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    out = tmp_path / "build" / "manuscriptor"
+    out.mkdir(parents=True)
+    (out / "missing.json").write_text(json.dumps(
+        [{"cite_key": "a"}, {"cite_key": "b"}]), encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    assert b.blob["missing_fulltexts"] == 2
+
+
+def test_no_misses_and_no_run_both_read_as_zero(tmp_path):
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    assert b.blob["missing_fulltexts"] == 0
+    out = tmp_path / "build" / "manuscriptor"
+    (out / "missing.json").write_text("{corrupt", encoding="utf-8")
+    assert build_mod.build(tmp_path).blob["missing_fulltexts"] == 0

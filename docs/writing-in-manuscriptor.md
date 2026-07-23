@@ -71,6 +71,16 @@ could not be matched. Red means nothing was found, or the paper is not in your
 library. Scanning a page tells you where your support is thin before you read a
 word.
 
+**Run evidence…** in the toolbar is what colours them. It streams its stages to
+the ticker and recolours the underlines when it lands; the first run on a
+manuscript pays for extraction on every citation pair, and every run after
+only pays for what changed. It reads your Zotero library and never writes it.
+When a run cannot find fulltext for some pairs, a **Fetch missing PDFs…**
+button appears beside it. That click, and only that click, downloads PDFs into
+your Zotero library, then re-runs the pass to upgrade the underlines. It is a
+separate button on purpose: a routine build never touches your library as a
+side effect.
+
 **A violet number came from your analysis code**, through `\input` of a file some
 script wrote. An unmarked number in prose is one you typed by hand. The page
 shows you that without being asked, which is the no-hardcoded-results rule made

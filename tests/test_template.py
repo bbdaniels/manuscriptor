@@ -524,3 +524,22 @@ def test_selection_has_a_way_out():
     js = VIEWER.read_text(encoding="utf-8")
     assert "function deselect" in js
     assert "'Escape'" in js
+
+
+def test_the_repair_button_is_wired_and_deliberate():
+    # The one click that leads to a write of the Zotero library: its own
+    # button, hidden until a run logs misses, never folded into the run.
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="repair-run"' in html and "hidden" in html.split('id="repair-run"')[0].rsplit("<button", 1)[1] + html.split('id="repair-run"')[1][:80]
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "'/repair'" in js
+    assert "showRepair" in js
+
+
+def test_the_toolbar_outranks_the_columns():
+    # Glass gives the toolbar a backdrop-filter, which mints a stacking
+    # context; without a raised index the hue popover paints beneath the
+    # inspector.
+    css = STYLES.read_text(encoding="utf-8")
+    toolbar_rule = [b for s, b in css_rules() if s.strip() == ".toolbar"]
+    assert toolbar_rule and "z-index" in toolbar_rule[0]

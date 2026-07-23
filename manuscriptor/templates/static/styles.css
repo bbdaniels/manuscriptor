@@ -128,7 +128,11 @@ body {
 }
 @keyframes tick-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 
-.toolbar { display: flex; align-items: center; gap: .55rem; padding: .45rem .9rem; border-bottom: 1px solid var(--rule); background: var(--surface); flex-wrap: wrap; flex: none; }
+/* z-index because Glass gives the toolbar a backdrop-filter, which mints a
+   stacking context; without a raised index the hue popover inside it paints
+   BENEATH the columns that follow in the DOM, and the wheel disappeared
+   behind the inspector. Harmless in Instrument, load-bearing in Glass. */
+.toolbar { display: flex; align-items: center; gap: .55rem; padding: .45rem .9rem; border-bottom: 1px solid var(--rule); background: var(--surface); flex-wrap: wrap; flex: none; position: relative; z-index: 30; }
 .grp { display: flex; gap: .35rem; }
 .sep { width: 1px; align-self: stretch; background: var(--rule); margin: 0 .25rem; }
 .tb { font: inherit; font-size: .75rem; padding: .28rem .6rem; border-radius: 5px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); cursor: pointer; white-space: nowrap; }

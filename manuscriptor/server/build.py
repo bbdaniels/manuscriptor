@@ -125,6 +125,11 @@ def build(
         # only reads the files it wrote into the build directory. No files
         # means every underline stays neutral, claiming nothing.
         "cites": evidence_cites(out),
+        # How many pairs the last evidence run could not find fulltext for.
+        # Non-zero is what makes the page offer the repair, which is the one
+        # step allowed to write the author's Zotero library and therefore a
+        # deliberate second click, never a side effect of a run.
+        "missing_fulltexts": missing_fulltexts(out),
         # The standing agent state, so a page loading mid-run does not open on
         # "idle" while a session is halfway through the author's third comment.
         "queue": queue_view(log, bl, root=manuscript_dir, doc=doc),
@@ -246,6 +251,15 @@ def evidence_cites(out: Path) -> dict:
             if RANK.get(status, 0) > RANK.get(rec["status"], 0):
                 rec["status"] = status
     return cites
+
+
+def missing_fulltexts(out: Path) -> int:
+    """How many entries the evidence pass logged to `missing.json`."""
+    try:
+        missing = json.loads((Path(out) / "missing.json").read_text(encoding="utf-8"))
+        return len(missing) if isinstance(missing, list) else 0
+    except (OSError, json.JSONDecodeError, ValueError):
+        return 0
 
 
 # --------------------------------------------------------------- the to-dos
