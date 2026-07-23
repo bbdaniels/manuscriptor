@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -333,36 +334,47 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # missing `claude` CLI downgrades to serving without the agent; only the
     # EXPLICIT --with-agent makes that a hard error, because then the author
     # asked for it by name.
-    agent = None
+    # THE DRAIN AGENT FOLLOWS THE CURRENT DOCUMENT. With the tree view the open
+    # document's comments live in <document root>/comments.jsonl -- a subfolder
+    # when the paper sits below the served project root -- and the drain reads
+    # that file directly (drain.collect opens `<dir>/comments.jsonl`). So the
+    # agent binds to the CURRENT document's root, not the top-level served dir,
+    # and is RE-BOUND when the reader switches documents: the Session fires
+    # `on_switch(new_root)` and we restart the drain there. For a single-directory
+    # serve the root is `d` throughout, so nothing changes. The switch is driven
+    # from an async handler, so the rebind runs off the event loop in a thread,
+    # guarded by a lock + a `down` flag so shutdown can't be out-raced.
     want_agent = not args.no_agent and not args.read_only
-    if want_agent:
-        if args.with_agent or shutil.which("claude"):
-            # Bind the drain to the CURRENT DOCUMENT's root, not the top-level
-            # served dir. With the tree view the open document's comments live in
-            # <document root>/comments.jsonl -- a subfolder when the paper sits
-            # deeper than the project root -- and the drain reads that file
-            # directly (drain.collect opens `<dir>/comments.jsonl`). Binding to d
-            # would watch an empty log while the page wrote to the real one. For a
-            # single-directory serve this resolves to d itself, so behavior is
-            # identical there.
-            #
-            # TODO: re-bind the agent when the reader switches documents
-            # (Session.switch, driven by `?main=`). That switch happens inside
-            # server/app.py, which by design has zero knowledge of Claude and
-            # cannot reach the agent this function started; a clean live re-bind
-            # needs a hook across that boundary and is left for a follow-up. Until
-            # then the agent stays bound to the document opened on.
-            from manuscriptor.source import tree as tree_mod
-            agent, _ = start_agent(tree_mod.current_root(d, args.main))
-        else:
-            print("  agent  claude CLI not found on PATH; serving without the agent.")
-            print("         comments will queue until a session runs `manuscriptor proc`.")
+    have_claude = bool(args.with_agent or shutil.which("claude"))
+    agent_box = {"proc": None, "down": False}
+    agent_lock = threading.Lock()
+
+    def _rebind(new_root):
+        def work():
+            with agent_lock:
+                if agent_box["down"]:
+                    return
+                if agent_box["proc"] is not None:
+                    terminate_group(agent_box["proc"])
+                    agent_box["proc"] = None
+                agent_box["proc"], _ = start_agent(new_root)
+        threading.Thread(target=work, daemon=True).start()
+
+    on_switch = None
+    if want_agent and have_claude:
+        from manuscriptor.source import tree as tree_mod
+        with agent_lock:                       # the first bind is synchronous
+            agent_box["proc"], _ = start_agent(tree_mod.current_root(d, args.main))
+        on_switch = _rebind
+    elif want_agent:
+        print("  agent  claude CLI not found on PATH; serving without the agent.")
+        print("         comments will queue until a session runs `manuscriptor proc`.")
 
     # The agent must not outlive the server. KeyboardInterrupt is handled inside
     # serve(); a SIGTERM would otherwise kill this process without running the
     # cleanup below and leave a session editing the manuscript.
     previous = {}
-    if agent is not None:
+    if agent_box["proc"] is not None:
         def _stop(signum, _frame):
             raise SystemExit(128 + signum)
         for sig in (signal.SIGTERM, signal.SIGHUP):
@@ -379,6 +391,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             main=args.main,
             bib=args.bib,
             read_only=args.read_only,
+            on_switch=on_switch,
         )
     finally:
         for sig, handler in previous.items():
@@ -386,9 +399,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 signal.signal(sig, handler)
             except (ValueError, OSError):
                 pass
-        if agent is not None:
-            terminate_group(agent)
-            print("  agent stopped")
+        with agent_lock:
+            agent_box["down"] = True
+            if agent_box["proc"] is not None:
+                terminate_group(agent_box["proc"])
+                agent_box["proc"] = None
+                print("  agent stopped")
     return 0
 
 

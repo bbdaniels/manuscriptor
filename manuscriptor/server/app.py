@@ -55,10 +55,14 @@ class Session:
     """
 
     def __init__(self, manuscript_dir: Path, *, main: str | None = None,
-                 bib: str | None = None, read_only: bool = False):
+                 bib: str | None = None, read_only: bool = False,
+                 on_switch=None):
         self.dir = Path(manuscript_dir).resolve()
         self.bib = bib
         self.read_only = read_only
+        # Fired with the new document root whenever a switch moves it, so the
+        # caller (the drain agent in cmd_serve) can follow the current document.
+        self._on_switch = on_switch
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
         self.seen_chats: dict[str, dict] = {}
@@ -164,12 +168,19 @@ class Session:
         if entry is None:
             raise ValueError(f"{rel_main!r} is not a document this project serves")
         previous = self.current
+        old_root = self.root
         self.current = entry
         try:
             self.rebuild()
         except Exception:
             self.current = previous
             raise
+        # The drain agent follows the current document into its own folder.
+        if self._on_switch is not None and self.root != old_root:
+            try:
+                self._on_switch(self.root)
+            except Exception:
+                pass
 
     async def broadcast(self, msg: dict) -> None:
         dead = []
@@ -742,10 +753,12 @@ def serve(
     main: str | None = None,
     bib: str | None = None,
     read_only: bool = False,
+    on_switch=None,
 ) -> None:
     from manuscriptor.server.watch import watch_tree
 
-    session = Session(manuscript_dir, main=main, bib=bib, read_only=read_only)
+    session = Session(manuscript_dir, main=main, bib=bib, read_only=read_only,
+                      on_switch=on_switch)
     app = make_app(session)
 
     async def run():

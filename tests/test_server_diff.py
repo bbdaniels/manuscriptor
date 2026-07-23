@@ -247,6 +247,23 @@ def test_switching_serves_a_document_from_its_own_folder(tmp_path):
     assert s.log == (tmp_path / "response" / "comments.jsonl")
 
 
+def test_switch_rebinds_the_drain_to_the_new_document_root(tmp_path):
+    """The drain agent follows the current document: a switch that moves the root
+    fires `on_switch(new_root)`, an opening or a no-op switch does not."""
+    from manuscriptor.server.app import Session
+
+    _tree_project(tmp_path)
+    seen = []
+    s = Session(tmp_path, on_switch=lambda root: seen.append(root))
+    assert seen == [], "opening does not fire the callback"
+    s.switch("response/response.tex")
+    assert seen == [(tmp_path / "response").resolve()], "root moved -> rebind fires"
+    s.switch("response/response.tex")
+    assert len(seen) == 1, "a no-op switch does not rebind"
+    s.switch("latex/main.tex")
+    assert seen[-1] == (tmp_path / "latex").resolve(), "switching back rebinds again"
+
+
 def test_a_switch_to_a_document_the_tree_does_not_offer_is_refused(tmp_path):
     import pytest
 
