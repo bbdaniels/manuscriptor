@@ -133,6 +133,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         config.websiteDataStore = .default()
         // The home surface posts open/openPanel actions back over this channel.
         config.userContentController.add(self, name: "ms")
+        // In the app, the real macOS title bar is transparent and the web
+        // content runs up under it (below), so the viewer's own title row IS
+        // the top bar. This class lets the viewer inset for the real traffic
+        // lights and hide its decorative fake dots — only in the app, never in
+        // a browser or the static export.
+        config.userContentController.addUserScript(WKUserScript(
+            source: "document.documentElement.classList.add('ms-native-titlebar')",
+            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 860),
                             configuration: config)
@@ -145,6 +153,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             backing: .buffered,
             defer: false)
         window.title = "Manuscriptor"
+        // Unify the title bar: transparent + full-height content so the viewer's
+        // own title row (with the idle/watching indicators) rises into the top
+        // bar beside the real traffic lights, instead of sitting as a second bar
+        // below it. The top band stays draggable (it is still the real title bar).
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.styleMask.insert(.fullSizeContentView)
         window.contentView = webView
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 720, height: 480)
@@ -496,10 +511,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     /// so the quill is how a manuscript is opened once every window is closed.
     private func buildStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        // TODO: replace with final quill art
+        // The menubar mark is the quill's own nib tip — a cursor. It is taller
+        // than wide, so scale to a fixed height and keep the aspect (18x18 would
+        // squash it). isTemplate lets the menu bar recolor it for light/dark.
         if let img = NSImage(named: "quill") ?? Bundle.main.image(forResource: "quill") {
             img.isTemplate = true
-            img.size = NSSize(width: 18, height: 18)
+            let h: CGFloat = 17
+            let ar = img.size.height > 0 ? img.size.width / img.size.height : 1
+            img.size = NSSize(width: h * ar, height: h)
             item.button?.image = img
         } else {
             item.button?.title = "✒"

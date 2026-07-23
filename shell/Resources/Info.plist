@@ -5,6 +5,7 @@
   <key>CFBundleName</key>                   <string>Manuscriptor</string>
   <key>CFBundleDisplayName</key>            <string>Manuscriptor</string>
   <key>CFBundleExecutable</key>             <string>Manuscriptor</string>
+  <key>CFBundleIconFile</key>               <string>AppIcon</string>
   <key>CFBundleIdentifier</key>             <string>com.bbdaniels.manuscriptor</string>
   <key>CFBundleInfoDictionaryVersion</key>  <string>6.0</string>
   <key>CFBundlePackageType</key>            <string>APPL</string>
