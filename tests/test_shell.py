@@ -350,41 +350,39 @@ def test_swift_jumps_to_the_opened_file():
     assert "MSViewer" in src
 
 
-def test_recents_invariants():
-    src = (SOURCES / "AppDelegate.swift").read_text()
-    assert "RecentManuscripts" in src, "recents must use a dedicated UserDefaults key"
-    assert "func pushRecent" in src and "func recents" in src
-    assert "Open Recent" in src, "File menu must offer Open Recent"
-    # bounded so the list cannot grow without limit
-    assert "prefix(" in src, "recents must be bounded"
+def test_multiwindow_invariants():
+    """The pivot: a plain multi-document app, one window + server per directory,
+    no launcher chrome. These greps pin the shape; behaviour is verified by
+    running the app with two directories."""
+    src = _swift_source()
 
-
-def test_home_screen_invariants():
-    src = (SOURCES / "AppDelegate.swift").read_text()
-    home = SHELL / "Resources" / "home.html"
-    assert home.exists(), "bundled home.html must exist"
-    assert "WKScriptMessageHandler" in src
-    assert "manuscriptor" in home.read_text() or "ms.open" in home.read_text()
-    # cold open loads the home, not a bare NSOpenPanel
-    assert "loadHome" in src, "cold open must present the home surface"
-
-
-def test_menubar_and_lifecycle_invariants():
-    src = (SOURCES / "AppDelegate.swift").read_text()
-    assert "NSStatusItem" in src, "must add a menubar status item"
-    assert "quill" in src, "menubar uses the quill template image"
-    assert "isTemplate = true" in src, "menubar image must be a template image"
-    # left-click focuses, right/control-click pops the menu (menu not bound to item)
-    assert "sendAction(on:" in src or "rightMouseUp" in src, "clicks must be differentiated"
-    assert "popUp" in src, "right-click must pop the project/recents menu"
-    assert "setActivationPolicy(.accessory)" in src and "setActivationPolicy(.regular)" in src, \
-        "activation policy must switch regular<->accessory"
-    # the app no longer quits when the last window closes
+    # The last window closing quits the app again (no menubar to persist into).
     assert "applicationShouldTerminateAfterLastWindowClosed" in src
-    assert "return false" in src.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][:120], \
-        "must persist in the menubar after the window closes"
-    # the server invariant is preserved: still stopped on window close
-    assert "windowWillClose" in src or "server.stop()" in src
+    tail = src.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][:160]
+    assert "return true" in tail, "last window closed must quit the app"
+
+    # The launcher chrome is gone: no menubar status item, no quill, no dynamic
+    # activation policy, no home surface / message channel.
+    assert "NSStatusItem" not in src, "the menubar launcher must be deleted"
+    assert "quill" not in src, "the menubar quill must be deleted"
+    assert "setActivationPolicy(.accessory)" not in src, "no dynamic accessory policy"
+    assert "loadHome" not in src and "home.html" not in src, "the home surface must be gone"
+    assert 'name: "ms"' not in src, "the home message channel must be gone"
+    assert "RecentManuscripts" not in src, "the recents store must be gone"
+
+    # A per-directory window+server collection: each opened dir its own window
+    # and its own ServerProcess, closing a window stops that window's server.
+    assert "DocumentWindow" in src, "windows/servers must be tracked per directory"
+    assert "documents" in src, "the app must hold a collection of open documents"
+    assert "let server = ServerProcess()" in src, "each window owns one server"
+    assert "func stopServer" in src and "server.stop()" in src, \
+        "closing a window must stop that window's server"
+    assert "windowWillClose" in src, "window close must be handled per window"
+
+    # The unified transparent title bar and the .ms-native-titlebar class stay,
+    # now injected per window.
+    assert "titlebarAppearsTransparent" in src, "the transparent title bar must stay"
+    assert "ms-native-titlebar" in src, "the native-titlebar class injection must stay"
 
 
 # ------------------------------------------------- the Swift/Python parity check

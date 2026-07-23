@@ -50,20 +50,6 @@ final class ServerProcess {
         return nil
     }
 
-    /// `manuscriptor projects` as a JSON string; "[]" on any failure so the
-    /// home always renders. Shells the same binary the server runs from.
-    static func projectsJSON() -> String {
-        guard let bin = locateBinary() else { return "[]" }
-        let p = Process(); p.executableURL = bin; p.arguments = ["projects"]
-        p.environment = childEnvironment()
-        let out = Pipe(); p.standardOutput = out; p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return "[]" }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        let s = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return (p.terminationStatus == 0 && s.hasPrefix("[")) ? s : "[]"
-    }
-
     /// The child needs pandoc and pdftotext, which live in `/usr/local/bin`
     /// here and are therefore invisible to a Finder-launched process.
     private static func childEnvironment() -> [String: String] {
