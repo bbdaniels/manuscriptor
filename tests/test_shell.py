@@ -350,6 +350,15 @@ def test_swift_jumps_to_the_opened_file():
     assert "MSViewer" in src
 
 
+def test_recents_invariants():
+    src = (SOURCES / "AppDelegate.swift").read_text()
+    assert "RecentManuscripts" in src, "recents must use a dedicated UserDefaults key"
+    assert "func pushRecent" in src and "func recents" in src
+    assert "Open Recent" in src, "File menu must offer Open Recent"
+    # bounded so the list cannot grow without limit
+    assert "prefix(" in src, "recents must be bounded"
+
+
 # ------------------------------------------------- the Swift/Python parity check
 
 

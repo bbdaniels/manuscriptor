@@ -29,9 +29,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     private var openHandled = false
     private var retried = false
     private var signalSources: [DispatchSourceSignal] = []
+    private var openRecentItem: NSMenuItem?
 
     private static let frameName = "ManuscriptorMainWindow"
     private static let lastKey = "LastManuscript"
+    private static let recentsKey = "RecentManuscripts"
+    private static let recentsMax = 12
+
+    // MARK: - recents
+
+    /// The recently opened manuscript roots, most-recent-first, filtered to
+    /// paths that still exist.
+    func recents() -> [String] {
+        let raw = UserDefaults.standard.stringArray(forKey: AppDelegate.recentsKey) ?? []
+        return raw.filter { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    func pushRecent(_ path: String) {
+        var list = UserDefaults.standard.stringArray(forKey: AppDelegate.recentsKey) ?? []
+        list.removeAll { $0 == path }
+        list.insert(path, at: 0)
+        list = Array(list.prefix(AppDelegate.recentsMax))
+        UserDefaults.standard.set(list, forKey: AppDelegate.recentsKey)
+    }
 
     // MARK: - launch
 
@@ -130,6 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         }
 
         UserDefaults.standard.set(resolved.root.path, forKey: AppDelegate.lastKey)
+        pushRecent(resolved.root.path)
+        rebuildOpenRecentMenu()
         window.title = resolved.root.lastPathComponent
         window.representedFilename = resolved.root.path
 
@@ -344,6 +366,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Open…", action: #selector(showOpenPanel(_:)), keyEquivalent: "o")
             .target = self
+        let recent = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
+        fileMenu.addItem(recent)
+        openRecentItem = recent
+        rebuildOpenRecentMenu()
         fileMenu.addItem(withTitle: "Close Window",
                          action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileItem.submenu = fileMenu
@@ -370,6 +396,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         main.addItem(viewItem)
 
         NSApp.mainMenu = main
+    }
+
+    private func rebuildOpenRecentMenu() {
+        let submenu = NSMenu(title: "Open Recent")
+        for path in recents() {
+            let title = (path as NSString).lastPathComponent
+            let item = NSMenuItem(title: title, action: #selector(openRecentPath(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = path
+            submenu.addItem(item)
+        }
+        openRecentItem?.submenu = submenu
+        openRecentItem?.isEnabled = !recents().isEmpty
+    }
+
+    @objc private func openRecentPath(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        openHandled = true
+        open(path: path)
     }
 
     @objc func showOpenPanel(_ sender: Any?) {
