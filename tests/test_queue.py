@@ -1039,3 +1039,40 @@ def test_a_read_only_page_cannot_dismiss(tmp_path):
     s = Session(tmp_path, read_only=True)
     frame = asyncio.run(s.on_dismiss("c-0001"))
     assert frame["type"] == "held"
+
+
+def test_the_agent_is_the_default(tmp_path, monkeypatch):
+    # The full workflow is: open a manuscript, leave a comment, have it
+    # answered. That only holds if serve runs the drain without being asked.
+    import manuscriptor.server.app as app_mod
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    started = []
+    monkeypatch.setattr(cli, "start_agent", lambda d: (started.append(d), None)[1] and None or (None, None))
+    monkeypatch.setattr(app_mod, "serve", lambda d, **kw: None)
+
+    cli.main(["serve", str(tmp_path), "--no-window"])
+    assert started, "serve without flags must run the agent; that is the workflow"
+
+    started.clear()
+    cli.main(["serve", str(tmp_path), "--no-window", "--no-agent"])
+    assert not started
+
+    # Read-only implies no agent, silently: wanting to READ a paper is not a
+    # contradiction to be errored at, it is the other mode.
+    started.clear()
+    cli.main(["serve", str(tmp_path), "--no-window", "--read-only"])
+    assert not started
+
+
+def test_a_machine_without_claude_still_serves(tmp_path, monkeypatch):
+    # The default must degrade: a missing claude CLI downgrades to serving
+    # without the agent, with a warning. Only the EXPLICIT --with-agent is a
+    # hard error, because then the author asked for it by name.
+    import manuscriptor.server.app as app_mod
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    monkeypatch.setattr(cli.shutil, "which",
+                        lambda name: None if name == "claude" else "/usr/bin/" + name)
+    monkeypatch.setattr(app_mod, "serve", lambda d, **kw: None)
+    cli.main(["serve", str(tmp_path), "--no-window"])  # must not raise

@@ -195,11 +195,7 @@ other work.
 Each wake costs a turn, so a comment resolves in about a minute. Live here means
 the author never has to ask, not that it happens while they watch the cursor.
 
-The author can start both halves at once:
-
-```bash
-manuscriptor serve <manuscript-dir> --with-agent
-```
-
-which serves the page and runs that loop beside it. It refuses to combine with
-`--read-only`, and the session dies with the server.
+`manuscriptor serve` runs that loop beside the server BY DEFAULT (from the CLI
+and from the app alike), works anything already pending at start, and the
+session dies with the server. `--no-agent` opts out; `--read-only` implies
+out. You are most often that default session, woken by a comment.

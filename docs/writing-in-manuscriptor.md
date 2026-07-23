@@ -8,20 +8,25 @@ A guide for the person writing the paper, not the person maintaining the tool.
 manuscriptor serve ~/Projects/estonia-ecm/latex
 ```
 
-That renders the manuscript and opens it. Editing is live: a change you type is
-written to the `.tex` file about a second after you stop typing. There is no
-save button and no save keystroke.
+That renders the manuscript, opens it, **and runs the agent**: a Claude Code
+session beside the server that answers comments as you leave them. That is the
+whole workflow, so it is the default, from the CLI and from the app alike.
+Editing is live: a change you type is written to the `.tex` file about a second
+after you stop typing. There is no save button and no save keystroke.
 
 Two variants matter.
 
 ```bash
 manuscriptor serve <dir> --read-only     # render and read, nothing can write
-manuscriptor serve <dir> --with-agent    # and a Claude session answering comments
+manuscriptor serve <dir> --no-agent      # serve without the agent; comments queue
 ```
 
 `--read-only` is the one to reach for when you want to look at a paper rather
 than work on it. Nothing reaches the filesystem in that mode, not the `.tex` and
 not the comment log, so it is safe by construction rather than by remembering.
+It implies `--no-agent`. With `--no-agent`, comments queue until any Claude
+session in the repo runs "proc the comments". On a machine without the
+`claude` CLI, serve degrades to that mode with a warning.
 
 `~/Projects/manuscriptor-demo` is a copy of estonia-ecm kept as its own git
 repository. Break it however you like and put it back with
@@ -132,20 +137,17 @@ decisions recorded there, not just the paragraph in front of it.
 Comments queue. The header carries the standing state, `3 queued · 1 working`,
 and the ticker names what was touched by its section rather than an id.
 
-Two ways to have them answered.
+They are answered **automatically by default**: the agent session running
+beside the server picks each one up, and anything already queued is worked
+when the server starts. A comment resolves in roughly a minute: the margin pin
+turns blue while it works, the paragraph updates underneath you, and the pin
+turns green. With `--no-agent`, the same queue waits instead, and any Claude
+Code session in that repo drains it when you say "proc the comments".
 
-**By hand.** In any Claude Code session in that repo, say "proc the comments".
-The session reads the queue with the full context of each block and works them
-oldest first.
-
-**Automatically**, with `--with-agent`. A session runs beside the server and
-answers comments as you leave them. A comment resolves in roughly a minute: the
-margin pin turns blue while it works, the paragraph updates underneath you, and
-the pin turns green.
-
-Know what you are turning on. That session edits inside the manuscript directory
-without asking each time. That is the point of the flag, and it is why the
-header and ticker exist: you can always glance up. Try it on the demo first.
+Know what is running. That session edits inside the manuscript directory
+without asking each time; that is the point, and it is why the header and
+ticker exist: you can always glance up. Everything it does goes through git,
+so commit before a long session and `git diff` shows exactly what changed.
 
 The safety property behind all of this: a worker may read as widely as it needs
 and may write **one block**. It can read the section, the neighbouring

@@ -284,15 +284,28 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from manuscriptor.server.app import serve
 
     d = Path(args.manuscript).resolve()
+    if args.with_agent and args.read_only:
+        sys.exit(
+            "--with-agent and --read-only contradict each other: an agent that "
+            "cannot write cannot answer a comment, and the comment log is not "
+            "written either. Pick one."
+        )
+
+    # THE AGENT IS THE DEFAULT. The full workflow is: open a manuscript, leave
+    # a comment, have it answered; that only holds if serve runs the drain
+    # without being asked. --no-agent opts out; --read-only implies out,
+    # silently, because wanting to read a paper is a mode, not a mistake. A
+    # missing `claude` CLI downgrades to serving without the agent; only the
+    # EXPLICIT --with-agent makes that a hard error, because then the author
+    # asked for it by name.
     agent = None
-    if args.with_agent:
-        if args.read_only:
-            sys.exit(
-                "--with-agent and --read-only contradict each other: an agent that "
-                "cannot write cannot answer a comment, and the comment log is not "
-                "written either. Pick one."
-            )
-        agent, _ = start_agent(d)
+    want_agent = not args.no_agent and not args.read_only
+    if want_agent:
+        if args.with_agent or shutil.which("claude"):
+            agent, _ = start_agent(d)
+        else:
+            print("  agent  claude CLI not found on PATH; serving without the agent.")
+            print("         comments will queue until a session runs `manuscriptor proc`.")
 
     # The agent must not outlive the server. KeyboardInterrupt is handled inside
     # serve(); a SIGTERM would otherwise kill this process without running the
@@ -553,8 +566,12 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("--read-only", action="store_true",
                          help="Render and browse without the manuscript ever being written to.")
     p_serve.add_argument("--with-agent", action="store_true",
-                         help="Also run a Claude Code session that drains comments as they arrive. "
-                              "Refuses to combine with --read-only.")
+                         help="Require the agent (the default already runs it when the claude "
+                              "CLI is present; this makes its absence an error). Refuses to "
+                              "combine with --read-only.")
+    p_serve.add_argument("--no-agent", action="store_true",
+                         help="Serve without the comment-draining agent; comments queue until "
+                              "a session runs `manuscriptor proc`.")
     p_serve.set_defaults(func=cmd_serve)
 
     p_blocks = sub.add_parser("blocks", help="Print the block table for a manuscript (flatten and segment only).")
