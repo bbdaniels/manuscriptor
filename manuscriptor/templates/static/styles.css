@@ -469,6 +469,10 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    opportunity of its own, and one of them is enough to make the whole
    manuscript column scroll sideways. The measure wins. */
 .doc a, .doc code, .doc tt { overflow-wrap: anywhere; word-break: break-word; }
+/* Hyperlinks belong to the page's hue, not the browser's default blue: an
+   unstyled link was the one element on the page ignoring the space colour. */
+.doc a { color: var(--accent); text-decoration-color: var(--accent); }
+.doc a:visited { color: var(--accent); }
 
 /* ---------- math ----------
    Emitted as MathML and rendered by the browser: no MathJax, no bundle, no

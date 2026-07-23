@@ -549,3 +549,19 @@ def test_a_forced_break_in_the_title_is_a_space_not_a_comma(tmp_path):
     html = render_document(src, cwd=tmp_path, bib=None)
     assert "In Sickness: Motivating Care" in html
     assert "A One, B Two" in html
+
+
+def test_a_spacing_environment_does_not_swallow_the_title(tmp_path):
+    # dsp-bias wraps \maketitle in \begin{singlespace}: a setspace environment
+    # pandoc does not know, so the whole front matter vanished with it. Print
+    # geometry with no HTML meaning, unwrapped like the other wrappers.
+    src = (
+        "\\documentclass{article}\n"
+        "\\title{The Paper}\n\\author{A. Author}\n\\date{}\n"
+        "\\begin{document}\n"
+        "\\begin{singlespace}\n\\setlength{\\parskip}{2pt}\n\\maketitle\n"
+        "\\end{singlespace}\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "The Paper" in html
+    assert "<h1" in html

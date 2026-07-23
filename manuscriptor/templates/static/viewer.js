@@ -1603,6 +1603,16 @@
       case 'state': {
         var id = normId(msg.block);
         S.blockState[id] = msg.state;
+        // Move the chat message's own label too, or it reads "working"
+        // forever after the work landed.
+        if (msg.id) {
+          var bag2 = S.chats[id] || [];
+          for (var bq = 0; bq < bag2.length; bq++) {
+            if (bag2[bq] && bag2[bq].id === msg.id) bag2[bq].state = msg.state;
+          }
+          if (S.sel && S.sel.blockId === id) renderInspector();
+          else if (!S.sel && id === '') renderHome();
+        }
         // `queued` is the standing state and the header already counts it. A
         // new comment arrives as a `queued` frame, so pushing those filled the
         // ticker with the author's own three comments and pushed the agent's
@@ -1653,6 +1663,17 @@
       }
       case 'todos': {
         renderTodos(msg.todos || []);
+        break;
+      }
+      case 'assets': {
+        // A figure regenerated with no source change beside it: refetch every
+        // image past the browser cache. The src path is stable; the version
+        // query is what forces the miss.
+        var pics = docInner ? docInner.querySelectorAll('img') : [];
+        for (var pi = 0; pi < pics.length; pi++) {
+          var base = pics[pi].getAttribute('src').split('?')[0];
+          pics[pi].setAttribute('src', base + '?v=' + encodeURIComponent(msg.v || Date.now()));
+        }
         break;
       }
       case 'cites': {

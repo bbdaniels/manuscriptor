@@ -1076,3 +1076,60 @@ def test_a_machine_without_claude_still_serves(tmp_path, monkeypatch):
                         lambda name: None if name == "claude" else "/usr/bin/" + name)
     monkeypatch.setattr(app_mod, "serve", lambda d, **kw: None)
     cli.main(["serve", str(tmp_path), "--no-window"])  # must not raise
+
+
+# --------------------------------------------------------- figures that change
+#
+# The agent answers a figure comment by editing the producing script and
+# regenerating the PDF, and the page kept showing the old raster: the watcher
+# only knew source suffixes, so a changed figure triggered nothing. Watched
+# live on dsp-bias, minutes after the first real figure regeneration.
+
+MINI_PDF = (b"%PDF-1.4\n"
+            b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+            b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+            b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 24 24] >> endobj\n"
+            b"trailer << /Root 1 0 R >>\n%%EOF")
+
+FIG_DOC = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+Prose before the figure, long enough to be its own paragraph in the map.
+
+\begin{figure}
+\includegraphics{outputs/fig.pdf}
+\caption{The figure}
+\end{figure}
+\end{document}
+"""
+
+
+def test_the_watcher_notices_figure_files():
+    from manuscriptor.server import watch
+
+    assert ".pdf" in watch.WATCHED
+    assert ".png" in watch.WATCHED
+    # And our own rasterized output can never retrigger a rebuild.
+    assert "build" in watch.IGNORED_DIRS
+
+
+def test_a_regenerated_figure_reaches_the_page(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "fig.pdf").write_bytes(MINI_PDF)
+    (tmp_path / "main.tex").write_text(FIG_DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    png = tmp_path / "build" / "manuscriptor" / "outputs" / "fig.png"
+    assert png.exists(), "the figure never rasterized at all"
+    first = png.stat().st_mtime_ns
+
+    time.sleep(0.02)
+    (tmp_path / "outputs" / "fig.pdf").write_bytes(MINI_PDF + b"\n% regenerated")
+    os.utime(tmp_path / "outputs" / "fig.pdf")
+    sent = collect_frames(s)
+    asyncio.run(s.on_assets_change())
+
+    assert png.stat().st_mtime_ns > first, "the raster is still the old figure"
+    frames = [m for m in sent if m["type"] == "assets"]
+    assert frames and frames[-1].get("v"), "the page was never told to refetch"

@@ -25,9 +25,15 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-WATCHED = {".tex", ".bib", ".aux", ".jsonl"}
+# Source suffixes drive a re-render; figure suffixes drive an asset refresh.
+# Figures are here because the agent answers a figure comment by editing the
+# producing script and regenerating the PDF, and a watcher that only knew
+# source left the page showing the old raster indefinitely.
+WATCHED = {".tex", ".bib", ".aux", ".jsonl", ".pdf", ".png", ".jpg", ".jpeg"}
+ASSET_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
 
 # Never redraw because of our own output, or because git touched something.
+# `build` carries the rasterized figures, so watching it would be a loop.
 IGNORED_DIRS = {".git", "build", "__pycache__", ".venv", "node_modules", "renv"}
 
 

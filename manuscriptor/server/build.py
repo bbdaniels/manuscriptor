@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from manuscriptor.render import pandoc, postprocess, refs
+from manuscriptor.render import pandoc, postprocess, refs, tikz
 from manuscriptor.source import anchors, blocks as blocks_mod, root
 from manuscriptor.source.flatten import flatten
 from manuscriptor.server import chat, manifest, producers
@@ -90,6 +90,11 @@ def build(
     # under --mathml, so resolving on its output would silently lose every
     # cross-reference in the manuscript.
     anchored, unresolved_src = refs.resolve_source(anchored, labels)
+    # TikZ before pandoc too: each picture compiles standalone against the
+    # manuscript's own preamble, rasters into the build directory cached by
+    # content, and becomes an \includegraphics the pipeline already handles.
+    anchored, _tikz_made, tikz_failed = tikz.replace(
+        anchored, preamble=pandoc.extract_preamble(flat.text), out_dir=out)
     html = pandoc.render_document(anchored, cwd=manuscript_dir, bib=bib_path)
 
     post = postprocess.postprocess(
@@ -146,6 +151,7 @@ def build(
             "unanchored": post.get("unanchored", []),
             "unresolved_refs": sorted(set(unresolved_src) | set(post.get("unresolved_refs", []))),
             "missing_includes": list(flat.missing),
+            "tikz_failed": tikz_failed,
         },
     }
     return Build(

@@ -117,6 +117,24 @@ class Session:
         if patch:
             await self.broadcast(patch)
 
+    async def on_assets_change(self) -> None:
+        """A figure changed on disk, with no source change beside it.
+
+        The block diff cannot carry this: the LaTeX is untouched, so ids and
+        sources match and the patch is empty, while the rasterized PNG in the
+        build directory has silently gone stale. Rebuild (the mtime check
+        re-rasterizes exactly the changed figures, `copy2` refreshes direct
+        images) and tell every client to refetch its images past the browser
+        cache. This is how a regenerated figure reaches an open page.
+        """
+        async with self.lock:
+            try:
+                self.rebuild()
+            except Exception as exc:
+                await self.broadcast({"type": "error", "message": str(exc)[:400]})
+                return
+        await self.broadcast({"type": "assets", "v": chat.now()})
+
     async def on_log_change(self) -> None:
         """Tell the page what the agent did.
 
@@ -162,7 +180,11 @@ class Session:
                 })
             if not was or was.get("state") != msg.get("state"):
                 await self.broadcast({
+                    # `id` names the chat, so the page can move the message's
+                    # own label off "working" when the work lands; a frame
+                    # keyed only by block cannot say WHICH chat moved.
                     "type": "state", "block": msg["block"], "state": msg["state"],
+                    "id": cid,
                     # The ticker reports what happened, so it ages each entry by
                     # the log's own time rather than by the client's clock at the
                     # moment the frame happened to arrive.
@@ -645,10 +667,18 @@ def serve(
 
         loop = asyncio.get_running_loop()
         def changed(paths):
+            from manuscriptor.server.watch import ASSET_SUFFIXES
+
             # The comment log is not source. Re-rendering the manuscript because
-            # a comment arrived would be a second of work to repaint a pin.
+            # a comment arrived would be a second of work to repaint a pin. And
+            # a figure-only change is an asset refresh, not a re-render diff:
+            # the LaTeX did not move, only the image behind it.
             log_only = all(p.name == "comments.jsonl" for p in paths)
-            coro = session.on_log_change() if log_only else session.on_change()
+            assets_only = not log_only and all(
+                p.suffix.lower() in ASSET_SUFFIXES for p in paths)
+            coro = (session.on_log_change() if log_only
+                    else session.on_assets_change() if assets_only
+                    else session.on_change())
             asyncio.run_coroutine_threadsafe(coro, loop)
 
         stop = watch_tree(session.dir, changed)
@@ -659,7 +689,8 @@ def serve(
         diag = b.get("diagnostics", {})
         for key, label in (("unanchored", "unanchored blocks"),
                            ("unresolved_refs", "unresolved refs"),
-                           ("missing_includes", "missing includes")):
+                           ("missing_includes", "missing includes"),
+                           ("tikz_failed", "tikz figures not rendered")):
             if diag.get(key):
                 print(f"  {len(diag[key])} {label}")
         if open_window:

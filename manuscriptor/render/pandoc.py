@@ -106,7 +106,14 @@ _SCALING_MACROS = {"resizebox": 2, "scalebox": 1}
 
 # Environments that wrap content in a box and mean nothing outside of print.
 # The value is how many mandatory arguments follow `\begin{name}`.
-_WRAPPER_ENVS = {"adjustbox": 1, "threeparttable": 0}
+# The setspace family is here because dsp-bias wraps its whole front matter in
+# `singlespace`, and an environment pandoc does not know swallows everything
+# inside it: the title vanished with the line spacing.
+_WRAPPER_ENVS = {
+    "adjustbox": 1, "threeparttable": 0,
+    "singlespace": 0, "singlespacing": 0, "onehalfspace": 0,
+    "doublespace": 0, "spacing": 1,
+}
 
 # LaTeX column types reduced to the alignment pandoc can actually express.
 _ALIGN = {"c": "c", "l": "l", "r": "r", "m": "c", "p": "l", "b": "l", "X": "l"}
