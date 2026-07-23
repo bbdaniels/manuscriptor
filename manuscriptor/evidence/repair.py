@@ -48,8 +48,11 @@ def run(*, build_dir: Path) -> int:
         target = zot_key or doi
         print(f"  find-pdf {cite_key} ({target})...", end=" ", flush=True)
         try:
+            # `item find-pdf`, not `find-pdf`: the bare form is a usage error,
+            # and it shipped that way from cite-evidence. Every lookup in the
+            # first live repair run failed on it, counted as "no PDF found".
             result = subprocess.run(
-                ["zotero-cli", "find-pdf", target],
+                ["zotero-cli", "item", "find-pdf", target],
                 capture_output=True,
                 text=True,
                 timeout=120,

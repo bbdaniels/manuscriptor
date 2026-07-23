@@ -105,3 +105,31 @@ def test_no_misses_and_no_run_both_read_as_zero(tmp_path):
     out = tmp_path / "build" / "manuscriptor"
     (out / "missing.json").write_text("{corrupt", encoding="utf-8")
     assert build_mod.build(tmp_path).blob["missing_fulltexts"] == 0
+
+
+def test_repair_invokes_the_item_subcommand(tmp_path, monkeypatch):
+    # `zotero-cli find-pdf` is a usage error; the command is `zotero-cli item
+    # find-pdf`. The bare form shipped from cite-evidence and every lookup in
+    # the first live repair run failed on it, silently counted as "no PDF".
+    from manuscriptor.evidence import repair
+    import shutil
+    import subprocess as sp
+    import time
+
+    (tmp_path / "missing.json").write_text(json.dumps(
+        [{"cite_key": "barrows1993", "doi": "10.1/x", "zotero_key": "KEY123"}]),
+        encoding="utf-8")
+    calls = []
+
+    class Done:
+        returncode = 0
+        stderr = ""
+
+    monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zotero-cli")
+    monkeypatch.setattr(time, "sleep", lambda _: None)
+    monkeypatch.setattr(sp, "run", lambda argv, **kw: calls.append(argv) or Done())
+    rc = repair.run(build_dir=tmp_path)
+    assert rc == 0
+    assert calls, "no lookup was attempted"
+    assert calls[0][:3] == ["zotero-cli", "item", "find-pdf"]
+    assert calls[0][3] == "KEY123"
