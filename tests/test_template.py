@@ -564,13 +564,16 @@ def test_review_findings_carry_their_triage():
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
-def test_chats_read_newest_first_without_orphaning_replies():
-    # Reverse-chron, but the unit is a comment WITH its replies: a bare
-    # reversal would put an answer above the comment it answers.
+def test_chats_read_newest_first_by_time():
+    # FULL reverse-chron, by author request: the newest message tops the list
+    # even when it is a reply to an older comment. The reply that just landed
+    # is the thing being waited for; making the reader scroll for it buries
+    # the answer under its own question.
     msgs = [
-        {"id": "c-0001", "body": "old comment"},
-        {"id": "c-0001#r1", "body": "its reply"},
-        {"id": "c-0002", "body": "new comment"},
+        {"id": "c-0001", "body": "old comment", "ts": "2026-07-23T10:00:00+00:00"},
+        {"id": "c-0002", "body": "newer comment", "ts": "2026-07-23T10:05:00+00:00"},
+        {"id": "c-0001#r1", "body": "the reply that just landed",
+         "ts": "2026-07-23T10:09:00+00:00"},
     ]
     out = node_call("newestFirst", msgs)
-    assert [m["id"] for m in out] == ["c-0002", "c-0001", "c-0001#r1"]
+    assert [m["id"] for m in out] == ["c-0001#r1", "c-0002", "c-0001"]

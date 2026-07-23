@@ -190,26 +190,15 @@
     return ((out % 360) + 360) % 360;
   }
 
-  /* Chats read newest first, but the unit is a comment WITH its replies: a
-     bare reversal would put an answer above the comment it answers. A reply's
-     id carries its comment's (`c-0007#r1`), which is the grouping key. */
+  /* Chats read newest first, strictly by time (author's call, twice): the
+     reply that just landed is the thing being waited for, and it tops the
+     list even when it answers an older comment. Sorted by timestamp rather
+     than reversed, because the server's list is ordered comment-by-comment
+     with replies attached, which is not globally chronological. */
   function newestFirst(msgs) {
-    msgs = msgs || [];
-    var groups = [];
-    for (var i = 0; i < msgs.length; i++) {
-      var m = msgs[i];
-      if (m && String(m.id || '').indexOf('#r') !== -1 && groups.length) {
-        groups[groups.length - 1].push(m);
-      } else {
-        groups.push([m]);
-      }
-    }
-    groups.reverse();
-    var out = [];
-    for (var g = 0; g < groups.length; g++) {
-      for (var j = 0; j < groups[g].length; j++) out.push(groups[g][j]);
-    }
-    return out;
+    return (msgs || []).slice().sort(function (a, b) {
+      return String((b && b.ts) || '').localeCompare(String((a && a.ts) || ''));
+    });
   }
 
   function hslToHex(h, s, l) {
