@@ -37,62 +37,138 @@ from manuscriptor.server import chat
 from manuscriptor.server import compile as compile_mod
 from manuscriptor.source import insert as insert_mod
 from manuscriptor.source import splice as splice_mod
+from manuscriptor.source import tree as tree_mod
 
 HOLDER = "author"
 
 
 class Session:
-    """One manuscript, its current build, and the clients watching it."""
+    """One served project, its current document's build, and its clients.
+
+    The served directory (`self.dir`) is the top-level the caller handed us; it
+    is the tree the watcher watches and the root discovery walks. It is NOT
+    necessarily where a document lives: serving a repo whose paper sits in
+    `latex/main.tex` is the whole point of the pivot. `self.docs` is every
+    editable document in the tree (the switcher list); `self.current` is the one
+    being served, and every per-document operation -- build, comment log, build
+    output, splice -- is rooted at `self.current.root_dir`, not at `self.dir`.
+    """
 
     def __init__(self, manuscript_dir: Path, *, main: str | None = None,
                  bib: str | None = None, read_only: bool = False):
         self.dir = Path(manuscript_dir).resolve()
-        self.main = main
         self.bib = bib
         self.read_only = read_only
-        self.log = self.dir / "comments.jsonl"
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
         self.seen_chats: dict[str, dict] = {}
         # The queue as it was last pushed, reduced to its identity so a repaint
         # is triggered by work moving and not by a second passing.
         self.seen_queue: list[tuple] = []
+        # Every editable document in the tree, and the one we open on. An
+        # explicit --main names a file in the served directory itself; otherwise
+        # the first discovered document is the default, so opening a top-level
+        # project never has to resolve "the one manuscript" and never errors.
+        self.docs = tree_mod.discover(self.dir)
+        self.current = self._default_current(main)
         self.build = None
         self.rebuild()
+
+    def _default_current(self, main: str | None) -> tree_mod.Document | None:
+        """Which document to open on. `None` means "no document was discovered".
+
+        An explicit --main is honored against the served directory directly, as
+        before. Otherwise the first discovered document (the tree-ordered
+        default) opens. When discovery finds nothing -- a lone fragment, or a
+        directory whose only .tex has no document class -- `None` falls the
+        rebuild back onto the single-directory root rule, which preserves every
+        pre-pivot edge case (a lone fragment still serves; a genuinely empty
+        directory still raises with the choices named).
+        """
+        if main:
+            return tree_mod.Document(root_dir=str(self.dir), main=main,
+                                     rel_folder="", rel_main=main)
+        return self.docs[0] if self.docs else None
 
     @property
     def blob(self) -> dict:
         return self.build.blob
 
     @property
+    def root(self) -> Path:
+        """The directory the CURRENT document is served from.
+
+        Everything per-document is rooted here: the flatten, the block sources,
+        the comment log, and the build output. It equals `self.dir` for an
+        ordinary single-directory manuscript, and is a subdirectory when the
+        served tree holds the document deeper down.
+        """
+        if self.build is not None:
+            return self.build.root
+        if self.current is not None:
+            return Path(self.current.root_dir)
+        return self.dir
+
+    @property
+    def log(self) -> Path:
+        """The current document's comment log, beside the document itself."""
+        return self.root / "comments.jsonl"
+
+    @property
     def doc(self) -> str:
         """The document being served, by name. Chats are scoped to it."""
         return self.build.main_tex.name if self.build is not None else ""
 
+    @property
+    def current_ref(self) -> str:
+        """The current document's tree identifier (its `rel_main`)."""
+        return self.current.rel_main if self.current is not None else self.doc
+
+    def _overlay_tree_docs(self) -> None:
+        """Replace the build's single-directory switcher list with the tree list.
+
+        `build` fills `docs`/`main` from the one directory it flattened, which is
+        correct for `manuscriptor build` and the tests. The server sees the whole
+        tree, so it overlays the tree-wide document list (each entry's
+        `rel_main`) and names the current document by its `rel_main` so the
+        switcher can select it. When discovery found nothing, the build's own
+        single-directory values stand, preserving lone-fragment behavior.
+        """
+        if self.build is None or not self.docs:
+            return
+        self.build.blob["docs"] = [d.rel_main for d in self.docs]
+        if self.current is not None:
+            self.build.blob["main"] = self.current.rel_main
+
     def rebuild(self):
         previous = self.build
-        self.build = build_mod.build(self.dir, main=self.main, bib=self.bib)
+        if self.current is None:
+            self.build = build_mod.build(self.dir, main=None, bib=self.bib)
+        else:
+            self.build = build_mod.build(
+                Path(self.current.root_dir), main=self.current.main, bib=self.bib)
+        self._overlay_tree_docs()
         return previous
 
-    def switch(self, name: str) -> None:
-        """Serve a different document from the same directory, Overleaf-style.
+    def switch(self, rel_main: str) -> None:
+        """Serve a different document from anywhere in the tree.
 
-        Only a name the directory itself offers (`blob["docs"]`, the files
-        declaring a document class) is accepted: the value arrives off a URL
-        query, and a path is how a query walks out of the manuscript. A
-        refused switch changes nothing.
+        Only a `rel_main` the tree actually offers (`self.docs`) is accepted: the
+        value arrives off a URL query, and a path is how a query walks out of the
+        project. The chosen document is served from its own root directory, so a
+        switch spans folders, not just siblings. A refused switch changes nothing.
         """
-        if name == self.doc:
+        if rel_main == self.current_ref:
             return
-        offered = self.build.blob.get("docs", []) if self.build is not None else []
-        if name not in offered:
-            raise ValueError(f"{name!r} is not a document this directory serves")
-        previous_main = self.main
-        self.main = name
+        entry = next((d for d in self.docs if d.rel_main == rel_main), None)
+        if entry is None:
+            raise ValueError(f"{rel_main!r} is not a document this project serves")
+        previous = self.current
+        self.current = entry
         try:
             self.rebuild()
         except Exception:
-            self.main = previous_main
+            self.current = previous
             raise
 
     async def broadcast(self, msg: dict) -> None:
@@ -197,7 +273,7 @@ class Session:
         # Re-anchored through the same pass as the frames above, or an entry
         # names a block the page has lost.
         queue = build_mod.queue_view(
-            self.log, self.build.blocks, anchored=anchored, root=self.dir, doc=self.doc
+            self.log, self.build.blocks, anchored=anchored, root=self.root, doc=self.doc
         ) if self.build is not None else []
         ident = [(e["id"], e["block"], e["state"], e["since"]) for e in queue]
         if ident != self.seen_queue:
@@ -211,7 +287,7 @@ class Session:
             self.build.blob["chats"] = anchored
             self.build.blob["queue"] = queue
             self.build.blob["ticker"] = build_mod.ticker_view(
-                self.log, self.build.blocks, anchored=anchored, root=self.dir,
+                self.log, self.build.blocks, anchored=anchored, root=self.root,
                 doc=self.doc
             )
         self.seen_chats = current
@@ -226,7 +302,7 @@ class Session:
             return {"type": "held", "block": block_id, "reason": "unknown block"}
         try:
             await asyncio.to_thread(
-                splice_mod.splice, block, source, root=self.dir, holder=HOLDER
+                splice_mod.splice, block, source, root=self.root, holder=HOLDER
             )
         except splice_mod.NotEditable as exc:
             return {"type": "held", "block": block_id, "reason": str(exc)}
@@ -412,12 +488,12 @@ def make_app(session: Session) -> web.Application:
     app = web.Application()
 
     async def index(request):
-        # `?main=appendix.tex` serves a sibling document from the same
-        # directory, Overleaf-style. The switch validates against the
-        # directory's own offer and rebuilds under the lock, so a watcher
-        # rebuild cannot interleave with it.
+        # `?main=latex/main.tex` serves a document from anywhere in the tree,
+        # named by its path relative to the served root. The switch validates
+        # against the project's own offer and rebuilds under the lock, so a
+        # watcher rebuild cannot interleave with it.
         wanted = request.query.get("main", "")
-        if wanted and wanted != session.doc:
+        if wanted and wanted != session.current_ref:
             async with session.lock:
                 try:
                     await asyncio.to_thread(session.switch, wanted)
@@ -550,7 +626,7 @@ def make_app(session: Session) -> web.Application:
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            cwd=str(session.dir),
+            cwd=str(session.root),
         )
         evidence_running["proc"] = proc
 
@@ -578,7 +654,7 @@ def make_app(session: Session) -> web.Application:
             return web.json_response({"error": "a run is already underway"}, status=409)
         await _spawn_stream(
             [_sys.executable, "-m", "manuscriptor.cli", "evidence",
-             str(session.dir), "--main", session.doc],
+             str(session.root), "--main", session.doc],
             _finish_evidence,
         )
         return web.json_response({"started": True})
@@ -600,7 +676,7 @@ def make_app(session: Session) -> web.Application:
                 status=403)
         if _busy():
             return web.json_response({"error": "a run is already underway"}, status=409)
-        out = session.dir / "build" / "manuscriptor"
+        out = session.root / "build" / "manuscriptor"
         if not (out / "missing.json").exists():
             return web.json_response({"error": "nothing to repair; run the evidence pass first"},
                                      status=409)
@@ -614,7 +690,7 @@ def make_app(session: Session) -> web.Application:
                                      "line": "repair finished; re-running the evidence pass"})
             await _spawn_stream(
                 [_sys.executable, "-m", "manuscriptor.cli", "evidence",
-                 str(session.dir), "--main", session.doc],
+                 str(session.root), "--main", session.doc],
                 _finish_evidence,
             )
 
@@ -637,9 +713,24 @@ def make_app(session: Session) -> web.Application:
     # inside it still goes through splice, like every other write.
     app.router.add_post("/insert", insert_mod.route(session))
 
-    out = session.dir / "build" / "manuscriptor"
-    if out.is_dir():
-        app.router.add_static("/", out, show_index=False, follow_symlinks=False)
+    # The build assets (rasterized figures, copied images) are served from the
+    # CURRENT document's build directory, not a fixed mount: switching to a
+    # document in another folder moves its `build/manuscriptor` with it, and a
+    # static mount frozen at app creation would 404 every figure. Resolved per
+    # request against `session.root`, with the same traversal guard `add_static`
+    # gave us -- a path escaping the build directory is refused, not served.
+    # Registered last so the explicit routes above always win.
+    async def assets(request):
+        rel = request.match_info.get("path", "")
+        base = (session.root / "build" / "manuscriptor").resolve()
+        target = (base / rel).resolve()
+        if base not in target.parents and target != base:
+            raise web.HTTPNotFound()
+        if not target.is_file():
+            raise web.HTTPNotFound()
+        return web.FileResponse(target)
+
+    app.router.add_get("/{path:.*}", assets)
     return app
 
 

@@ -730,8 +730,8 @@ def route(session):
             data = {}
         payload = await asyncio.to_thread(
             handle, data,
-            root=session.dir, build=session.build, read_only=session.read_only,
-            bib_path=build_mod.find_bib(session.dir, getattr(session, "bib", None)),
+            root=session.root, build=session.build, read_only=session.read_only,
+            bib_path=build_mod.find_bib(session.root, getattr(session, "bib", None)),
         )
         status = int(payload.pop("status", 200))
         return web.json_response(payload, status=status if not payload.get("ok") else 200)
