@@ -673,7 +673,7 @@ def route(session):
 
         if action == "reveal":
             try:
-                shown = reveal(data.get("path", ""), root=session.dir)
+                shown = reveal(data.get("path", ""), root=session.root)
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
             return web.json_response({"revealed": str(shown)})
@@ -708,9 +708,9 @@ def route(session):
 
                 fn = compile_pdf if action == "pdf" else compile_docx
                 result = await asyncio.to_thread(
-                    fn, session.dir, main=session.main, bib=session.bib, on_step=on_step
+                    fn, session.root, main=session.doc, bib=session.bib, on_step=on_step
                 )
-                await session.broadcast(result.as_frame(root=session.dir))
+                await session.broadcast(result.as_frame(root=session.root))
             except Exception as exc:  # a failed compile must not kill the server
                 await session.broadcast({
                     "type": "compile", "phase": "done", "kind": action, "ok": False,

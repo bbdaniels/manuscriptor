@@ -2110,14 +2110,39 @@
     // it navigates, because a different document is a different page.
     var docSwitch = document.getElementById('doc-switch');
     if (docSwitch) {
+      // Each value is a document's path relative to the served root
+      // (e.g. "latex/main.tex" or, at the root, just "main.tex"). Grouped by
+      // folder so the switcher shows the tree the project holds; a flat
+      // manuscript directory has one group and reads exactly as it did before.
       var docs = S.ms.docs || [];
       if (docs.length > 1) {
+        var groups = {}, order = [];
         for (var di = 0; di < docs.length; di++) {
-          var opt = document.createElement('option');
-          opt.value = docs[di];
-          opt.textContent = docs[di].replace(/\.tex$/, '');
-          if (docs[di] === S.ms.main) opt.selected = true;
-          docSwitch.appendChild(opt);
+          var val = docs[di];
+          var cut = val.lastIndexOf('/');
+          var folder = cut < 0 ? '' : val.slice(0, cut);
+          if (!(folder in groups)) { groups[folder] = []; order.push(folder); }
+          groups[folder].push(val);
+        }
+        var manyGroups = order.length > 1;
+        for (var gi = 0; gi < order.length; gi++) {
+          var folder = order[gi];
+          var parent = docSwitch;
+          if (manyGroups || folder) {
+            var og = document.createElement('optgroup');
+            og.label = folder || '(root)';
+            docSwitch.appendChild(og);
+            parent = og;
+          }
+          var vals = groups[folder];
+          for (var vi = 0; vi < vals.length; vi++) {
+            var opt = document.createElement('option');
+            opt.value = vals[vi];
+            var base = vals[vi].slice(vals[vi].lastIndexOf('/') + 1);
+            opt.textContent = base.replace(/\.tex$/, '');
+            if (vals[vi] === S.ms.main) opt.selected = true;
+            parent.appendChild(opt);
+          }
         }
         docSwitch.hidden = false;
         docSwitch.addEventListener('change', function () {

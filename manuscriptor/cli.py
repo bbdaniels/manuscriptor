@@ -337,7 +337,23 @@ def cmd_serve(args: argparse.Namespace) -> int:
     want_agent = not args.no_agent and not args.read_only
     if want_agent:
         if args.with_agent or shutil.which("claude"):
-            agent, _ = start_agent(d)
+            # Bind the drain to the CURRENT DOCUMENT's root, not the top-level
+            # served dir. With the tree view the open document's comments live in
+            # <document root>/comments.jsonl -- a subfolder when the paper sits
+            # deeper than the project root -- and the drain reads that file
+            # directly (drain.collect opens `<dir>/comments.jsonl`). Binding to d
+            # would watch an empty log while the page wrote to the real one. For a
+            # single-directory serve this resolves to d itself, so behavior is
+            # identical there.
+            #
+            # TODO: re-bind the agent when the reader switches documents
+            # (Session.switch, driven by `?main=`). That switch happens inside
+            # server/app.py, which by design has zero knowledge of Claude and
+            # cannot reach the agent this function started; a clean live re-bind
+            # needs a hook across that boundary and is left for a follow-up. Until
+            # then the agent stays bound to the document opened on.
+            from manuscriptor.source import tree as tree_mod
+            agent, _ = start_agent(tree_mod.current_root(d, args.main))
         else:
             print("  agent  claude CLI not found on PATH; serving without the agent.")
             print("         comments will queue until a session runs `manuscriptor proc`.")
@@ -584,14 +600,6 @@ def cmd_clean(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_projects(args: argparse.Namespace) -> int:
-    import json
-    from manuscriptor.source.projects import list_projects
-    vault = args.vault or os.environ.get("MANUSCRIPTOR_VAULT") or "~/Documents/Obsidian"
-    print(json.dumps(list_projects(Path(vault))))
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="manuscriptor",
@@ -707,10 +715,6 @@ def main(argv: list[str] | None = None) -> int:
     p_clean.add_argument("build", help="Path to build directory to remove")
     p_clean.add_argument("--cache", action="store_true", help="Also clear the evidence cache")
     p_clean.set_defaults(func=cmd_clean)
-
-    p_projects = sub.add_parser("projects", help="List vault manuscripts as JSON {name, root, main}.")
-    p_projects.add_argument("--vault", default=None, help="Vault path (default ~/Documents/Obsidian or $MANUSCRIPTOR_VAULT).")
-    p_projects.set_defaults(func=cmd_projects)
 
     args = parser.parse_args(argv)
     return args.func(args)

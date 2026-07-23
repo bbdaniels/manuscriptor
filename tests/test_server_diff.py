@@ -194,3 +194,82 @@ def test_read_write_is_still_the_default(tmp_path):
     reply = asyncio.run(s.on_edit(bid, src + " edited."))
     assert reply["type"] == "saved"
     assert "edited." in (tmp_path / "main.tex").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------- serving a top-level tree
+
+
+def _tree_project(tmp_path: Path) -> Path:
+    """A repo whose paper lives in latex/, with a response in another folder and
+    a fragment that must never be openable -- the shape ClaudeHUD hands over."""
+    (tmp_path / "latex").mkdir()
+    (tmp_path / "latex" / "main.tex").write_text(DOC, encoding="utf-8")
+    (tmp_path / "latex" / "section.tex").write_text(
+        "A fragment only ever \\input into the paper.\n", encoding="utf-8")
+    (tmp_path / "response").mkdir()
+    (tmp_path / "response" / "response.tex").write_text(DOC, encoding="utf-8")
+    return tmp_path
+
+
+def test_serving_a_top_level_dir_without_a_direct_main_does_not_error(tmp_path):
+    """The pivot's crux: the served directory holds no .tex of its own, only
+    subfolders. Before, choose_main raised; now it opens on the first document."""
+    from manuscriptor.server.app import Session
+
+    _tree_project(tmp_path)
+    s = Session(tmp_path)
+    assert s.doc == "main.tex"
+    assert s.current_ref == "latex/main.tex"
+    assert s.root == (tmp_path / "latex").resolve()
+
+
+def test_the_switcher_list_spans_the_whole_tree(tmp_path):
+    from manuscriptor.server.app import Session
+
+    _tree_project(tmp_path)
+    blob = Session(tmp_path).blob
+    # Every document, none of the fragments, named by path from the served root.
+    assert blob["docs"] == ["latex/main.tex", "response/response.tex"]
+    assert "latex/section.tex" not in blob["docs"]
+    assert blob["main"] == "latex/main.tex"
+
+
+def test_switching_serves_a_document_from_its_own_folder(tmp_path):
+    from manuscriptor.server.app import Session
+
+    _tree_project(tmp_path)
+    s = Session(tmp_path)
+    s.switch("response/response.tex")
+    assert s.current_ref == "response/response.tex"
+    assert s.doc == "response.tex"
+    # The comment log and build output follow the document into its own folder.
+    assert s.root == (tmp_path / "response").resolve()
+    assert s.log == (tmp_path / "response" / "comments.jsonl")
+
+
+def test_a_switch_to_a_document_the_tree_does_not_offer_is_refused(tmp_path):
+    import pytest
+
+    from manuscriptor.server.app import Session
+
+    _tree_project(tmp_path)
+    s = Session(tmp_path)
+    with pytest.raises(ValueError):
+        s.switch("latex/section.tex")        # a fragment is not a document
+    with pytest.raises(ValueError):
+        s.switch("../escape.tex")            # nor a path out of the project
+    assert s.current_ref == "latex/main.tex", "a refused switch changes nothing"
+
+
+def test_a_single_directory_manuscript_is_unchanged(tmp_path):
+    """The document sitting at the served root still opens exactly as before,
+    its switcher naming the sibling documents by bare filename."""
+    from manuscriptor.server.app import Session
+
+    manuscript(tmp_path)
+    (tmp_path / "appendix.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    assert s.doc == "main.tex"
+    assert s.current_ref == "main.tex"
+    assert s.root == tmp_path.resolve()
+    assert s.blob["docs"] == ["main.tex", "appendix.tex"]
