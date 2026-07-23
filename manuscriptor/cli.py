@@ -103,15 +103,35 @@ def cmd_build(args: argparse.Namespace) -> int:
 # share a filesystem and meet at the `.tex` tree and `comments.jsonl`. `cli.py`
 # is allowed to start both, because it is the thing the author typed.
 
-AGENT_PROMPT = (
-    "Drain the pending Manuscriptor comments in this directory. Use the "
-    "manuscriptor-drain skill: load the owning project's vault context first, "
-    "work the queue oldest first, mark each comment working before you start "
-    "and done when the edit has landed, and change exactly one block per "
-    "write. Answer in words with `manuscriptor reply` when a comment asks a "
-    "question or the edit needs explaining. Read as widely as you need. Do "
-    "nothing the comments did not ask for."
-)
+def agent_prompt(manuscript_dir, manuscriptor: str) -> str:
+    """The standing session's instructions. One session, many wakes.
+
+    Verified 2026-07-23: a print-mode session survives parking a background
+    task and is re-woken when it finishes, which is what makes a persistent
+    drain possible at all. Marking `working` before reading anything is the
+    latency fix: the author's pin moves in seconds, and the vault reading
+    happens while he can already see it is alive.
+    """
+    d = str(Path(manuscript_dir).resolve())
+    ms = manuscriptor
+    return (
+        f"You are the standing Manuscriptor drain for {d}. Boot once, now: use the "
+        "manuscriptor-drain skill and load the owning vault project's context. Then loop.\n"
+        f"1. Run `{ms} proc {d} --json`.\n"
+        f"2. If items are pending: for EACH item, run `{ms} state {d} <id> working` "
+        "IMMEDIATELY, before reading anything else; the author is watching the pin. "
+        "Then work them per the skill: one subagent per comment, one block per "
+        f"write, `{ms} reply` when words are needed, `{ms} state {d} <id> done` "
+        "when the edit has landed.\n"
+        f"3. Park: start `{ms} proc {d} --wait` as a BACKGROUND task "
+        "(run_in_background: true) and end your turn. The task finishing means new "
+        "comments are on disk; when it wakes you, return to step 1.\n"
+        "4. After roughly 20 wakes, or when your context has grown long, exit "
+        "cleanly instead of parking; the loop restarts you fresh.\n"
+        "Never stop the loop because one comment failed: reply with why, mark it "
+        "orphaned if its paragraph is gone, and continue. Do nothing the comments "
+        "did not ask for."
+    )
 
 
 def agent_log_path(manuscript_dir: Path) -> Path:
@@ -128,48 +148,38 @@ def agent_log_path(manuscript_dir: Path) -> Path:
     return out / "agent.log"
 
 
-def agent_loop_script(manuscript_dir: Path, *, claude: str, manuscriptor: str) -> str:
+def agent_loop_script(manuscript_dir: Path, *, claude: str, manuscriptor: str,
+                      add_dirs: list | tuple = ()) -> str:
     """The drain loop, as a script the author can read.
 
-    `proc --wait` blocks until the comment log grows and then exits, so the loop
-    costs nothing while nothing is happening: one blocked process, no polling.
-    Anything already pending is worked before the first block, or a comment left
-    before the server started would sit there until the next one arrived.
+    ONE PERSISTENT SESSION, not a cold start per comment. The old shape paid
+    ~90 seconds of session boot per wake before the first visible state; this
+    one boots once, parks `proc --wait` as a background task inside the
+    session, and is re-woken by the task finishing, so a comment's pin moves
+    in seconds. The shell's only job is restarting the session when it exits:
+    fresh after ~20 wakes by its own choice, or after a crash, with a backoff
+    because the common crash is a credential problem that will not fix itself
+    in the next hundred milliseconds.
 
-    A failed session backs off instead of spinning, because the common cause is
-    a credential problem that will not fix itself in the next hundred
-    milliseconds.
+    `add_dirs` carries the git repository root when the manuscript lives in a
+    subdirectory of it: a figure comment names a producing script in
+    `analysis/`, and a session scoped to `paper/` alone was blocked from the
+    very file the comment is about.
     """
     d = str(Path(manuscript_dir).resolve())
+    adds = "".join(f" --add-dir {_sh(str(a))}" for a in add_dirs)
+    prompt = agent_prompt(d, manuscriptor)
     return f"""#!/bin/sh
-# Written by `manuscriptor serve --with-agent`. Kill the server and this goes
-# with it: it runs in its own process group and the server kills the group.
+# Written by `manuscriptor serve`. One persistent session parks on the comment
+# log (a BACKGROUND task inside the session) and wakes per comment. Kill the
+# server and this goes with it: it runs in its own process group and the
+# server kills the group.
 DIR={_sh(d)}
-MS={_sh(manuscriptor)}
-CLAUDE={_sh(claude)}
 cd "$DIR" || exit 1
-
-drain() {{
-  # A failure is not an empty queue. When the manuscript does not render, `proc`
-  # exits non-zero, and reading that as "nothing pending" would be worse: it
-  # would start a session on every wake against a paper that cannot be read.
-  if ! PENDING=$("$MS" proc "$DIR" --json 2>&1); then
-    echo "--- $(date '+%Y-%m-%d %H:%M:%S')  the manuscript does not build; not drained"
-    printf '%s\\n' "$PENDING" | tail -3
-    sleep 5
-    return 0
-  fi
-  if [ "$(printf '%s' "$PENDING" | tr -d '[:space:]')" = "[]" ]; then
-    return 0
-  fi
-  echo "--- $(date '+%Y-%m-%d %H:%M:%S')  draining"
-  "$CLAUDE" -p {_sh(AGENT_PROMPT)} --permission-mode acceptEdits || sleep 5
-}}
-
-drain
 while :; do
-  "$MS" proc "$DIR" --wait || exit 0
-  drain
+  echo "--- $(date '+%Y-%m-%d %H:%M:%S')  session starting"
+  {_sh(claude)} -p {_sh(prompt)} --permission-mode acceptEdits{adds} || sleep 5
+  sleep 2
 done
 """
 
@@ -258,8 +268,28 @@ def _group_gone(proc: subprocess.Popen) -> bool:
     return False
 
 
+def repo_root(manuscript_dir: Path) -> Path | None:
+    """The git repository root above the manuscript, when there is one.
+
+    The producing scripts a comment names routinely live beside the
+    manuscript (`analysis/` next to `paper/`), and a session scoped to the
+    manuscript alone is blocked from the very file the comment is about.
+    """
+    try:
+        run = subprocess.run(
+            ["git", "-C", str(manuscript_dir), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if run.returncode != 0:
+        return None
+    top = Path(run.stdout.strip()).resolve()
+    return top if top != Path(manuscript_dir).resolve() else None
+
+
 def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
-    """Launch the drain loop beside the server. Says what it started."""
+    """Launch the standing drain session beside the server. Says what it started."""
     claude = shutil.which("claude")
     if not claude:
         sys.exit(
@@ -269,13 +299,18 @@ def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
         )
     log = agent_log_path(manuscript_dir)
     ms = manuscriptor_command(log.parent)
+    root = repo_root(manuscript_dir)
     script = log.parent / "agent-loop.sh"
-    script.write_text(agent_loop_script(manuscript_dir, claude=claude, manuscriptor=ms),
-                      encoding="utf-8")
+    script.write_text(
+        agent_loop_script(manuscript_dir, claude=claude, manuscriptor=ms,
+                          add_dirs=[root] if root else []),
+        encoding="utf-8")
     proc = spawn_group(["/bin/sh", str(script)], cwd=Path(manuscript_dir).resolve(),
                        log_path=log)
     print(f"  agent  {claude} -p … --permission-mode acceptEdits   (pid {proc.pid})")
-    print("         wakes on each comment; one block per comment")
+    print("         one standing session; parks on the log, wakes per comment")
+    if root:
+        print(f"         repo access {root}")
     print(f"         log {log}")
     return proc, log
 

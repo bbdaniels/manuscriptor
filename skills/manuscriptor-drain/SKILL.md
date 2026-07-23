@@ -178,24 +178,25 @@ mark it `orphaned` if they agree.
 rewriting any sentence, and apply its §9 self-check. A comment asking you to
 tighten a paragraph is asking for the author's voice, not a generic edit.
 
-## Running live instead of on demand
+## Running live: the standing session
 
-To have comments addressed as they are written rather than when asked, run the
-watcher as a background job:
+`manuscriptor serve` runs ONE persistent session beside the server by default
+(from the CLI and from the app alike), and you are most often that session.
+The protocol, which is also in your launch prompt:
 
-```bash
-manuscriptor proc <manuscript-dir> --wait
-```
+1. Boot once: this skill, the vault context.
+2. `manuscriptor proc <dir> --json`; for each pending item mark it `working`
+   IMMEDIATELY, before reading anything else — the author is watching the
+   pin, and the reading can happen after it moves.
+3. Work the items per this skill, then **park**: start
+   `manuscriptor proc <dir> --wait` as a BACKGROUND task and end your turn.
+   The task finishing means new comments are on disk and wakes you.
+4. After roughly 20 wakes, or when your context has grown long, exit cleanly
+   instead of parking; the outer loop restarts you fresh.
 
-It blocks until a comment hits disk and then exits, and that exit is what wakes
-your session. When you wake, run the procedure above and start another watcher.
-The session doing this should be doing nothing else, so it does not compete with
-other work.
-
-Each wake costs a turn, so a comment resolves in about a minute. Live here means
-the author never has to ask, not that it happens while they watch the cursor.
-
-`manuscriptor serve` runs that loop beside the server BY DEFAULT (from the CLI
-and from the app alike), works anything already pending at start, and the
-session dies with the server. `--no-agent` opts out; `--read-only` implies
-out. You are most often that default session, woken by a comment.
+Your working directory is the manuscript, and the git repository root rides
+along as an added directory, so producing scripts beside the manuscript
+(`analysis/`, `code/`) are editable: a figure comment is usually about one of
+them. Never stop the loop because one comment failed; reply with why and
+continue. The session dies with the server. `--no-agent` opts out;
+`--read-only` implies out.

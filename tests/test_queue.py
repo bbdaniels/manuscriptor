@@ -548,14 +548,16 @@ def test_the_loop_reaches_manuscriptor_even_when_it_is_not_on_the_path(tmp_path)
     assert "manuscriptor" in p.stdout
 
 
-def test_the_loop_drains_what_is_waiting_then_wakes_on_the_next_comment(tmp_path):
-    """The loop's control flow, with a stand-in for the session so no model runs.
+def test_one_session_starts_at_once_and_works_what_arrives(tmp_path):
+    """The persistent loop's control flow, with a stand-in for the session.
 
-    Three branches, and all three matter. A comment left BEFORE the server
-    started must be worked without waiting for a second one, or it sits there
-    until the author happens to write another. An empty queue must cost one
-    blocked process and no session. And a comment arriving afterwards must wake
-    it.
+    The old design started a session per wake and guarded hard against
+    starting one for an empty queue or a broken build, because each start
+    cost a ~90 second boot. The persistent design inverts it: ONE session
+    starts immediately (empty queue and all: it parks), works anything
+    already pending, and is restarted by the shell when it exits. The
+    stand-in mimics a session that drains once and parks once, then exits;
+    the shell restarts it, which is also how the ~20-wake refresh works.
     """
     d, _, b = setup(tmp_path)                    # c-0001 already pending
     ms = shutil.which("manuscriptor")
@@ -569,7 +571,8 @@ def test_the_loop_drains_what_is_waiting_then_wakes_on_the_next_comment(tmp_path
         f"echo call >> {calls}\n"
         f'for id in $("{ms}" proc "{tmp_path}" --json | grep \'"chat_id"\' | cut -d\'"\' -f4); do\n'
         f'  "{ms}" state "{tmp_path}" "$id" done\n'
-        "done\n",
+        "done\n"
+        f'"{ms}" proc "{tmp_path}" --wait\n',
         encoding="utf-8",
     )
     fake.chmod(0o755)
@@ -594,65 +597,14 @@ def test_the_loop_drains_what_is_waiting_then_wakes_on_the_next_comment(tmp_path
     try:
         wait_until(lambda: closed("c-0001"), 45,
                    "the comment waiting before the loop started was never worked")
-        first = calls.read_text(encoding="utf-8").count("call")
-        assert first >= 1
-
-        # nothing pending now: one blocked process, no second session
-        time.sleep(3)
-        assert calls.read_text(encoding="utf-8").count("call") == first, \
-            "a session was started with an empty queue"
-        assert proc.poll() is None, "the loop exited instead of waiting"
-
+        assert calls.read_text(encoding="utf-8").count("call") >= 1
         comment_on(tmp_path, b.blocks, 0, "c-0002", "and tighten this one")
-        wait_until(lambda: closed("c-0002"), 45, "the loop never woke on the new comment")
-        # `--wait` snapshots the log's size when it starts, so the next record
-        # has to arrive after the loop is back inside it or nothing wakes and
-        # the check below would pass without testing anything.
-        time.sleep(2)
-        settled = calls.read_text(encoding="utf-8").count("call")
-
-        # The log grows for reasons that are not work: a state record from
-        # anywhere wakes the watcher. Starting a whole session to discover an
-        # empty queue is the cost this guard exists to avoid, and a drain that
-        # closes two comments at once makes the next wake exactly that.
-        chat.append(tmp_path / "comments.jsonl",
-                    {"id": "c-0001", "kind": "state", "state": "done"})
-        time.sleep(4)
-        assert calls.read_text(encoding="utf-8").count("call") == settled, \
-            "a session was started for an empty queue"
+        wait_until(lambda: closed("c-0002"), 45,
+                   "the restarted session never worked the next comment")
+        assert proc.poll() is None, "the shell loop exited instead of restarting"
     finally:
         cli.terminate_group(proc)
     assert proc.poll() is not None
-
-
-def test_the_loop_does_not_start_a_session_on_a_manuscript_that_will_not_build(tmp_path):
-    """`proc` fails when the manuscript does not render, and a failure is not an
-    empty queue. Reading it as one starts a session per wake against a paper
-    that cannot be read, which is the loop spending money to discover the same
-    error over and over.
-    """
-    ms = shutil.which("manuscriptor")
-    if not ms:
-        pytest.skip("manuscriptor console script not on PATH")
-    calls = tmp_path / "calls.txt"
-    fake = tmp_path / "fake-claude"
-    fake.write_text(f"#!/bin/sh\necho call >> {calls}\n", encoding="utf-8")
-    fake.chmod(0o755)
-    # no .tex at all, and a comment waiting: `proc` exits non-zero
-    chat.append(tmp_path / "comments.jsonl",
-                {"id": "c-0001", "kind": "comment", "block": "b-x", "body": "anything"})
-    assert subprocess.run([ms, "proc", str(tmp_path), "--json"],
-                          capture_output=True).returncode != 0
-
-    script = tmp_path / "loop.sh"
-    script.write_text(cli.agent_loop_script(tmp_path, claude=str(fake), manuscriptor=ms),
-                      encoding="utf-8")
-    proc = cli.spawn_group(["/bin/sh", str(script)], cwd=tmp_path, log_path=tmp_path / "agent.log")
-    try:
-        time.sleep(6)
-        assert not calls.exists(), "a session was started against a manuscript that will not build"
-    finally:
-        cli.terminate_group(proc)
 
 
 def test_the_agent_log_is_invisible_to_the_manuscript_repository(tmp_path):
@@ -1133,3 +1085,46 @@ def test_a_regenerated_figure_reaches_the_page(tmp_path):
     assert png.stat().st_mtime_ns > first, "the raster is still the old figure"
     frames = [m for m in sent if m["type"] == "assets"]
     assert frames and frames[-1].get("v"), "the page was never told to refetch"
+
+
+# ------------------------------------------------------- the persistent agent
+#
+# A cold `claude -p` per wake cost ~90 seconds of boot before the first
+# visible state. Verified 2026-07-23 that a print-mode session survives
+# parking a background task and is re-woken when it finishes, so the loop is
+# now ONE persistent session that parks `proc --wait` and wakes per comment;
+# the shell only restarts it when it exits (fresh after ~20 wakes, or a
+# crash).
+
+
+def test_the_agent_session_is_persistent_and_parks_on_the_log(tmp_path):
+    script = cli.agent_loop_script(tmp_path, claude="/u/claude", manuscriptor="/u/ms")
+    assert "while :" in script, "no restart loop; a crashed session would end the workflow"
+    assert "/u/claude" in script and "/u/ms" in script
+    assert "--wait" in script, "nothing parks on the log"
+    assert "BACKGROUND" in script, "the park must be a background task, or the turn never ends"
+    assert "working" in script, "marking working first is the latency fix"
+
+
+def test_the_agent_reaches_the_producing_scripts(tmp_path):
+    # analysis/ lives beside paper/ in the repo, and a session scoped to
+    # paper/ was blocked from the very script a figure comment names. The
+    # repo root rides along as an added directory.
+    (tmp_path / ".git").mkdir()
+    ms = tmp_path / "paper"
+    ms.mkdir()
+    (ms / "main.tex").write_text(DOC, encoding="utf-8")
+    import subprocess as sp
+    sp.run(["git", "-C", str(tmp_path), "init", "-q"], capture_output=True)
+    root = cli.repo_root(ms)
+    assert root is not None and root.name == tmp_path.name
+    script = cli.agent_loop_script(ms, claude="c", manuscriptor="m",
+                                   add_dirs=[str(root)])
+    assert "--add-dir" in script and str(root) in script
+
+
+def test_a_manuscript_outside_any_repo_adds_nothing(tmp_path):
+    ms = tmp_path / "loose"
+    ms.mkdir()
+    script = cli.agent_loop_script(ms, claude="c", manuscriptor="m", add_dirs=[])
+    assert "--add-dir" not in script

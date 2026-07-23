@@ -137,11 +137,13 @@ decisions recorded there, not just the paragraph in front of it.
 Comments queue. The header carries the standing state, `3 queued · 1 working`,
 and the ticker names what was touched by its section rather than an id.
 
-They are answered **automatically by default**: the agent session running
-beside the server picks each one up, and anything already queued is worked
-when the server starts. A comment resolves in roughly a minute: the margin pin
-turns blue while it works, the paragraph updates underneath you, and the pin
-turns green. With `--no-agent`, the same queue waits instead, and any Claude
+They are answered **automatically by default**: one standing agent session
+runs beside the server, parks on the comment log, and wakes when a comment
+lands; anything already queued is worked when the server starts. The pin
+turns blue within seconds of your comment (the session marks it working
+before it reads anything), the paragraph updates underneath you, and the pin
+turns green. The first comment after a launch pays the session's boot, about
+a minute; after that each one is a single wake. With `--no-agent`, the same queue waits instead, and any Claude
 Code session in that repo drains it when you say "proc the comments".
 
 Know what is running. That session edits inside the manuscript directory
