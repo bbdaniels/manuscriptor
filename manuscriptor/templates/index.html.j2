@@ -81,6 +81,27 @@
       <button class="tb" type="button" data-act="compile:docx">Compile Word</button>
     </span>
     <span class="sep"></span>
+    {#- The skill suite, reached without a terminal. Each choice is one
+        document-level comment carrying a `check` field; the drain session
+        invokes the named skill and the server never learns what one is.
+        Checks return findings as review comments; Produce returns edits
+        through the normal work path, or artifacts announced in a reply. -#}
+    <select class="tb skillmenu" id="checks-menu" aria-label="run a check">
+      <option value="" selected disabled>Checks…</option>
+      <option value="consistency-check">Preflight (seven checks)</option>
+      <option value="review-manuscript">Full review</option>
+      <option value="revision-audit">Revision audit</option>
+      <option value="validate-bib">Bibliography</option>
+    </select>
+    <select class="tb skillmenu" id="produce-menu" aria-label="produce something">
+      <option value="" selected disabled>Produce…</option>
+      <option value="declaude">Rewrite in my voice</option>
+      <option value="write">Draft a section</option>
+      <option value="talk">Seminar deck</option>
+      <option value="docx-package">Submission package (Word)</option>
+      <option value="em-submission">Submission package (Elsevier)</option>
+    </select>
+    <span class="sep"></span>
     <span class="grp">
       <button class="tb accent" type="button" data-open="import:reviewer">Import comments…</button>
       <button class="tb" type="button" data-act="evidence:run" id="evidence-run">Run evidence…</button>

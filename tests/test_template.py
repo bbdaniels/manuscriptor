@@ -543,3 +543,21 @@ def test_the_toolbar_outranks_the_columns():
     css = STYLES.read_text(encoding="utf-8")
     toolbar_rule = [b for s, b in css_rules() if s.strip() == ".toolbar"]
     assert toolbar_rule and "z-index" in toolbar_rule[0]
+
+
+def test_the_skill_menus_are_wired():
+    html = INDEX.read_text(encoding="utf-8")
+    assert 'id="checks-menu"' in html
+    assert 'id="produce-menu"' in html
+    assert 'consistency-check' in html
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "wireSkillMenu" in js
+    assert "check: skill" in js
+
+
+def test_review_findings_carry_their_triage():
+    js = VIEWER.read_text(encoding="utf-8")
+    assert "finding:fix:" in js
+    assert "finding:dismiss:" in js
+    css = STYLES.read_text(encoding="utf-8")
+    assert ".pin.review" in css

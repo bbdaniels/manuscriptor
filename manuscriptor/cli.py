@@ -449,6 +449,23 @@ def cmd_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_comment(args: argparse.Namespace) -> int:
+    """Append a comment from outside the page: a check's finding, usually."""
+    from manuscriptor.server import drain
+
+    rec = drain.comment(
+        Path(args.manuscript).resolve(),
+        body=" ".join(args.body), quote=args.quote or "",
+        author=args.author, doc=args.doc or "", check=args.check or "",
+        review=args.review,
+    )
+    if rec is None:
+        print("duplicate of an open comment with the same quote; skipped")
+        return 0
+    print(f"{rec['id']} <- {args.author}" + (" [review]" if args.review else ""))
+    return 0
+
+
 def cmd_reply(args: argparse.Namespace) -> int:
     """Answer a comment in words, into the same chat."""
     from manuscriptor.server import drain
@@ -585,6 +602,17 @@ def main(argv: list[str] | None = None) -> int:
     p_state.add_argument("chat_id", help="The chat id, e.g. c-0007")
     p_state.add_argument("state", choices=["queued", "working", "done", "orphaned"])
     p_state.set_defaults(func=cmd_state)
+
+    p_comment = sub.add_parser("comment", help="Append a comment (a check's finding, usually)")
+    p_comment.add_argument("manuscript", help="Path to the manuscript directory")
+    p_comment.add_argument("body", nargs="+", help="The comment text")
+    p_comment.add_argument("--quote", help="The exact sentence it concerns; this is what anchors it")
+    p_comment.add_argument("--author", default="bb", help="Who is saying it (e.g. proofreader)")
+    p_comment.add_argument("--doc", help="The document it belongs to (e.g. main.tex)")
+    p_comment.add_argument("--check", help="The check it came from (e.g. consistency-check)")
+    p_comment.add_argument("--review", action="store_true",
+                           help="File as a finding: pinned for the author, never drained as work")
+    p_comment.set_defaults(func=cmd_comment)
 
     p_reply = sub.add_parser("reply", help="Answer a comment in words, into the same chat")
     p_reply.add_argument("manuscript", help="Path to the manuscript directory")

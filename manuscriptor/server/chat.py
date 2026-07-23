@@ -28,7 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-State = Literal["queued", "working", "done", "orphaned"]
+# `review` is a finding from a check (preflight, proofread), pinned and
+# readable at once but never presented to the drain as work: a --with-agent
+# session must not start working the instructions it just wrote itself. The
+# author triages it into real work (a new comment) or dismisses it (done).
+State = Literal["queued", "working", "done", "orphaned", "review"]
 
 TERMINAL = {"done", "orphaned"}
 
@@ -50,6 +54,8 @@ class Chat:
     # before documents existed, which belongs to whichever document is being
     # read: exact for the single-document manuscripts that wrote those records.
     doc: str = ""
+    # The skill a check request names, and the check a finding came from.
+    check: str = ""
 
 
 def now() -> str:
@@ -130,6 +136,7 @@ def read_chats(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
             author=rec.get("author", "bb"),
             ts=rec.get("ts", ""),
             doc=str(rec.get("doc", "")),
+            check=str(rec.get("check", "")),
         )
         for cid, rec in base.items()
         if doc is None or rec.get("doc", "") in ("", doc)
@@ -168,5 +175,10 @@ def by_block(log: Path, *, doc: str | None = None) -> dict[str, list[dict]]:
 
 
 def pending(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
-    """Chats awaiting work. This is what a drain reads."""
-    return tuple(c for c in read_chats(log, doc=doc) if c.state not in TERMINAL)
+    """Chats awaiting work. This is what a drain reads.
+
+    `review` findings are excluded: they are for the author, and a drain that
+    worked them would be an agent acting on its own review.
+    """
+    return tuple(c for c in read_chats(log, doc=doc)
+                 if c.state not in TERMINAL and c.state != "review")

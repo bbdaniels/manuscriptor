@@ -144,6 +144,8 @@ body {
    viewer when the directory serves only one document. */
 select.docswitch { font-family: var(--mono); font-size: .72rem; }
 select.docswitch[hidden] { display: none; }
+/* The skill menus: label-first selects that snap back after a choice. */
+select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 
 /* Each column owns its own scroll. min-height:0 is what actually lets a grid
    child scroll rather than stretch its parent. */
@@ -239,6 +241,8 @@ table.mini th:first-child, table.mini td:first-child { text-align: left; }
 /* margin comment pins */
 .pin { position: absolute; right: -1.5rem; top: .45rem; width: 1.05rem; height: 1.05rem; border-radius: 50%; border: 1.5px solid var(--rule); background: var(--surface); font-family: var(--ui); font-size: .6rem; font-weight: 700; color: var(--muted); display: grid; place-items: center; cursor: pointer; padding: 0; }
 .pin.queued { border-color: var(--paraphrase); color: var(--paraphrase); }
+/* A finding awaiting the author's eye: attention, not activity. */
+.pin.review { border-color: var(--paraphrase); color: var(--paraphrase); background: var(--computed-soft); }
 .pin.working { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .pin.done { border-color: var(--verbatim); color: var(--verbatim); }
 .pin.locked { border-color: var(--computed); color: var(--computed); background: var(--computed-soft); }

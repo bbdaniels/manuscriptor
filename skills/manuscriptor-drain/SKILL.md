@@ -132,6 +132,27 @@ subagent editing `.tex` by hand should:
 
 ## Things that will come up
 
+**A check** is a document-level item whose CHECK line names a skill
+(`consistency-check`, `review-manuscript`, `revision-audit`, `validate-bib`,
+or a Produce skill like `declaude`, `talk`, `docx-package`). Invoke that
+skill on this manuscript with the vault context you already loaded. For a
+review-shaped skill, land every finding as its own comment:
+
+```bash
+manuscriptor comment <dir> --review --author proofreader --check consistency-check \
+  --doc main.tex --quote "the exact sentence the finding concerns" \
+  "What is wrong, and what would fix it."
+```
+
+The quote is what anchors the finding to its paragraph, so quote the
+manuscript's own words exactly. Findings are `review` state: pinned for the
+author, never presented back to you as work, so you cannot end up working
+your own review. Duplicates against open findings are skipped automatically;
+do not pre-filter. When the skill produces an artifact instead (a deck, a
+submission package), put it under `build/manuscriptor/` and reply with the
+path. Either way: reply with a one-line summary and mark the check's own
+comment done.
+
 **A document-level comment** has no block: the author typed it into the
 manuscript panel rather than onto a paragraph, and its item says so. This is
 orchestration work. Decompose it into per-block subagent tasks yourself; the

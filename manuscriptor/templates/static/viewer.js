@@ -230,14 +230,17 @@
     var order = QUEUE_ORDER.filter(function (s) { return counts[s]; })
       .concat(seen.filter(function (s) { return QUEUE_ORDER.indexOf(s) === -1; }));
     if (!order.length) return 'idle';
-    return order.map(function (s) { return counts[s] + ' ' + s; }).join(' · ');
+    return order.map(function (s) {
+      return counts[s] + ' ' + (s === 'review' ? 'to review' : s);
+    }).join(' · ');
   }
 
   /* One ticker line: what happened, to the block NAMED THE WAY THE AUTHOR NAMES
      IT. A hex id is not a name he chose, and it changes the moment the
      paragraph is edited, so it would be the least stable thing on the page. */
   var TICKER_WORDS = {
-    queued: 'queued', working: 'working', done: 'done', orphaned: 'orphaned'
+    queued: 'queued', working: 'working', done: 'done', orphaned: 'orphaned',
+    review: 'flagged for review'
   };
 
   function tickerText(e) {
@@ -843,10 +846,28 @@
 
   function chatMsgs(msgs) {
     return '<div class="chat">' + msgs.map(function (m) {
+      // A review finding carries its triage: dismissing closes it, asking
+      // for the fix files an ordinary comment the drain will work.
+      var triage = m.state === 'review'
+        ? '<div class="row" style="margin-top:.4rem">' +
+          '<button class="btn" data-act="finding:fix:' + esc(m.id) + '">Ask to fix</button>' +
+          '<button class="btn" data-act="finding:dismiss:' + esc(m.id) + '">Dismiss</button></div>'
+        : '';
       return '<div class="msg' + (m.who === 'you' ? ' bb' : '') + '">' +
         '<div class="who">' + esc(m.who) + (m.ts ? ' · ' + esc(ago(m.ts)) : '') +
-        (m.state ? ' · ' + esc(m.state) : '') + '</div>' + esc(m.body) + '</div>';
+        (m.state ? ' · ' + esc(m.state) : '') + '</div>' + esc(m.body) + triage + '</div>';
     }).join('') + '</div>';
+  }
+
+  function findingById(fid) {
+    var blocks = Object.keys(S.chats);
+    for (var i = 0; i < blocks.length; i++) {
+      var msgs = S.chats[blocks[i]] || [];
+      for (var j = 0; j < msgs.length; j++) {
+        if (msgs[j] && msgs[j].id === fid) return { block: blocks[i], msg: msgs[j] };
+      }
+    }
+    return null;
   }
 
   function chatTab(id, chat) {
@@ -941,6 +962,34 @@
       .catch(function () {
         pushTicker({ text: 'could not start the repair', when: new Date().toISOString() });
       });
+  }
+
+  /* The skill menus: picking an entry sends one document-level comment
+     naming the skill, then snaps back to the label. The queue counts it,
+     the drain routes it, and for a check the findings come home as review
+     comments pinned to their paragraphs. */
+  var SKILL_ASKS = {
+    'consistency-check': 'Run the preflight (consistency-check) on this document and land each finding as a review comment.',
+    'review-manuscript': 'Run the full manuscript review on this document and land each finding as a review comment.',
+    'revision-audit': 'Run the revision audit across the documents in this directory and land each finding as a review comment on the document it concerns.',
+    'validate-bib': 'Validate the bibliography against the citations in this document and land each problem as a review comment.',
+    'declaude': 'Run the declaude rewrite on this document, decomposed per paragraph; every write is one block.',
+    'write': 'Draft the section I describe in the document chat. Ask me there if the brief is not yet specific enough to write.',
+    'talk': 'Build the seminar deck from this document with the talk skill, and reply with where it landed.',
+    'docx-package': 'Build the Word submission package with the docx-package skill, and reply with where it landed.',
+    'em-submission': 'Build the Elsevier submission zip with the em-submission skill, and reply with where it landed.'
+  };
+
+  function wireSkillMenu(id) {
+    var menu = document.getElementById(id);
+    if (!menu) return;
+    menu.addEventListener('change', function () {
+      var skill = menu.value;
+      menu.selectedIndex = 0;
+      if (!skill || !SKILL_ASKS[skill]) return;
+      if (!send({ type: 'chat', block: '', body: SKILL_ASKS[skill], check: skill })) return;
+      pushTicker({ text: 'asked for ' + skill, when: new Date().toISOString() });
+    });
   }
 
   function showRepair(missing) {
@@ -1882,6 +1931,30 @@
   function doAct(act) {
     if (act === 'evidence:run') { runEvidence(); return; }
     if (act === 'repair:run') { runRepair(); return; }
+    if (act.indexOf('finding:dismiss:') === 0) {
+      var dfid = act.slice('finding:dismiss:'.length);
+      var dhit = findingById(dfid);
+      if (send({ type: 'dismiss', id: dfid })) {
+        if (dhit) dhit.msg.state = 'done';
+        if (S.sel) renderInspector(); else renderHome();
+      }
+      return;
+    }
+    if (act.indexOf('finding:fix:') === 0) {
+      var ffid = act.slice('finding:fix:'.length);
+      var fhit = findingById(ffid);
+      if (!fhit) return;
+      var ask = 'Address the ' + (fhit.msg.who || 'review') + ' finding ' + ffid + ': ' + fhit.msg.body;
+      if (send({ type: 'chat', block: fhit.block, body: ask })) {
+        (S.chats[fhit.block] = S.chats[fhit.block] || []).push({
+          id: 'local-' + Date.now(), who: 'you', body: ask,
+          ts: new Date().toISOString(), state: 'sent'
+        });
+        if (S.sel) renderInspector(); else renderHome();
+        hydrate();
+      }
+      return;
+    }
     var id = S.sel && S.sel.blockId;
     if (act === 'revert' && id) {
       var b = S.blocks[id];
@@ -2110,6 +2183,8 @@
 
     renderTodos(S.ms.todos || []);
     showRepair(S.ms.missing_fulltexts);
+    wireSkillMenu('checks-menu');
+    wireSkillMenu('produce-menu');
     var todosBox = document.getElementById('todos');
     if (todosBox) {
       todosBox.addEventListener('change', function (e) {

@@ -956,3 +956,86 @@ def test_a_read_only_page_cannot_write_todos(tmp_path):
     frame = asyncio.run(s.on_todo("nope"))
     assert frame["type"] == "held"
     assert not (tmp_path / "comments.jsonl").exists()
+
+
+# ---------------------------------------------------- checks, and their findings
+#
+# A check (preflight, proofread, revision audit) is asked for from a toolbar
+# dropdown, travels as a document-level comment carrying a `check` field, and
+# its findings come back as comments in a `review` state: pinned and readable
+# at once, but never presented to the drain as work, or a --with-agent session
+# would start working the instructions it had just written itself. The author
+# triages: dismissing marks the finding done; asking for the fix is an
+# ordinary new comment.
+
+
+def test_a_check_request_carries_its_skill(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path)
+    asyncio.run(s.on_chat("", "Run the preflight on this document.",
+                          check="consistency-check"))
+    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    assert rec["check"] == "consistency-check"
+    items = drain.collect(tmp_path)
+    assert items[0].check == "consistency-check"
+    assert "consistency-check" in drain.as_text(items)
+
+
+def test_a_finding_is_pinned_but_never_drained(tmp_path):
+    d, bid, b = setup(tmp_path)
+    rec = drain.comment(
+        d, quote=b.by_id[bid].source_text[:120],
+        body="This claim needs a within-sample benchmark.",
+        author="proofreader", check="consistency-check", doc="main.tex",
+        review=True,
+    )
+    assert rec is not None
+    # Pinned: the queue view lists it, in its own state.
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    states = {e["id"]: e["state"] for e in q}
+    assert states[rec["id"]] == "review"
+    # Anchored by its quote, like an imported referee comment.
+    anchored = [e for e in q if e["id"] == rec["id"]][0]
+    assert anchored["block"] == bid
+    # Never drained: the finding is not pending work.
+    assert rec["id"] not in [i.chat_id for i in drain.collect(d)]
+
+
+def test_a_finding_is_deduped_against_the_open_one(tmp_path):
+    d, bid, b = setup(tmp_path)
+    quote = b.by_id[bid].source_text[:120]
+    first = drain.comment(d, quote=quote, body="Same finding.",
+                          author="proofreader", doc="main.tex", review=True)
+    again = drain.comment(d, quote=quote, body="Same finding.",
+                          author="proofreader", doc="main.tex", review=True)
+    assert first is not None and again is None
+    # Dismissed and re-found is a NEW finding, not a duplicate.
+    drain.mark(d, first["id"], "done")
+    third = drain.comment(d, quote=quote, body="Same finding.",
+                          author="proofreader", doc="main.tex", review=True)
+    assert third is not None
+
+
+def test_the_author_dismisses_a_finding(tmp_path):
+    from manuscriptor.server.app import Session
+
+    d, bid, b = setup(tmp_path)
+    rec = drain.comment(d, quote=b.by_id[bid].source_text[:120],
+                        body="Nitpick.", author="proofreader",
+                        doc="main.tex", review=True)
+    s = Session(d)
+    frame = asyncio.run(s.on_dismiss(rec["id"]))
+    assert frame["type"] == "state" and frame["state"] == "done"
+    states = {c.id: c.state for c in chat.read_chats(d / "comments.jsonl")}
+    assert states[rec["id"]] == "done"
+
+
+def test_a_read_only_page_cannot_dismiss(tmp_path):
+    from manuscriptor.server.app import Session
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    s = Session(tmp_path, read_only=True)
+    frame = asyncio.run(s.on_dismiss("c-0001"))
+    assert frame["type"] == "held"

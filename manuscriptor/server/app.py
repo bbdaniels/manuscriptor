@@ -242,7 +242,16 @@ class Session:
                                "done": bool(done)})
         return self._todos_frame()
 
-    async def on_chat(self, block_id: str, body: str) -> dict:
+    async def on_dismiss(self, chat_id: str) -> dict:
+        """The author closes a review finding. A state record, never a rewrite."""
+        if self.read_only:
+            return {"type": "held", "block": "",
+                    "reason": "This manuscript is open read-only, so the log is not written."}
+        chat.append(self.log, {"id": str(chat_id), "kind": "state", "state": "done"})
+        return {"type": "state", "block": "", "id": str(chat_id),
+                "state": "done", "at": chat.now()}
+
+    async def on_chat(self, block_id: str, body: str, check: str = "") -> dict:
         if self.read_only:
             return {"type": "held", "block": block_id,
                     "reason": "This manuscript is open read-only, so the comment log is not written either."}
@@ -254,6 +263,7 @@ class Session:
                 "kind": "comment",
                 "block": block_id,
                 "doc": self.doc,
+                **({"check": str(check)} if check else {}),
                 "file": str(block.file) if block else "",
                 "lines": [block.line_start, block.line_end] if block else [],
                 "quote": (block.source_text[:120] if block else ""),
@@ -409,7 +419,13 @@ def make_app(session: Session) -> web.Application:
                 if kind == "edit":
                     await ws.send_json(await session.on_edit(data.get("block", ""), data.get("source", "")))
                 elif kind == "chat":
-                    await session.broadcast(await session.on_chat(data.get("block", ""), data.get("body", "")))
+                    await session.broadcast(await session.on_chat(
+                        data.get("block", ""), data.get("body", ""),
+                        check=data.get("check", "")))
+                elif kind == "dismiss":
+                    frame = await session.on_dismiss(data.get("id", ""))
+                    await (ws.send_json(frame) if frame["type"] == "held"
+                           else session.broadcast(frame))
                 elif kind == "todo":
                     frame = await session.on_todo(data.get("text", ""))
                     await (ws.send_json(frame) if frame["type"] == "held"

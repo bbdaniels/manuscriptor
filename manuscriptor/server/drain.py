@@ -54,6 +54,7 @@ class Item:
     cites: list[str] = field(default_factory=list)
     values: list[dict] = field(default_factory=list)
     note: str | None = None
+    check: str = ""
 
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -88,15 +89,20 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
         # which still writes exactly one block. The constraint the design
         # rests on is per write, not per comment.
         if not c.block:
+            note = ("document-level: no single block to edit. Decompose into "
+                    "per-block subagent tasks; every write is still one block. "
+                    "Answer in words with `manuscriptor reply` when the right "
+                    "response is an answer rather than an edit.")
+            if c.check:
+                note = (f"a check: invoke the `{c.check}` skill on this manuscript. "
+                        "Land each finding as a review comment with `manuscriptor "
+                        "comment --review`, quote the exact sentence it concerns so "
+                        "it anchors, then reply with a summary and mark this done.")
             items.append(
                 Item(
                     chat_id=c.id, block_id="", body=c.body, state=c.state,
                     file="", line_start=0, line_end=0, editable=False,
-                    source="", section=None,
-                    note=("document-level: no single block to edit. Decompose into "
-                          "per-block subagent tasks; every write is still one block. "
-                          "Answer in words with `manuscriptor reply` when the right "
-                          "response is an answer rather than an edit."),
+                    source="", section=None, note=note, check=c.check,
                 )
             )
             continue
@@ -138,12 +144,43 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
 
 def mark(manuscript_dir: Path, chat_id: str, state: str, *, edit: dict | None = None) -> dict:
     """Record what happened to a chat. A new record, never a rewrite."""
-    if state not in ("queued", "working", "done", "orphaned"):
+    if state not in ("queued", "working", "done", "orphaned", "review"):
         raise ValueError(f"unknown state {state!r}")
     rec = {"id": chat_id, "kind": "state", "state": state}
     if edit:
         rec["edit"] = edit
     return chat.append(Path(manuscript_dir).resolve() / "comments.jsonl", rec)
+
+
+def comment(manuscript_dir: Path, *, body: str, quote: str = "", author: str = "bb",
+            doc: str = "", check: str = "", block: str = "",
+            review: bool = False) -> dict | None:
+    """Append a comment from outside the page: a check's finding, usually.
+
+    The quote is what anchors it: the server's re-anchoring machinery places
+    it on the paragraph containing that text, the same way an imported referee
+    comment or a drifted chat is placed. `review=True` files it as a finding,
+    which is pinned and readable at once but never drained as work.
+
+    Deduped against OPEN comments with the same quote, author and doc, so
+    running a check twice does not raise every finding twice. A dismissed
+    finding re-found by a later run is a new comment, deliberately: the check
+    is telling the author it still thinks so.
+    """
+    log = Path(manuscript_dir).resolve() / "comments.jsonl"
+    if quote:
+        for c in chat.read_chats(log):
+            if (c.quote == quote and c.author == author
+                    and c.doc == doc and c.state not in chat.TERMINAL):
+                return None
+    rec = chat.append(log, {
+        "id": chat.next_id(log), "kind": "comment", "block": block, "doc": doc,
+        "quote": quote, "body": str(body), "author": author,
+        **({"check": check} if check else {}),
+    })
+    if review:
+        chat.append(log, {"id": rec["id"], "kind": "state", "state": "review"})
+    return rec
 
 
 def reply(manuscript_dir: Path, chat_id: str, body: str, *, author: str = "claude") -> dict:

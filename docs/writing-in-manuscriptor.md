@@ -152,6 +152,32 @@ and may write **one block**. It can read the section, the neighbouring
 paragraphs, the bibliography and the script behind a number, and change one
 paragraph. That constraint is what makes running it live acceptable.
 
+## Checks, and the rest of the skill suite
+
+Two menus in the toolbar reach the skills you already use from the terminal.
+
+**Checks…** runs a review: the preflight (consistency-check's seven passes),
+the full manuscript review, the revision audit (across the paper, appendix,
+and response sharing this directory), or the bibliography. Picking one queues
+a single comment; the session runs the skill and every finding comes back as
+a comment **pinned to the paragraph it concerns**, anchored by the sentence
+the finding quotes, so a preflight reads exactly like an imported referee
+report. Findings arrive in a `review` state: the header counts them
+separately ("2 queued · 12 to review") and the session never treats them as
+instructions, so an agent cannot end up working its own review. Each finding
+carries its triage: **Ask to fix** files an ordinary comment the queue works
+under the usual one-block rule; **Dismiss** closes it. Re-running a check
+skips findings already open; a dismissed finding that a later run raises
+again is the check telling you it still thinks so.
+
+**Produce…** is the generative half: the declaude rewrite (decomposed
+paragraph by paragraph, one block per write as always), drafting a section,
+the seminar deck, and the submission packages. Artifacts land in
+`build/manuscriptor/` and the reply tells you where.
+
+The whole exchange is records in `comments.jsonl`, so the review, your
+decisions, and the fixes are one audit trail beside the paper.
+
 ## Inserting
 
 Click a paragraph, open **Source**, and the bar under the editor offers
