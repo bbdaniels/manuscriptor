@@ -561,3 +561,16 @@ def test_review_findings_carry_their_triage():
     assert "finding:dismiss:" in js
     css = STYLES.read_text(encoding="utf-8")
     assert ".pin.review" in css
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_chats_read_newest_first_without_orphaning_replies():
+    # Reverse-chron, but the unit is a comment WITH its replies: a bare
+    # reversal would put an answer above the comment it answers.
+    msgs = [
+        {"id": "c-0001", "body": "old comment"},
+        {"id": "c-0001#r1", "body": "its reply"},
+        {"id": "c-0002", "body": "new comment"},
+    ]
+    out = node_call("newestFirst", msgs)
+    assert [m["id"] for m in out] == ["c-0002", "c-0001", "c-0001#r1"]

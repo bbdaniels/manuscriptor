@@ -190,6 +190,28 @@
     return ((out % 360) + 360) % 360;
   }
 
+  /* Chats read newest first, but the unit is a comment WITH its replies: a
+     bare reversal would put an answer above the comment it answers. A reply's
+     id carries its comment's (`c-0007#r1`), which is the grouping key. */
+  function newestFirst(msgs) {
+    msgs = msgs || [];
+    var groups = [];
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i];
+      if (m && String(m.id || '').indexOf('#r') !== -1 && groups.length) {
+        groups[groups.length - 1].push(m);
+      } else {
+        groups.push([m]);
+      }
+    }
+    groups.reverse();
+    var out = [];
+    for (var g = 0; g < groups.length; g++) {
+      for (var j = 0; j < groups[g].length; j++) out.push(groups[g][j]);
+    }
+    return out;
+  }
+
   function hslToHex(h, s, l) {
     h = ((h % 360) + 360) % 360;
     var c = (1 - Math.abs(2 * l - 1)) * s,
@@ -286,6 +308,7 @@
     spliceAt: spliceAt,
     hexToHS: hexToHS,
     clampHue: clampHue,
+    newestFirst: newestFirst,
     queueSummary: queueSummary,
     tickerText: tickerText,
     renameQueue: renameQueue,
@@ -845,7 +868,7 @@
   }
 
   function chatMsgs(msgs) {
-    return '<div class="chat">' + msgs.map(function (m) {
+    return '<div class="chat">' + newestFirst(msgs).map(function (m) {
       // A review finding carries its triage: dismissing closes it, asking
       // for the fix files an ordinary comment the drain will work.
       var triage = m.state === 'review'
