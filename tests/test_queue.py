@@ -36,6 +36,7 @@ from jinja2 import Template
 from manuscriptor import cli
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat, drain
+from manuscriptor.server.build import flatten_ws
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES = ROOT / "manuscriptor" / "templates"
@@ -953,6 +954,59 @@ def test_a_finding_is_pinned_but_never_drained(tmp_path):
     assert anchored["block"] == bid
     # Never drained: the finding is not pending work.
     assert rec["id"] not in [i.chat_id for i in drain.collect(d)]
+
+
+WRAPPED_DOC = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+A first paragraph, present so the finding lands on the second.
+
+This division matters for the controls
+available to a program deploying a DSP.
+Generation differences are fixed before the encounter
+and can be corrected by one-time review.
+\end{document}
+"""
+
+
+def test_a_finding_anchors_when_its_quote_is_a_sentence_not_source_bytes(tmp_path):
+    # A quote comes from a person or a rendered page, so its words are joined by
+    # single spaces. The source they came from is hard wrapped one clause per
+    # line, which is how dsp-bias and most of his manuscripts are written. The
+    # two strings say the same sentence and differ only in whitespace, so the
+    # anchor must survive that. Matching raw source bytes drops the finding on
+    # any manuscript whose author presses return mid-sentence.
+    d, _bid, b = setup(tmp_path, WRAPPED_DOC)
+    target = [x.id for x in b.blocks if x.kind == "paragraph"][1]
+    quote = ("This division matters for the controls available to a program "
+             "deploying a DSP.")
+    assert "\n" in b.by_id[target].source_text  # the fixture really is wrapped
+    rec = drain.comment(d, quote=quote, body="Answer the older-tools objection.",
+                        author="proofreader", doc="main.tex", review=True)
+    assert rec is not None
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    anchored = [e for e in q if e["id"] == rec["id"]][0]
+    assert anchored["block"] == target
+
+
+def test_two_findings_land_on_their_own_paragraphs(tmp_path):
+    # A check files findings with no block id, so every one of them is keyed by
+    # the same absent id. Re-anchoring them as a group gives them all the first
+    # one's quote and stacks a whole review on one paragraph. Each finding is
+    # placed by ITS OWN quote or it is not placed at all.
+    d, _bid, b = setup(tmp_path, WRAPPED_DOC)
+    paras = [x.id for x in b.blocks if x.kind == "paragraph"]
+    first, second = paras[0], paras[1]
+    q1 = flatten_ws(b.by_id[first].source_text)[:70]
+    q2 = flatten_ws(b.by_id[second].source_text)[:70]
+    r1 = drain.comment(d, quote=q1, body="On the first.", author="proofreader",
+                       doc="main.tex", review=True)
+    r2 = drain.comment(d, quote=q2, body="On the second.", author="proofreader",
+                       doc="main.tex", review=True)
+    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    at = {e["id"]: e["block"] for e in q}
+    assert at[r1["id"]] == first
+    assert at[r2["id"]] == second
 
 
 def test_a_finding_is_deduped_against_the_open_one(tmp_path):

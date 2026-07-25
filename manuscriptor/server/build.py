@@ -192,24 +192,59 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
     for. A chat whose paragraph is genuinely gone keeps its original key and is
     simply not shown against any block, rather than being attached to the wrong
     one.
+
+    Each chat is placed by ITS OWN quote, never by its neighbour's. Findings
+    filed from a check carry no block id at all, so they all arrive under the
+    same absent key; re-anchoring that key as one group would give every finding
+    in a review the first one's paragraph and stack the whole report on it.
     """
     present = {blk.id for blk in blocks}
     quotes = {c.id: c.quote for c in chats}
     out: dict[str, list] = {}
     for block_id, msgs in by_block.items():
-        target = block_id
-        if block_id not in present:
-            quote = next((quotes.get(m["id"], "") for m in msgs if quotes.get(m["id"])), "")
-            if quote:
-                head = quote[:60]
-                match = next((blk.id for blk in blocks if blk.source_text.startswith(head)), None)
-                if match is None:
-                    part = quote[:40]
-                    match = next((blk.id for blk in blocks if part and part in blk.source_text), None)
-                if match:
-                    target = match
-        out.setdefault(target, []).extend(msgs)
+        if block_id in present:
+            out.setdefault(block_id, []).extend(msgs)
+            continue
+        # A key the page no longer has, or none at all. Resolve message by
+        # message: they only share this key by accident of it being absent.
+        fallback = next((quotes.get(m["id"], "") for m in msgs if quotes.get(m["id"])), "")
+        for m in msgs:
+            match = match_by_quote(quotes.get(m["id"]) or fallback, blocks)
+            out.setdefault(match or block_id, []).append(m)
     return out
+
+
+def flatten_ws(text: str) -> str:
+    """Whitespace flattened, so a wrapped source and a typed sentence compare."""
+    return " ".join(text.split())
+
+
+def match_by_quote(quote: str, blocks) -> str | None:
+    """The one rule for placing a quote on a block. Used by every re-anchoring.
+
+    Both sides are compared with their whitespace flattened. A quote arrives
+    from a person, a rendered page, or a reviewer's highlight, so its words are
+    joined by single spaces, while the source it came from is usually hard
+    wrapped one clause per line. The two say the same sentence and differ only
+    in where the author pressed return, so matching raw source bytes drops the
+    anchor on every manuscript written that way, which is most of them.
+
+    This lives in one place on purpose. The rule was implemented twice, here and
+    in the drain, and the two disagreed the moment either was touched.
+    """
+    if not quote:
+        return None
+    quote = flatten_ws(quote)
+    flat = [(blk.id, flatten_ws(blk.source_text)) for blk in blocks]
+    head = quote[:60]
+    for bid, text in flat:
+        if head and text.startswith(head):
+            return bid
+    part = quote[:40]
+    for bid, text in flat:
+        if part and part in text:
+            return bid
+    return None
 
 
 # ------------------------------------------------------------- the evidence

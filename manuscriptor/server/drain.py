@@ -299,7 +299,7 @@ def as_text(items: list[Item]) -> str:
 
 
 def _clip(text: str, n: int = 100) -> str:
-    flat = " ".join(text.split())
+    flat = build_mod.flatten_ws(text)
     return flat[:n] + ("…" if len(flat) > n else "")
 
 
@@ -308,14 +308,15 @@ def _indent(text: str) -> str:
 
 
 def _locate(c, b, records) -> tuple[str | None, str | None]:
-    """Find the block a comment belongs to, even after its id changed."""
+    """Find the block a comment belongs to, even after its id changed.
+
+    Placement goes through `build_mod.match_by_quote`, which is the single rule
+    the page's re-anchoring uses too. Do not reimplement it here: it was written
+    twice once already, and the copies disagreed.
+    """
     if c.block in records:
         return c.block, None
-    if c.quote:
-        for blk in b.blocks:
-            if blk.source_text.startswith(c.quote[:60]):
-                return blk.id, "re-anchored: the block was edited after this comment was written"
-        for blk in b.blocks:
-            if c.quote[:40] and c.quote[:40] in blk.source_text:
-                return blk.id, "re-anchored by quote match; check it landed on the right paragraph"
+    match = build_mod.match_by_quote(c.quote, b.blocks)
+    if match:
+        return match, "re-anchored by quote match; check it landed on the right paragraph"
     return None, None
