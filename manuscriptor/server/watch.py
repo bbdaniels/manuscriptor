@@ -106,3 +106,45 @@ def block_until_log_grows(log: Path, *, from_offset: int, poll: float = 0.5) -> 
         if size > from_offset:
             return size
         time.sleep(poll)
+
+
+def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 200):
+    """Watch ONE file, wherever it lives. Returns a function that stops it.
+
+    The tree watcher ignores `build`, and rightly: it holds the rasterized
+    figures this pipeline writes, so watching it would redraw on its own output
+    forever. But the drain's live feed lives there too, because it is generated
+    and must not make `git status` grow, and the page needs it as it changes. One
+    file, watched by name, is the narrow exception rather than a hole in the rule.
+    """
+    path = Path(path).resolve()
+
+    class _One(FileSystemEventHandler):
+        def __init__(self):
+            self.timer: threading.Timer | None = None
+            self.guard = threading.Lock()
+
+        def on_any_event(self, event):
+            if event.is_directory:
+                return
+            touched = Path(getattr(event, "dest_path", "") or event.src_path)
+            if touched.name != path.name:
+                return
+            with self.guard:
+                if self.timer is not None:
+                    self.timer.cancel()
+                self.timer = threading.Timer(debounce_ms / 1000.0, on_change)
+                self.timer.daemon = True
+                self.timer.start()
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    observer = Observer()
+    observer.schedule(_One(), str(path.parent), recursive=False)
+    observer.daemon = True
+    observer.start()
+
+    def stop() -> None:
+        observer.stop()
+        observer.join(timeout=2)
+
+    return stop

@@ -237,6 +237,22 @@ class Session:
                 return
         await self.broadcast({"type": "assets", "v": chat.now()})
 
+    async def on_feed_change(self) -> None:
+        """Push what the drain is doing. The file is written by the drain; this
+        only reads it, which is the whole of the server's relationship with
+        Claude. Only differences go out, so a feed rewritten with the same
+        contents does not repaint the panel."""
+        from manuscriptor.server import feed as feed_mod
+
+        if self.build is None:
+            return
+        out = self.root / "build" / "manuscriptor"
+        fresh = feed_mod.read_feed(feed_mod.progress_path(out))
+        if fresh == self.build.blob.get("agent_feed"):
+            return
+        self.build.blob["agent_feed"] = fresh
+        await self.broadcast({"type": "feed", "feed": fresh})
+
     async def on_log_change(self) -> None:
         """Tell the page what the agent did.
 
@@ -824,7 +840,7 @@ def serve(
     read_only: bool = False,
     on_switch=None,
 ) -> None:
-    from manuscriptor.server.watch import watch_tree
+    from manuscriptor.server.watch import watch_file, watch_tree
 
     session = Session(manuscript_dir, main=main, bib=bib, read_only=read_only,
                       on_switch=on_switch)
@@ -865,6 +881,12 @@ def serve(
             asyncio.run_coroutine_threadsafe(coro, loop)
 
         stop = watch_tree(session.dir, changed)
+        # The drain's live feed lives in the build directory, which the tree
+        # watcher ignores on purpose. Watched by name instead.
+        from manuscriptor.server import feed as feed_mod
+        stop_feed = watch_file(
+            feed_mod.progress_path(session.root / 'build' / 'manuscriptor'),
+            lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop))
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "

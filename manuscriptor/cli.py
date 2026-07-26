@@ -290,30 +290,77 @@ def repo_root(manuscript_dir: Path) -> Path | None:
 
 
 def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
-    """Launch the standing drain session beside the server. Says what it started."""
+    """Launch the standing drain beside the server. Says what it started.
+
+    The drain is `manuscriptor drain`, a supervisor holding ONE long-lived
+    session that is handed work over stdin. It replaces a shell loop around
+    print-mode sessions, which had no way to tell a thinking session from a
+    wedged one: a comment sat marked `working` for fourteen minutes on
+    2026-07-26 with a dispatched teammate that had gone silent, twice.
+    """
     claude = shutil.which("claude")
     if not claude:
         sys.exit(
-            "--with-agent needs the `claude` CLI on PATH and it is not there. "
-            "Install Claude Code, or drop --with-agent and run "
-            "`manuscriptor proc <dir>` in a session yourself."
+            "the drain needs the `claude` CLI on PATH and it is not there. "
+            "Install Claude Code, or run with --no-agent and drain by hand with "
+            "`manuscriptor proc <dir>` in a session of your own."
         )
+    from manuscriptor.server import feed as feed_mod
+    from manuscriptor.server.supervisor import STALL_AFTER
+
     log = agent_log_path(manuscript_dir)
     ms = manuscriptor_command(log.parent)
-    root = repo_root(manuscript_dir)
-    script = log.parent / "agent-loop.sh"
-    script.write_text(
-        agent_loop_script(manuscript_dir, claude=claude, manuscriptor=ms,
-                          add_dirs=[root] if root else []),
-        encoding="utf-8")
-    proc = spawn_group(["/bin/sh", str(script)], cwd=Path(manuscript_dir).resolve(),
-                       log_path=log)
-    print(f"  agent  {claude} -p … --permission-mode acceptEdits   (pid {proc.pid})")
-    print("         one standing session; parks on the log, wakes per comment")
-    if root:
-        print(f"         repo access {root}")
+    # `ms` may be "python3 -m manuscriptor" rather than a single binary.
+    argv = [*ms.split(), "drain", str(Path(manuscript_dir).resolve())]
+    proc = spawn_group(argv, cwd=Path(manuscript_dir).resolve(), log_path=log)
+
+    print(f"  agent  one supervised session, fed as work arrives   (pid {proc.pid})")
+    print(f"         silence past {int(STALL_AFTER)}s mid-turn is treated as wedged "
+          "and restarted")
+    print(f"         feed {feed_mod.progress_path(log.parent)}")
     print(f"         log {log}")
     return proc, log
+
+
+def cmd_drain(args: argparse.Namespace) -> int:
+    """Run the standing drain: one supervised session, fed work as it arrives.
+
+    Replaces the shell loop that restarted a print session per wake. The loop
+    lives in `server/supervisor.py` now, where a session that goes quiet can be
+    noticed and restarted, and where what it is doing can be written somewhere
+    the page can read. Run in the foreground here so `serve` can own it as a
+    child, and so it can be run by hand when something needs watching.
+    """
+    import threading
+
+    from manuscriptor.server.supervisor import Drain
+
+    d = Path(args.manuscript).resolve()
+    root = repo_root(d)
+    out = d / "build" / "manuscriptor"
+    out.mkdir(parents=True, exist_ok=True)
+    drain = Drain(
+        d,
+        manuscriptor=manuscriptor_command(out),
+        add_dirs=[root] if root else [],
+        model=args.model or None,
+        stall_after=float(args.stall_after),
+    )
+    stop = threading.Event()
+
+    def bye(*_):
+        stop.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, bye)
+        except (ValueError, OSError):
+            pass
+    print(f"drain  {d}")
+    print(f"       feed {drain.feed.path}")
+    print(f"       stream {drain.log}")
+    drain.run(stop)
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -774,6 +821,14 @@ def main(argv: list[str] | None = None) -> int:
     p_drafts.add_argument("--apply", metavar="BLOCK",
                           help="Splice one draft into the manuscript and forget it")
     p_drafts.set_defaults(func=cmd_drafts)
+
+    p_drain = sub.add_parser(
+        "drain", help="Run the standing drain: one supervised session, watched")
+    p_drain.add_argument("manuscript", help="Path to the manuscript directory")
+    p_drain.add_argument("--model", default="", help="Model for the session")
+    p_drain.add_argument("--stall-after", default=150,
+                         help="Seconds of silence mid-turn before it is restarted")
+    p_drain.set_defaults(func=cmd_drain)
 
     p_comment = sub.add_parser("comment", help="Append a comment (a check's finding, usually)")
     p_comment.add_argument("manuscript", help="Path to the manuscript directory")

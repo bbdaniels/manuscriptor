@@ -1069,6 +1069,39 @@
      block; the drain presents it as document-level work for the session to
      decompose, and the agent's replies land back in this panel. Still nothing
      but the log between the two sides. */
+  /* WHAT THE AGENT IS DOING, in the panel the author reads when nothing is
+     selected. Until now "working" was a word in the header and nothing else: a
+     comment sat marked working for fourteen minutes with a dispatched teammate
+     that had gone silent, and there was no surface anywhere that could have said
+     so. The drain streams its session's events into a file; this renders them.
+
+     Newest LAST, like a conversation, because that is what it is: the thing is
+     talking and the author is reading down. A teammate's line is marked, since
+     "which of them is stuck" is the first question. */
+  function agentFeed() {
+    var f = S.ms.agent_feed || {};
+    var entries = (f.entries || []);
+    var state = String(f.state || 'idle');
+    if (!entries.length && state === 'idle') {
+      return card('The agent', 'idle',
+        '<p class="empty">Nothing queued. A note above becomes a comment, and what ' +
+        'the agent does about it appears here as it happens.</p>');
+    }
+    var working = (f.working || []);
+    var head = state + (working.length ? ' · ' + working.join(', ') : '');
+    var rows = entries.map(function (e) {
+      var who = e.who === 'teammate' ? 'teammate' : 'agent';
+      return '<div class="fe ' + esc(e.kind) + ' ' + who + '">' +
+        '<b>' + who + '</b> <span>' + esc(e.text) + '</span>' +
+        '<time>' + esc(ago(e.ts)) + '</time></div>';
+    }).join('');
+    var jump = working.length
+      ? '<div class="row"><button class="btn" type="button" data-act="feed:goto">' +
+        'Show the paragraph it is working on</button></div>'
+      : '';
+    return card('The agent', head, '<div class="feed-live">' + rows + '</div>' + jump);
+  }
+
   function renderHome() {
     if (S.sel) return;
     var ui = captureUI();
@@ -1086,6 +1119,7 @@
     body += card('', '', '<p class="empty">Click a paragraph to see its source and its chat, ' +
       'a citation to see its evidence, or a violet number to see the code that produced it. ' +
       'A note typed above becomes a comment on the whole manuscript, worked by the same queue.</p>');
+    body += agentFeed();
     if (msgs.length) {
       body += card('Earlier', msgs.length + ' message' + (msgs.length === 1 ? '' : 's'),
         chatMsgs(msgs));
@@ -1950,6 +1984,12 @@
         }
         break;
       }
+      case 'feed': {
+        S.ms.agent_feed = msg.feed || {};
+        setAgent(msg.feed);
+        if (!S.sel) renderHome();
+        break;
+      }
       case 'saved': {
         var sid = normId(msg.block);
         var b = S.blocks[sid];
@@ -2131,11 +2171,18 @@
     }).join('\n');
   }
 
+  function setAgent(feed) {
+    S.ms.agent_feed = feed || S.ms.agent_feed || {};
+    renderAgent();
+  }
+
   function renderAgent() {
     if (agentEl) {
       var text = agentEl.querySelector('.atext');
       if (text) text.textContent = queueSummary(S.queue);
-      var working = S.queue.some(function (e) { return e && e.state === 'working'; });
+      var feed = S.ms.agent_feed || {};
+      var working = feed.state === 'working' ||
+        S.queue.some(function (e) { return e && e.state === 'working'; });
       agentEl.classList.toggle('is-working', working);
       agentEl.classList.toggle('is-idle', S.queue.length === 0);
       agentEl.setAttribute('title', queueTitle());
@@ -2165,8 +2212,17 @@
     }
     S.tickerKey = key;
     tickerEl.hidden = items.length === 0;
+    /* The title of an entry is a place, so it goes there. Reading "Discussion ·
+       flagged for review" and then having to find the Discussion yourself is the
+       page knowing where it means and not saying. A document-level entry has no
+       block to jump to, so it stays plain rather than pretending. */
     tickerEl.innerHTML = items.map(function (e, i) {
-      return '<span class="tk' + (i ? '' : ' now') + '">' + esc(tickerText(e)) +
+      var label = esc(tickerText(e));
+      var id = e.block ? normId(e.block) : '';
+      var title = (id && S.blocks[id])
+        ? '<button type="button" class="tkgo" data-goto="' + esc(id) + '">' + label + '</button>'
+        : label;
+      return '<span class="tk' + (i ? '' : ' now') + '">' + title +
         '<time>' + esc(e.when ? ago(e.when) : '') + '</time></span>';
     }).join('');
   }
@@ -2307,6 +2363,20 @@
 
   function doAct(act) {
     if (act === 'rail:toggle') { toggleRail(); return; }
+    if (act === 'feed:goto') {
+      /* The feed names the comment being worked; the comment names the block. */
+      var w = ((S.ms.agent_feed || {}).working || [])[0];
+      var hit = w && S.queue.filter(function (e) { return e && e.id === w; })[0];
+      var gid = hit && hit.block ? normId(hit.block) : null;
+      if (gid && S.blocks[gid]) {
+        select('block', gid, gid, null, { keepDoc: false });
+        requestAnimationFrame(function () {
+          var el = blockEl(gid);
+          if (el) el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+        });
+      }
+      return;
+    }
     if (act === 'evidence:run') { runEvidence(); return; }
     if (act === 'repair:run') { runRepair(); return; }
     if (act.indexOf('finding:dismiss:') === 0) {

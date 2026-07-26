@@ -19,7 +19,7 @@ from pathlib import Path
 from manuscriptor.render import pandoc, postprocess, refs, tikz
 from manuscriptor.source import anchors, blocks as blocks_mod, root
 from manuscriptor.source.flatten import flatten
-from manuscriptor.server import chat, drafts, manifest, producers
+from manuscriptor.server import chat, drafts, feed as feed_mod, manifest, producers
 
 
 @dataclass
@@ -145,6 +145,11 @@ def build(
         # is offered the draft instead of the author being told it is "on disk"
         # somewhere only a debugger can reach.
         "drafts": drafts.for_doc(drafts.path_for(out), doc),
+        # What the drain is doing right now, as it does it. The drain writes
+        # this file and the server only reads it, so the server still knows
+        # nothing about Claude. Absent means no agent has ever run, which
+        # renders as an idle feed rather than as an error.
+        "agent_feed": feed_mod.read_feed(feed_mod.progress_path(out)),
         "activity": [],
         "stats": {
             "files": len({b.file for b in bl}),
