@@ -529,6 +529,81 @@ def cmd_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drafts(args: argparse.Namespace) -> int:
+    """Show, print, or land unsaved text the server is holding.
+
+    This exists because of an afternoon spent recovering an author's paragraph
+    out of WebKit's sqlite. Unsaved text now lives in a file, and a file the
+    author cannot reach from the tool is barely better than a debugger, so:
+    `drafts` lists them, `--print BLOCK` writes one to stdout, and
+    `--apply BLOCK` splices it into the manuscript.
+    """
+    from manuscriptor.server import build as bmod
+    from manuscriptor.server import drafts as dmod
+    from manuscriptor.source import splice as smod
+
+    d = Path(args.manuscript).resolve()
+    main_tex = bmod.find_main_tex(d, args.main)
+    root = main_tex.parent
+    store = dmod.path_for(root / "build" / "manuscriptor")
+    held = dmod.read(store)
+    if not held:
+        print(f"no drafts held for {root}")
+        return 0
+
+    if args.print_block or args.apply:
+        want = args.print_block or args.apply
+        hit = {b: t for (doc, b), t in held.items() if b == want or b == f"b-{want}"}
+        if not hit:
+            print(f"no draft for block {want}", file=sys.stderr)
+            return 1
+        block_id, text = next(iter(hit.items()))
+        if args.print_block:
+            sys.stdout.write(text)
+            return 0
+        # The same rule the page enforces: nothing is written while it would not
+        # parse. A draft is unsaved precisely because the author stopped
+        # mid-command often enough that applying one blind would be a way to
+        # break a manuscript from the terminal.
+        why = dmod.imbalance(text)
+        if why:
+            print(
+                f"the draft for {want} does not balance: {why}. Nothing was "
+                f"written. Read it with --print {want} and finish it in the "
+                "editor, where the same check runs on every pause.",
+                file=sys.stderr)
+            return 1
+        build = bmod.build(root, main=main_tex.name)
+        block = build.by_id.get(block_id)
+        if block is None:
+            print(
+                f"block {block_id} is not in the current build, so the draft cannot "
+                f"be spliced. Its text is intact: use --print {block_id} to read it.",
+                file=sys.stderr)
+            return 1
+        smod.splice(block, text, root=root)
+        for (doc, b) in list(held):
+            if b == block_id:
+                dmod.drop(store, doc=doc, block=b)
+        print(f"applied the draft for {block_id} to {block.file}")
+        return 0
+
+    # Which of these blocks still exist? A draft under an id the current build
+    # does not have is not offered by the page at all (it iterates the build's
+    # blocks), so this listing is the only place it is visible. Saying so is the
+    # difference between a recovery path and a pile.
+    try:
+        live = set(bmod.build(root, main=main_tex.name).by_id)
+    except Exception:
+        live = set()
+
+    for (doc, block), text in sorted(held.items()):
+        first = next((ln for ln in text.splitlines() if ln.strip()), "")
+        tag = "" if (not live or block in live) else "  [not in the current build]"
+        print(f"{doc}  {block}  {len(text):>6} chars  {first[:60]}{tag}")
+    return 0
+
+
 def cmd_comment(args: argparse.Namespace) -> int:
     """Append a comment from outside the page: a check's finding, usually."""
     from manuscriptor.server import drain
@@ -626,7 +701,10 @@ def main(argv: list[str] | None = None) -> int:
 
     p_serve = sub.add_parser("serve", help="Serve the manuscript live with margin comments and hot reload.")
     p_serve.add_argument("manuscript", help="Path to the manuscript directory")
-    p_serve.add_argument("--port", type=int, default=0, help="Port (default: pick a free one)")
+    p_serve.add_argument("--port", type=int, default=None,
+                         help="Port (default: this manuscript's own stable port, "
+                              "so drafts and preferences survive a relaunch; "
+                              "--port 0 asks for a temporary one)")
     p_serve.add_argument("--no-window", action="store_true", help="Do not open a window; just serve")
     p_serve.add_argument("--main", help="Main .tex filename")
     p_serve.add_argument("--bib", help="Bibliography filename")
@@ -686,6 +764,16 @@ def main(argv: list[str] | None = None) -> int:
     p_state.add_argument("chat_id", help="The chat id, e.g. c-0007")
     p_state.add_argument("state", choices=["queued", "working", "done", "orphaned"])
     p_state.set_defaults(func=cmd_state)
+
+    p_drafts = sub.add_parser(
+        "drafts", help="Unsaved text the server is holding for this manuscript")
+    p_drafts.add_argument("manuscript", help="Path to the manuscript directory")
+    p_drafts.add_argument("--main", help="Main .tex filename")
+    p_drafts.add_argument("--print", dest="print_block", metavar="BLOCK",
+                          help="Write one draft to stdout")
+    p_drafts.add_argument("--apply", metavar="BLOCK",
+                          help="Splice one draft into the manuscript and forget it")
+    p_drafts.set_defaults(func=cmd_drafts)
 
     p_comment = sub.add_parser("comment", help="Append a comment (a check's finding, usually)")
     p_comment.add_argument("manuscript", help="Path to the manuscript directory")

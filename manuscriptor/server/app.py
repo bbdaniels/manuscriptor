@@ -35,6 +35,8 @@ from manuscriptor.templates.ext import load as _extensions
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 from manuscriptor.server import compile as compile_mod
+from manuscriptor.server import drafts as drafts_mod
+from manuscriptor.server import ports
 from manuscriptor.source import insert as insert_mod
 from manuscriptor.source import splice as splice_mod
 from manuscriptor.source import tree as tree_mod
@@ -124,6 +126,13 @@ class Session:
         return self.build.main_tex.name if self.build is not None else ""
 
     @property
+    def drafts_file(self) -> Path:
+        """Unsaved text, on disk. In the build directory rather than beside the
+        log, because that directory writes its own `.gitignore` and serving a
+        paper must never make `git status` grow."""
+        return drafts_mod.path_for(self.root / "build" / "manuscriptor")
+
+    @property
     def current_ref(self) -> str:
         """The current document's tree identifier (its `rel_main`)."""
         return self.current.rel_main if self.current is not None else self.doc
@@ -201,6 +210,12 @@ class Session:
                 await self.broadcast({"type": "error", "message": str(exc)[:400]})
                 return
             patch = _diff(previous, self.build) if previous else None
+            # Ids are content-derived, so this rebuild renamed every block it
+            # changed. A stored draft left under an old id is a draft nobody
+            # will ever be offered again, which is the failure the store exists
+            # to prevent, so it moves with the rename.
+            if patch and patch.get("renamed") and not self.read_only:
+                drafts_mod.rekey(self.drafts_file, patch["renamed"])
         if patch:
             await self.broadcast(patch)
 
@@ -321,7 +336,28 @@ class Session:
             return {"type": "held", "block": block_id, "reason": str(exc)}
         except splice_mod.BlockLocked as exc:
             return {"type": "held", "block": block_id, "reason": str(exc)}
+        # It is on disk in the manuscript now, so the draft has done its job.
+        self.forget_draft(block_id)
         return {"type": "saved", "block": block_id, "at": chat.now()}
+
+    def keep_draft(self, block_id: str, source: str) -> dict:
+        """Hold unsaved text where a crash cannot take it.
+
+        The page keeps its own copy, but the page is a browser: an ephemeral
+        origin, a window that closes, a server that dies mid-paragraph. Two
+        edits were lost on 2026-07-26 and both had to be read out of WebKit's
+        sqlite by hand. Read-only serving keeps nothing, like everything else.
+        """
+        if self.read_only or not block_id:
+            return {"type": "draft", "block": block_id, "kept": False}
+        drafts_mod.put(self.drafts_file, doc=self.doc, block=block_id, text=source)
+        return {"type": "draft", "block": block_id, "kept": bool(source),
+                "at": chat.now()}
+
+    def forget_draft(self, block_id: str) -> None:
+        if self.read_only or not block_id:
+            return
+        drafts_mod.drop(self.drafts_file, doc=self.doc, block=block_id)
 
     def _todos_frame(self) -> dict:
         todos = build_mod.todos_view(self.log, doc=self.doc)
@@ -555,6 +591,11 @@ def make_app(session: Session) -> web.Application:
                 kind = data.get("type")
                 if kind == "edit":
                     await ws.send_json(await session.on_edit(data.get("block", ""), data.get("source", "")))
+                elif kind == "draft":
+                    # Unsaved text, parked on disk. Not a save: it does not touch
+                    # the manuscript, and it is what survives the window closing.
+                    await ws.send_json(
+                        session.keep_draft(data.get("block", ""), data.get("source", "")))
                 elif kind == "chat":
                     await session.broadcast(await session.on_chat(
                         data.get("block", ""), data.get("body", ""),
@@ -776,7 +817,7 @@ def make_app(session: Session) -> web.Application:
 def serve(
     manuscript_dir: Path,
     *,
-    port: int = 0,
+    port: int | None = None,
     open_window: bool = True,
     main: str | None = None,
     bib: str | None = None,
@@ -789,10 +830,20 @@ def serve(
                       on_switch=on_switch)
     app = make_app(session)
 
+    # A manuscript keeps its own port (server/ports.py). The browser keys storage
+    # by origin, so an ephemeral port threw away the drafts and the colour
+    # preference on every launch, and took the port down with a dying server so
+    # the page's retry loop had nothing to reconnect to. `--port 0` still asks
+    # for an ephemeral one explicitly.
+    want = ports.choose_port(manuscript_dir) if port is None else port
+    if port is None and want == 0:
+        print("the usual port for this manuscript is taken; using a temporary one, "
+              "so drafts in the browser and the colour preference will not carry over")
+
     async def run():
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
+        site = web.TCPSite(runner, "127.0.0.1", want)
         await site.start()
         actual = site._server.sockets[0].getsockname()[1]
         url = f"http://127.0.0.1:{actual}/"

@@ -19,7 +19,7 @@ from pathlib import Path
 from manuscriptor.render import pandoc, postprocess, refs, tikz
 from manuscriptor.source import anchors, blocks as blocks_mod, root
 from manuscriptor.source.flatten import flatten
-from manuscriptor.server import chat, manifest, producers
+from manuscriptor.server import chat, drafts, manifest, producers
 
 
 @dataclass
@@ -140,6 +140,11 @@ def build(
         "queue": queue_view(log, bl, root=manuscript_dir, doc=doc),
         "ticker": ticker_view(log, bl, root=manuscript_dir, doc=doc),
         "todos": todos_view(log, doc=doc),
+        # Unsaved text the server is holding for this document, so a page that
+        # opens after a crash, a relaunch, or a server that died mid-paragraph
+        # is offered the draft instead of the author being told it is "on disk"
+        # somewhere only a debugger can reach.
+        "drafts": drafts.for_doc(drafts.path_for(out), doc),
         "activity": [],
         "stats": {
             "files": len({b.file for b in bl}),
