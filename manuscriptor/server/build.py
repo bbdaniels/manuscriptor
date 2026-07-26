@@ -279,7 +279,22 @@ def evidence_cites(out: Path) -> dict:
         key = c.get("cite_key")
         if not key:
             continue
-        cites[key] = {"status": "missing", "title": c.get("title") or "", "quotes": []}
+        # The fulltext facts travel with the verdict, because "red" covers two
+        # very different situations and the page was reporting neither. A source
+        # with no fulltext could not be read at all, which is a library problem
+        # and what the repair button exists for. A source that WAS read and still
+        # supported nothing is a writing problem, and that sentence belongs on a
+        # review list. Both were rendering as "no evidence loaded ... the
+        # underline stays neutral", while the underline was red and the pass had
+        # in fact finished.
+        cites[key] = {
+            "status": "missing",
+            "title": c.get("title") or "",
+            "quotes": [],
+            "fulltext": bool(c.get("has_fulltext")),
+            "fulltext_chars": int(c.get("fulltext_chars") or 0),
+            "fulltext_source": c.get("fulltext_source") or "",
+        }
     for r in evidence:
         rec = cites.get(r.get("cite_key"))
         if rec is None:

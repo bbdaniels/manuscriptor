@@ -79,6 +79,31 @@ def test_a_key_the_pass_saw_but_could_not_support_is_missing(tmp_path):
     assert b.blob["cites"]["andrabi2023human"]["status"] == "missing"
 
 
+def test_a_red_key_carries_why_it_is_red(tmp_path):
+    """Red covers two very different situations and the page could tell neither.
+
+    A source with no fulltext could not be checked either way, which is a library
+    gap and what the repair button exists for. A source that WAS read and still
+    supported nothing is a claim to revisit. Both reported themselves as "no
+    evidence loaded", which reads as "the pass has not run" on a manuscript where
+    it had just finished.
+    """
+    b = build_with_records(
+        tmp_path,
+        [{"cite_key": "croke2026sickness", "title": "T",
+          "has_fulltext": False, "fulltext_source": "missing", "fulltext_chars": 0},
+         {"cite_key": "andrabi2023human", "title": "U",
+          "has_fulltext": True, "fulltext_source": "zotero", "fulltext_chars": 48000}],
+        [],
+    )
+    unreadable = b.blob["cites"]["croke2026sickness"]
+    unsupported = b.blob["cites"]["andrabi2023human"]
+    assert unreadable["status"] == unsupported["status"] == "missing", "both are red"
+    assert unreadable["fulltext"] is False and unreadable["fulltext_chars"] == 0
+    assert unsupported["fulltext"] is True and unsupported["fulltext_chars"] == 48000
+    assert unreadable["fulltext_source"] == "missing"
+
+
 def test_a_corrupt_record_file_does_not_take_down_the_build(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     out = tmp_path / "build" / "manuscriptor"
