@@ -209,6 +209,7 @@ def plan_citation(
     library=None,
     base: str | None = None,
     key: str | None = None,
+    beside: str | None = None,
 ) -> Plan:
     """Search the library first, then Crossref and OpenAlex, then gate.
 
@@ -223,6 +224,40 @@ def plan_citation(
     stale = _stale(block, base)
     if stale:
         return Plan(kind="citation", blocked=stale)
+
+    # THE BIBLIOGRAPHY FIRST, AND WITHOUT THE GATE.
+    #
+    # The identity gate exists to vet a source the manuscript has never used: a
+    # canonical DOI, Crossref and OpenAlex agreeing, a Zotero record. An entry
+    # already in `references.bib` passed that when it was added, so making the
+    # author search three web services to cite a paper their own paper already
+    # cites is a round trip that can only fail. Reported 2026-07-26, on a key
+    # (`zhang2026ai`) that was in the file the whole time.
+    held_entries = read_bib_entries(bib_path)
+    matches, how = match_bib(held_entries, query)
+    if len(matches) > 1:
+        return Plan(kind="citation", blocked=(
+            f"{len(matches)} entries in your bibliography match that: "
+            + ", ".join(sorted(matches)[:6])
+            + ". Give the cite key of the one you mean."
+        ))
+    if len(matches) == 1:
+        cite_key = matches[0]
+        meta = dict(held_entries[cite_key], key=cite_key)
+        plan = Plan(kind="citation", checks=(Check(
+            "bibliography", True,
+            f"already in {Path(bib_path).name if bib_path else 'your bibliography'} "
+            f"as {cite_key}, found by {how}. Nothing to look up.",
+        ),))
+        plan.cite_key = cite_key
+        write = _citation_write(block, caret, beside, cite_key, root)
+        if isinstance(write, str):
+            plan.blocked = write
+            plan.summary = write
+            return plan
+        plan.writes = (write,)
+        plan.summary = f"{meta.get('title') or cite_key} — {cite_key}, already in your bibliography."
+        return plan
 
     doi, seed, from_library = _candidate_doi(query, net, library)
 
@@ -312,9 +347,12 @@ def plan_citation(
             label=f"an entry appended to {Path(bib_path).name}",
             preview=entry,
         ))
-    snippet = "\\citep{" + cite_key + "}"
-    writes.append(_splice_write(block, caret, snippet, root,
-                                label="the \\citep at your cursor"))
+    write = _citation_write(block, caret, beside, cite_key, root)
+    if isinstance(write, str):
+        plan.blocked = write
+        plan.summary = write
+        return plan
+    writes.append(write)
 
     plan.writes = tuple(writes)
     plan.summary = (
@@ -692,6 +730,9 @@ def handle(data: dict, *, root: Path, build, read_only: bool,
         if kind == "citation":
             plan = plan_citation(
                 query=str(data.get("query") or ""), caret=int(data.get("caret") or 0),
+                # `beside` names a citation the author clicked, which is a target
+                # that needs no caret and cannot be measured wrong.
+                beside=str(data.get("beside") or "") or None,
                 bib_path=bib_path, net=net, library=library, **common)
         elif kind == "value":
             plan = plan_value(
@@ -757,6 +798,149 @@ def _first_failure(checks) -> str:
         if c.blocking and not c.ok:
             return f"{c.name}: {c.detail}"
     return "a check failed"
+
+
+# Commands whose argument is a citation key list. A citation inserted with the
+# caret inside one of these belongs IN it.
+_CITE_COMMANDS = (
+    "cite", "citep", "citet", "citealp", "citealt", "citeauthor", "citeyear",
+    "citenum", "autocite", "parencite", "textcite", "footcite", "fullcite",
+)
+# Commands whose argument is a name or a path, never prose. A citation spliced
+# into one of these breaks it, and breaks it quietly: a mangled `\ref` surfaces
+# as `??` in a render nobody is looking at yet.
+_CLOSED_COMMANDS = (
+    "ref", "autoref", "eqref", "pageref", "cref", "Cref", "nameref",
+    "label", "input", "include", "includegraphics", "bibliography", "url",
+)
+
+_ARG_OPEN_RE = re.compile(r"\\([A-Za-z]+)\*?\s*(?:\[[^\]]*\])?\{")
+
+
+def _enclosing_command(source: str, caret: int) -> tuple[str, int, int] | None:
+    """The command whose braces contain `caret`, as (name, open_brace, close_brace).
+
+    Scans backwards for the nearest unclosed `\\name{` before the caret. Good
+    enough for one level, which is what a citation key list ever is.
+    """
+    depth = 0
+    i = caret - 1
+    while i >= 0:
+        ch = source[i]
+        if ch == "}":
+            depth += 1
+        elif ch == "{":
+            if depth:
+                depth -= 1
+            else:
+                m = None
+                for cand in _ARG_OPEN_RE.finditer(source, max(0, i - 40), i + 1):
+                    if cand.end() == i + 1:
+                        m = cand
+                if m is None:
+                    return None
+                close = source.find("}", i)
+                if close < 0 or close < caret:
+                    return None
+                return m.group(1), i, close
+        i -= 1
+    return None
+
+
+def _citation_write(block, caret, beside, cite_key, root):
+    """The one write a citation makes to the manuscript, or a reason it cannot.
+
+    Where it goes depends on what the author pointed at. `beside` names a citation
+    they clicked on the page, which needs no caret at all; otherwise the caret
+    decides, and inside an existing citation that means joining its key list
+    rather than nesting a second `\\citep` inside the first.
+    """
+    source = getattr(block, "source_text", "") or ""
+    if beside:
+        new_source, note = place_beside_key(source, str(beside), cite_key)
+    else:
+        at = len(source.rstrip()) if caret is None else caret
+        new_source, note = place_citation(source, at, cite_key)
+    if new_source == source:
+        return note or "nothing to write"
+    where = new_source.find(cite_key)
+    return Write(
+        path=Path(getattr(block, "file", "")),
+        kind="splice",
+        label=note or "the \\citep at your cursor",
+        preview=new_source[max(0, where - 70):where + len(cite_key) + 25],
+        context=new_source,
+        block=block,
+        new_source=new_source,
+    )
+
+
+def place_beside_key(source: str, existing_key: str, new_key: str) -> tuple[str, str]:
+    """Add a key to the citation that already cites `existing_key`.
+
+    The point of naming a citation rather than an offset: the author clicked
+    something on the page, so the target is that citation and not a caret they
+    have to place first and trust was recorded. A caret is only trustworthy when
+    the textarea it was measured in had focus, which is the whole "click into the
+    editor, hope, then find the form on another tab" dance this replaces.
+    """
+    if not existing_key:
+        return source, "no citation was named"
+    for m in _ARG_OPEN_RE.finditer(source):
+        if m.group(1) not in _CITE_COMMANDS:
+            continue
+        close = source.find("}", m.end())
+        if close < 0:
+            continue
+        keys = [k.strip() for k in source[m.end():close].split(",")]
+        if existing_key not in keys:
+            continue
+        if new_key in keys:
+            return source, f"{new_key} is already cited there."
+        return (source[:close] + ", " + new_key + source[close:],
+                f"added beside {existing_key}")
+    return source, f"{existing_key} is not cited in this paragraph."
+
+
+def place_citation(source: str, caret: int, cite_key: str) -> tuple[str, str]:
+    """Where a citation actually goes, given where the cursor is.
+
+    Returns the new source and a note (empty when it was an ordinary insertion).
+    The note is the plan's explanation and, on a refusal, the reason nothing was
+    written.
+
+    Three cases, and the first one is why this function exists. The caret inside
+    an existing citation means the author is adding to that citation: on
+    2026-07-26 a literal splice at the caret produced
+    `\\citep{cook2010\\citep{zhang2026ai}}` in a real manuscript, which is not
+    LaTeX and does not render. The caret inside a command whose argument is a
+    label or a path is refused. Everything else gets its own `\\citep`.
+    """
+    at = max(0, min(int(caret if caret is not None else len(source)), len(source)))
+    found = _enclosing_command(source, at)
+
+    if found is not None:
+        name, open_at, close_at = found
+        if name in _CITE_COMMANDS:
+            keys = [k.strip() for k in source[open_at + 1:close_at].split(",")]
+            if cite_key in keys:
+                return source, f"{cite_key} is already cited in this \\{name}."
+            # Snap out of the middle of a key: half a key is a citation to
+            # nothing, and it would compile.
+            edge = at
+            while edge < close_at and source[edge] not in ",}":
+                edge += 1
+            joined = source[:edge] + ", " + cite_key + source[edge:]
+            return joined, f"added to the \\{name} at your cursor"
+        if name in _CLOSED_COMMANDS:
+            return source, (
+                f"the cursor is inside \\{name}{{...}}, whose argument is a name "
+                "rather than prose, so nothing was written. Put the cursor in the "
+                "sentence and try again."
+            )
+
+    snippet = "\\citep{" + cite_key + "}"
+    return source[:at] + snippet + source[at:], ""
 
 
 def _splice_write(block, caret, snippet, root, *, label, preview=None) -> Write:
@@ -964,6 +1148,98 @@ def _rel(path, base) -> str:
 
 _ENTRY_RE = re.compile(r"@(\w+)\s*\{\s*([^,\s]+)\s*,", re.M)
 _DOI_FIELD_RE = re.compile(r"\bdoi\s*=\s*[{\"]\s*([^}\"\n]+)", re.I)
+
+
+def read_bib_entries(bib_path: Path | None) -> dict[str, dict]:
+    """Cite key to the few fields a search needs: doi, title, author, year.
+
+    The same deliberately small scan as `read_bib`, which answers only "which
+    keys are taken". This one exists so a citation the paper ALREADY carries can
+    be found in the bibliography instead of on the internet.
+    """
+    if not bib_path:
+        return {}
+    path = Path(bib_path)
+    if not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    out: dict[str, dict] = {}
+    hits = list(_ENTRY_RE.finditer(text))
+    for i, m in enumerate(hits):
+        end = hits[i + 1].start() if i + 1 < len(hits) else len(text)
+        body = text[m.end():end]
+
+        def field(name: str) -> str:
+            f = re.search(name + r"\s*=\s*[{\"](.*?)[}\"]\s*,?\s*\n", body, re.S | re.I)
+            if not f:
+                return ""
+            # Braces protect capitalisation in BibTeX; they are not part of the text.
+            return re.sub(r"\s+", " ", f.group(1).replace("{", "").replace("}", "")).strip()
+
+        doi = _DOI_FIELD_RE.search(body)
+        out[m.group(2)] = {
+            "doi": (doi.group(1).strip().rstrip(",").strip() if doi else ""),
+            "title": field("title"),
+            "author": field("author"),
+            "year": field("year"),
+        }
+    return out
+
+
+def match_bib(entries: dict[str, dict], query: str) -> tuple[list[str], str]:
+    """Which bibliography entries the query names, and how it named them.
+
+    Tried in order of how sure each rule is, and every rule requires a UNIQUE
+    answer: two entries matching is a question for the author, not a coin toss.
+    The forms are the ones an author actually types. A cite key is first because
+    it is what someone who knows their own bibliography reaches for, and it was
+    not an accepted form at all until 2026-07-26: typing `zhang2026ai` searched
+    Zotero, then Crossref, then failed a relevance check, while the entry sat in
+    `references.bib` the whole time.
+    """
+    q = re.sub(r"\s+", " ", (query or "").strip())
+    if not q or not entries:
+        return [], ""
+    low = q.lower()
+
+    exact = [k for k in entries if k.lower() == low]
+    if len(exact) == 1:
+        return exact, "its cite key"
+
+    m = _DOI_RE.search(q)
+    if m:
+        want = _norm_doi(m.group(0))
+        by_doi = [k for k, e in entries.items() if e.get("doi") and _norm_doi(e["doi"]) == want]
+        if len(by_doi) == 1:
+            return by_doi, "its DOI"
+        if len(by_doi) > 1:
+            return by_doi, "its DOI"
+        return [], ""          # a DOI naming nothing here is a new source
+
+    prefix = [k for k in entries if k.lower().startswith(low)]
+    if len(prefix) == 1:
+        return prefix, "the start of its cite key"
+
+    year = re.search(r"\b(19|20)\d{2}\b", q)
+    if year:
+        words = [w for w in re.findall(r"[A-Za-z]{3,}", low)]
+        by_author = [
+            k for k, e in entries.items()
+            if e.get("year") == year.group(0)
+            and any(w in (e.get("author") or "").lower() for w in words)
+        ]
+        if len(by_author) == 1:
+            return by_author, "an author and the year"
+        if len(by_author) > 1:
+            return by_author, "an author and the year"
+
+    by_title = [k for k, e in entries.items() if low in (e.get("title") or "").lower()]
+    if by_title:
+        return by_title, "its title"
+    return [], ""
 
 
 def read_bib(bib_path: Path | None) -> dict[str, str]:

@@ -767,3 +767,186 @@ def test_the_route_is_mounted_on_the_app(repo):
     app = make_app(FakeSession(repo / "latex", a_build(repo)))
     routes = {(r.method, r.resource.canonical) for r in app.router.routes()}
     assert ("POST", "/insert") in routes
+
+
+# ------------------------------------------------- where a citation may be put
+#
+# Reported 2026-07-26, on the author's own manuscript: inserting a citation with
+# the cursor inside an existing one produced
+#
+#     \citep{cook2010\citep{zhang2026ai}}
+#
+# which is not LaTeX, does not render, and had to be repaired by hand. The caret
+# offset was honoured literally, with no regard for what sat at that offset. A
+# citation dropped where a citation already is belongs IN it: that is what
+# "insert Zhang after Cook" means.
+
+
+@pytest.mark.parametrize(
+    "source,caret,expect",
+    [
+        # Inside a single-key citation, right after the key.
+        (r"formats \citep{cook2010} and more", len(r"formats \citep{cook2010"),
+         r"formats \citep{cook2010, zhang2026ai} and more"),
+        # Inside a multi-key list, after the second key.
+        (r"see \citep{a2001, b2002, c2003}.", len(r"see \citep{a2001, b2002"),
+         r"see \citep{a2001, b2002, zhang2026ai, c2003}."),
+        # Right before the closing brace.
+        (r"see \citep{a2001}.", len(r"see \citep{a2001"),
+         r"see \citep{a2001, zhang2026ai}."),
+        # In plain prose: the ordinary case, an own command.
+        (r"a sentence ends here.", len(r"a sentence ends here."),
+         r"a sentence ends here.\citep{zhang2026ai}"),
+        # Other citation commands count too.
+        (r"as \citet{a2001} showed", len(r"as \citet{a2001"),
+         r"as \citet{a2001, zhang2026ai} showed"),
+    ],
+)
+def test_a_citation_lands_where_a_reader_would_expect(source, caret, expect):
+    new, note = ins.place_citation(source, caret, "zhang2026ai")
+    assert new == expect
+    assert r"\citep{" not in new.replace(r"\citep{", "", 1) or "join" in note or note == "", note
+
+
+@pytest.mark.parametrize("caret", [len(r"formats \citep{coo"), len(r"formats \citep{c")])
+def test_a_caret_inside_a_key_does_not_split_the_key(caret):
+    """Half a key is a citation to nothing, and it would compile."""
+    source = r"formats \citep{cook2010} and more"
+    new, _ = ins.place_citation(source, caret, "zhang2026ai")
+    assert "cook2010" in new and "coo," not in new and "cook," not in new
+    assert new == r"formats \citep{cook2010, zhang2026ai} and more"
+
+
+def test_a_key_already_cited_there_is_not_added_twice():
+    source = r"formats \citep{cook2010, zhang2026ai} and more"
+    new, note = ins.place_citation(source, len(r"formats \citep{cook2010"), "zhang2026ai")
+    assert new == source
+    assert "already" in note.lower()
+
+
+def test_a_citation_is_never_nested_inside_a_citation():
+    """The exact shape that reached the manuscript."""
+    source = r"formats \citep{cook2010}"
+    new, _ = ins.place_citation(source, len(r"formats \citep{cook2010"), "zhang2026ai")
+    assert new.count(r"\citep{") == 1
+    assert r"cook2010\citep" not in new
+
+
+@pytest.mark.parametrize("cmd", ["ref", "label", "input", "includegraphics"])
+def test_a_citation_is_refused_inside_a_command_that_cannot_hold_one(cmd):
+    """`\\ref{fig:one}` is an argument, not prose. Splicing a citation into it
+    breaks a cross-reference and the failure would show up as a `??` much later."""
+    source = "see \\%s{fig:one} for this" % cmd
+    caret = source.index("fig:one") + 3
+    new, note = ins.place_citation(source, caret, "zhang2026ai")
+    assert new == source, "nothing may be written into that argument"
+    assert note, "a refusal has to say why"
+    assert cmd in note
+
+
+# --------------------------------------------- the bibliography, before the web
+
+BIB = """
+@article{zhang2026ai,
+  title={Artificial intelligence for clinical competency assessment: {A} scoping review},
+  author={Zhang, Wenjia and Daniels, Benjamin and Mita, Carol},
+  journal={JMIR Medical Education},
+  year={2026},
+  doi={10.2196/preprints.92826}
+}
+@article{cook2010,
+  title={Computerized virtual patients in health professions education},
+  author={Cook, David A and Erwin, Patricia J and Triola, Marc M},
+  year={2010},
+  doi={10.1097/ACM.0b013e3181d6c319}
+}
+@article{barrows1993,
+  title={An overview of the uses of standardized patients},
+  author={Barrows, Howard S},
+  year={1993}
+}
+"""
+
+
+@pytest.fixture()
+def bib(tmp_path):
+    p = tmp_path / "references.bib"
+    p.write_text(BIB, encoding="utf-8")
+    return p
+
+
+def test_the_bibliography_is_read_with_the_fields_a_search_needs(bib):
+    entries = ins.read_bib_entries(bib)
+    assert set(entries) == {"zhang2026ai", "cook2010", "barrows1993"}
+    z = entries["zhang2026ai"]
+    assert z["year"] == "2026" and "Zhang" in z["author"]
+    assert z["doi"] == "10.2196/preprints.92826"
+    # BibTeX braces protect capitalisation; they are not part of the title.
+    assert "{" not in z["title"] and "A scoping review" in z["title"]
+
+
+@pytest.mark.parametrize(
+    "query,expect",
+    [
+        ("zhang2026ai", "zhang2026ai"),          # the cite key, which is what an author types
+        ("ZHANG2026AI", "zhang2026ai"),
+        ("zhang", "zhang2026ai"),                # a unique prefix
+        ("10.2196/preprints.92826", "zhang2026ai"),
+        ("https://doi.org/10.2196/preprints.92826", "zhang2026ai"),
+        ("Zhang 2026", "zhang2026ai"),           # an author and a year
+        ("scoping review", "zhang2026ai"),       # part of the title
+        ("Cook 2010", "cook2010"),
+    ],
+)
+def test_a_citation_the_paper_already_has_is_found_in_the_bibliography(bib, query, expect):
+    """None of these should cost a network round trip.
+
+    Reported 2026-07-26: inserting `zhang2026ai`, which was already in
+    `references.bib` with a DOI, meant typing a search query, waiting on Zotero,
+    Crossref and OpenAlex, and passing an identity gate whose purpose is vetting a
+    source the manuscript has never used. The cite key was not even an accepted
+    form, so the most natural thing to type failed outright.
+    """
+    keys, how = ins.match_bib(ins.read_bib_entries(bib), query)
+    assert keys == [expect], f"{query!r} matched {keys} by {how!r}"
+    assert how, "the plan has to be able to say how it found it"
+
+
+def test_an_ambiguous_query_asks_rather_than_guessing(bib):
+    keys, _ = ins.match_bib(ins.read_bib_entries(bib), "patients")
+    assert len(keys) > 1, "two titles contain it, so this must not resolve to one"
+
+
+def test_a_doi_that_is_not_in_the_bibliography_is_a_new_source(bib):
+    keys, _ = ins.match_bib(ins.read_bib_entries(bib), "10.1234/not.here")
+    assert keys == [], "a DOI naming nothing here must fall through to the catalogues"
+
+
+# --------------------------------------- a citation named, rather than a caret
+
+
+def test_a_key_can_be_added_beside_a_citation_the_author_clicked():
+    """The point of naming a citation instead of an offset: no caret to place, no
+    focused textarea to depend on, and nothing to measure wrong."""
+    source = (
+        "formats \\citep{cook2010}\n"
+        "and programs \\citep{barrows1993, king2019}."
+    )
+    new, note = ins.place_beside_key(source, "barrows1993", "zhang2026ai")
+    assert new == (
+        "formats \\citep{cook2010}\n"
+        "and programs \\citep{barrows1993, king2019, zhang2026ai}."
+    )
+    assert "barrows1993" in note
+
+
+def test_adding_beside_a_key_that_is_not_there_is_refused():
+    new, note = ins.place_beside_key(r"formats \citep{cook2010}", "nope2020", "zhang2026ai")
+    assert new == r"formats \citep{cook2010}"
+    assert "not cited" in note
+
+
+def test_adding_beside_a_key_that_is_already_there_changes_nothing():
+    source = r"formats \citep{cook2010, zhang2026ai}"
+    new, note = ins.place_beside_key(source, "cook2010", "zhang2026ai")
+    assert new == source and "already" in note
