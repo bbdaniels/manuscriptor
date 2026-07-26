@@ -32,7 +32,9 @@
 
   var TITLES = {
     citation: ['Insert a citation',
-      'Your library is searched first, then Crossref and OpenAlex. Nothing is inserted on a key that fails the identity gate.'],
+      'Your bibliography is searched first: a source the paper already cites goes in with no lookup and no gate, '
+      + 'named by its cite key, its DOI, an author and year, or part of its title. Anything new is looked up in '
+      + 'your library, then Crossref and OpenAlex, and is not inserted if the identity checks fail.'],
     value: ['Insert a number',
       'There is no field for a value. Name the quantity and the expression that computes it, and the code that writes it is written for you.'],
     exhibit: ['Insert an exhibit',
@@ -44,6 +46,10 @@
      in the file, and the server refuses rather than guessing. */
   var caret = null;
   var pendingKind = null;
+  /* The citation the author clicked, when the form was opened from one. A
+     named citation is a target that needs no caret and cannot be measured
+     wrong, which is the whole point of offering it. */
+  var pendingBeside = null;
   var host = null;
 
   function esc(s) {
@@ -88,7 +94,13 @@
        off rendered headings would be a second copy of it that drifts. The click
        that opens the form is the one moment it is unambiguous, so it is read
        here and nowhere else. */
-    if (key.indexOf('insert:') === 0) pendingKind = KINDS[key] || key.split(':')[1];
+    if (key.indexOf('insert:cite:beside:') === 0) {
+      pendingKind = 'citation';
+      pendingBeside = key.slice('insert:cite:beside:'.length);
+    } else if (key.indexOf('insert:') === 0) {
+      pendingKind = KINDS[key] || key.split(':')[1];
+      pendingBeside = null;
+    }
   }, true);
   document.addEventListener('keyup', function (e) {
     if (e.target && e.target.matches && e.target.matches('textarea.src')) remember(true);
@@ -186,7 +198,10 @@
     var b = ctx.block(caret && caret.block);
     var where = b ? (b.parent_heading || b.file || 'this paragraph') : 'this paragraph';
     var html = '<p class="note">Into <b>' + esc(where) + '</b>' +
-      (kind === 'exhibit' ? ', as a new float after it.' : ', at your cursor.') + '</p>';
+      (kind === 'exhibit' ? ', as a new float after it.'
+        : (kind === 'citation' && pendingBeside)
+          ? ', beside <b>' + esc(pendingBeside) + '</b>. No cursor needed.'
+          : ', at your cursor.') + '</p>';
 
     if (kind === 'citation') {
       html += field('query', 'A title, an author and year, or a DOI',
@@ -313,7 +328,10 @@
       caret: at.known ? at.at : at.base.length,
       base: at.base
     };
-    if (kind === 'citation') payload.query = val('query');
+    if (kind === 'citation') {
+      payload.query = val('query');
+      if (pendingBeside) payload.beside = pendingBeside;
+    }
     else {
       payload.key = val('key');
       payload.expression = val('expression');

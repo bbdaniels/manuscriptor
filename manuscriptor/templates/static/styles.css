@@ -89,7 +89,13 @@ body {
    IS the top bar, so hide the decorative fake dots and inset past the real
    traffic lights. Only in the app (the shell adds `.ms-native-titlebar`); a
    browser or the static export keeps its own faux title bar. */
-.ms-native-titlebar .titlebar { padding-left: 78px; padding-top: .35rem; padding-bottom: .35rem; }
+/* The inset is AppKit's geometry, not ours, so the shell measures the real
+   window-button frames and sets `--ms-titlebar-inset` on the root. The fallback
+   is the ordinary case (three buttons, no leading item) so a page that paints
+   before the shell has spoken does not jump. Hardcoding it was wrong twice: a
+   document proxy icon sat on top of the row at x 81-99 on macOS 26, and in full
+   screen the buttons are gone and the row still paid 78px for them. */
+.ms-native-titlebar .titlebar { padding-left: var(--ms-titlebar-inset, 78px); padding-top: .35rem; padding-bottom: .35rem; }
 .ms-native-titlebar .titlebar .dots { display: none; }
 .titlebar .name { font-size: .82rem; color: var(--muted); font-weight: 500; }
 .titlebar .path { font-family: var(--mono); font-size: .74rem; color: var(--faint); }
@@ -155,11 +161,35 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 
 /* Each column owns its own scroll. min-height:0 is what actually lets a grid
    child scroll rather than stretch its parent. */
-.cols { display: grid; grid-template-columns: 190px minmax(0, 1fr) minmax(0, 29rem); flex: 1; min-height: 0; }
-@media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } .rail { min-width: 0; display: none; } }
+/* Fluid rather than fixed: the inspector is deliberately wide (it shows an R
+   model call beside a regression table) but it is the track that can afford to
+   give, so it clamps instead of holding 29rem while the manuscript starves. The
+   measure needs ~39rem — 34rem of text plus the pin gutter — and this holds all
+   three columns down to about 1130px. Narrower than that is the responsive
+   section at the foot of this file. `position: relative` is for the rail, which
+   overlays rather than restacks once it is no longer a column. */
+.cols { display: grid; grid-template-columns: var(--rail-w) var(--doc-w) var(--insp-w); flex: 1; min-height: 0; position: relative; }
+/* The two outer tracks are variables so the grid is declared ONCE and every
+   state (rail hidden, narrow window) is a width rather than a second, competing
+   track list. Track lists in a media query and in an attribute rule fight on
+   specificity and the wider selector loses whatever the source order; two
+   variables cannot fight, because only one of them is ever declared twice. */
+/* The manuscript column is sized to the measure it is allowed to have, not to
+   whatever is left over, and the inspector takes the surplus. Measured at 1280:
+   a 544px measure was sitting in a 717px column, so 173px of the window was
+   empty gutter on either side of the prose while the panel that wants width (an
+   R model call beside a regression table) was clamped at 384. 38.2rem is exactly
+   the measure plus its two paddings, so the gutters are the paddings and nothing
+   more. The inspector keeps a 20rem floor, which is what decides the split on a
+   narrow window. */
+.app {
+  --rail-w: clamp(150px, 14vw, 190px);
+  --doc-w: minmax(0, 38.2rem);
+  --insp-w: minmax(20rem, 1fr);
+}
 
 /* ---------- left rail ---------- */
-.rail { min-height: 0; border-right: 1px solid var(--rule); background: var(--sunken); padding: 1rem .85rem; display: flex; flex-direction: column; gap: 1.4rem; overflow: auto; }
+.rail { grid-column: 1; min-height: 0; border-right: 1px solid var(--rule); background: var(--sunken); padding: 1rem .85rem; display: flex; flex-direction: column; gap: 1.4rem; overflow: auto; }
 .rail h3 { font-size: .66rem; text-transform: uppercase; letter-spacing: .09em; color: var(--faint); margin: 0 0 .5rem; font-weight: 600; }
 .rail h3 .n { float: right; font-family: var(--mono); letter-spacing: 0; }
 .outline { display: flex; flex-direction: column; gap: .1rem; }
@@ -188,7 +218,7 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 .ev time { display: block; font-family: var(--mono); font-size: .64rem; color: var(--faint); }
 
 /* ---------- manuscript ---------- */
-.doc { min-width: 0; overflow: auto; min-height: 0; padding: 2rem 1.6rem 3rem; padding-right: 3.4rem; border-right: 1px solid var(--rule); }
+.doc { grid-column: 2; min-width: 0; overflow: auto; min-height: 0; padding: 2rem 1.6rem 3rem; padding-right: 2.6rem; border-right: 1px solid var(--rule); }
 /* 34rem at the 17px body lands the measure near 72 characters a line. The
    38rem/16px original measured 85 to 90, which is past what an afternoon of
    reading should be asked to track (2026-07-22 audit). */
@@ -218,7 +248,13 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 @media (max-width: 1240px) { .blk .tag { display: none; } }
 .blk.is-heading { font-weight: 600; cursor: pointer; }
 .blk.is-locked { cursor: not-allowed; }
-.blk.is-stale { box-shadow: inset 3px 0 0 var(--paraphrase); }
+/* Nothing marks a block stale any more, and nothing should: the document is
+   patched as changes land, including for the block being typed into, so there is
+   no held-back render to advertise. The rule that used to say so was invisible
+   on exactly the block most likely to need it (the front matter carries no
+   `.blk`), which is how a deferred patch went unexplained on 2026-07-26. What
+   remains of that guard is the save refusing a stale splice, which says so in
+   words at the moment it matters. */
 
 /* clickable spans inside prose */
 .cite, .val { cursor: pointer; border-radius: 2px; padding: 0 .05em; }
@@ -256,7 +292,25 @@ table.mini th:first-child, table.mini td:first-child { text-align: left; }
 @media (max-width: 1240px) { .pin { right: -1.2rem; } }
 
 /* ---------- inspector ---------- */
-.insp { min-width: 0; display: flex; flex-direction: column; min-height: 0; background: var(--surface); overflow: hidden; }
+.insp { grid-column: 3; min-width: 0; display: flex; flex-direction: column; min-height: 0; background: var(--surface); overflow: hidden; position: relative; }
+/* The drag handle for the manuscript/inspector divide. It sits on the
+   inspector's own left edge rather than in a grid track of its own, so the
+   three-column contract is untouched and there is no fourth thing to place.
+   Six pixels wide with a two pixel visible line: a one pixel target is a
+   thing you hunt for. */
+.divider { position: absolute; top: 0; bottom: 0; left: -3px; width: 6px; z-index: 24;
+  cursor: col-resize; background: transparent; }
+.divider::after { content: ""; position: absolute; inset: 0 2px; background: transparent; }
+.divider:hover::after, .divider:focus-visible::after, .app[data-dragging] .divider::after {
+  background: var(--accent); }
+.divider:focus-visible { outline: none; }
+/* Once the reader has set the divide, the manuscript column takes the
+   surplus instead of the inspector, or a narrowed inspector would leave a
+   dead band with nothing in it. */
+.app[data-split="user"] { --doc-w: minmax(0, 1fr); }
+/* No text selection while dragging: a drag across the prose would otherwise
+   highlight half the abstract on the way. */
+.app[data-dragging] { user-select: none; cursor: col-resize; }
 .insp-head { padding: .85rem 1rem .6rem; border-bottom: 1px solid var(--rule); flex: none; }
 .eyebrow { display: flex; align-items: center; gap: .45rem; font-size: .64rem; text-transform: uppercase; letter-spacing: .09em; font-weight: 600; color: var(--faint); }
 .chip { font-family: var(--ui); font-size: .62rem; letter-spacing: .04em; padding: .1rem .4rem; border-radius: 3px; border: 1px solid currentColor; }
@@ -556,3 +610,54 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    bottom of its own card is not a layout the panel should be able to produce.
    Cards keep their height; the panel scrolls. */
 .insp-body > * { flex: 0 0 auto; }
+
+/* ==========================================================================
+   NARROW WINDOWS — every width override lives here, last in the file
+   ==========================================================================
+
+   Two rules govern this section, both learned the hard way.
+
+   **A width query must come after everything it overrides.** A media query adds
+   no specificity, so a plain rule further down the file beats it on source
+   order alone. The old `@media (max-width: 1000px)` sat three lines above
+   `.rail { display: flex }` and lost to it, so a narrow window got a
+   full-width rail it was trying to hide. Anything width-conditional belongs
+   below this line, never beside the rule it modifies.
+
+   **Narrow means one column goes, never that they stop being columns.** The
+   interface is three columns with three independent scrolls. Restacking them
+   into full-width bands (which is what the old rule did, being inherited from
+   a static web mockup) leaves the manuscript a strip and the app unusable
+   rather than degraded. So: the rail goes first, because it is navigation and
+   the other two are the work; and it comes back as an overlay, because a
+   third of a 900px window is not a column to spend on an outline. */
+
+/* The rail hidden on purpose, at any width. `data-rail` is set by the viewer's
+   toggle, which reads what is actually on screen rather than the attribute, so
+   one control means "hide it" when it is a column and "show it" when it is not. */
+.app[data-rail="off"] { --rail-w: 0px; }
+.app[data-rail="off"] .rail { display: none; }
+
+@media (max-width: 1130px) {
+  /* Below the width that holds all three, the rail is no longer a column: it is
+     hidden, and toggling it on floats it over the manuscript. A third of a
+     1000px window is not a column to spend on an outline. */
+  .app { --rail-w: 0px; }
+  .rail { display: none; }
+  .app[data-rail="on"] { --rail-w: 0px; }
+  .app[data-rail="on"] .rail {
+    display: flex; position: absolute; top: 0; bottom: 0; left: 0;
+    width: 12.5rem; z-index: 26;
+    box-shadow: 6px 0 22px rgb(0 0 0 / .34);
+  }
+}
+
+@media (max-width: 900px) {
+  /* The wide right padding is the pin gutter. At this width it is a fifth of the
+     reading column, and a pin at right:-1.2rem still clears the text at 2rem.
+     The inspector needs no rule here: its `clamp` floors at 20rem, which is
+     what keeps a source editor wide enough to write LaTeX in. Capping it lower
+     starved the manuscript instead -- measured at 720px, the inspector took 384
+     to the manuscript's 336 before this rule came out. */
+  .doc { padding-left: 1.1rem; padding-right: 2rem; }
+}

@@ -303,6 +303,185 @@ def test_status_colours_do_not_rotate_with_the_hue():
 
 
 # --------------------------------------------------------------------------
+# the layout at every window width
+# --------------------------------------------------------------------------
+
+
+def css_rules_in_context() -> list[tuple[str, str, int, str | None]]:
+    """(selector, body, offset, enclosing media condition) for every rule.
+
+    `css_rules()` above cannot answer the question these tests ask, which is
+    about ORDER: a media query adds no specificity, so a plain rule appearing
+    later in the file silently beats an override written inside one. Knowing the
+    offset and the enclosing query is what makes that checkable.
+    """
+    css = COMMENT_RE.sub("", STYLES.read_text(encoding="utf-8"))
+    out: list[tuple[str, str, int, str | None]] = []
+    i, n = 0, len(css)
+    media: str | None = None
+    media_end = -1
+    while i < n:
+        brace = css.find("{", i)
+        if brace < 0:
+            break
+        head = css[i:brace].strip()
+        if head.startswith("@"):
+            depth, k = 1, brace + 1
+            while k < n and depth:
+                if css[k] == "{":
+                    depth += 1
+                elif css[k] == "}":
+                    depth -= 1
+                k += 1
+            if head.startswith("@media"):
+                media, media_end = head[len("@media"):].strip(), k
+                i = brace + 1          # walk into it: its rules are what matter
+            else:
+                i = k                  # @keyframes and friends carry no rules
+            continue
+        close = css.find("}", brace)
+        if close < 0:
+            break
+        # The `}` that ends a media block is not consumed by the walk above, so
+        # it arrives glued to the front of the next selector. Left in, that
+        # selector matches nothing and every same-selector check below silently
+        # passes: `.rail` inside the query never met the `.rail` after it.
+        head = head.rsplit("}", 1)[-1].strip()
+        enclosing = media if brace < media_end else None
+        out.append((head, css[brace + 1:close], brace, enclosing))
+        i = close + 1
+    return out
+
+
+def declared(body: str) -> dict[str, str]:
+    props: dict[str, str] = {}
+    for piece in body.split(";"):
+        if ":" in piece:
+            name, _, value = piece.partition(":")
+            props[name.strip()] = value.strip()
+    return props
+
+
+def test_the_context_parser_sees_the_media_queries_it_claims_to():
+    rules = css_rules_in_context()
+    assert any(m and "width" in m for _, _, _, m in rules), "no width query parsed"
+    assert any(m is None for _, _, _, m in rules), "no plain rules parsed"
+    assert any(s == ".cols" for s, _, _, _ in rules), ".cols was not parsed"
+    # The rule immediately after a media block is the one the walk can lose.
+    for sel, _, _, _ in rules:
+        assert "}" not in sel, f"{sel!r} carries a brace: the walk lost a block"
+    assert sum(1 for s, _, _, _ in rules if s == ".rail") >= 2, (
+        "both the plain .rail rule and its responsive override must be seen, or "
+        "the source-order check below is vacuous"
+    )
+
+
+def track_count(value: str) -> int:
+    """Top-level tracks in a grid-template-columns value, so the commas inside
+    minmax() and clamp() are not read as track separators."""
+    tracks, buf, depth = [], "", 0
+    for ch in value:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if depth == 0 and ch.isspace():
+            if buf:
+                tracks.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    if buf:
+        tracks.append(buf)
+    return len(tracks)
+
+
+def test_the_columns_never_collapse_into_a_stack():
+    # Three columns with three independent scrolls is the interface. Restacking
+    # them turns a 970px window into three full-width bands, each scrolling
+    # separately, with the manuscript reduced to a strip: the app is unusable
+    # below the threshold rather than degraded. Narrow means one column goes,
+    # never that they stop being columns.
+    grids = [
+        (sel, declared(body)["grid-template-columns"], media)
+        for sel, body, _, media in css_rules_in_context()
+        if ".cols" in sel and "grid-template-columns" in declared(body)
+    ]
+    assert grids, "nothing declares the column layout"
+    for sel, value, media in grids:
+        assert track_count(value) == 3, (
+            f"{sel!r}{' in @media' + media if media else ''} declares "
+            f"{track_count(value)} tracks: {value!r}"
+        )
+    # The states are widths of the two outer tracks, not competing track lists,
+    # so no state can restack the grid. A width that is not one single track
+    # would put the grid back in play.
+    widths = [
+        (sel, name, value)
+        for sel, body, _, _ in css_rules_in_context()
+        for name, value in declared(body).items()
+        if name in ("--rail-w", "--insp-w")
+    ]
+    assert len(widths) >= 3, "the column widths are not being read as variables"
+    for sel, name, value in widths:
+        assert track_count(value) == 1, (
+            f"{sel!r} sets {name} to {track_count(value)} tracks: {value!r}"
+        )
+
+
+def test_a_width_query_override_is_not_beaten_by_a_later_rule():
+    # The trap that made the narrow layout fail twice over: `.rail{display:none}`
+    # inside `@media (max-width:1000px)` sat three lines ABOVE `.rail{display:
+    # flex}`. Equal specificity, later wins, so the rail was never hidden and a
+    # narrow window got the stack AND a full-width rail. Responsive overrides
+    # therefore live at the end of the file, after everything they override.
+    rules = css_rules_in_context()
+    for sel, body, pos, media in rules:
+        if not (media and "width" in media):
+            continue
+        props = set(declared(body))
+        for other_sel, other_body, other_pos, other_media in rules:
+            if other_media or other_pos < pos:
+                continue
+            if other_sel != sel:
+                continue
+            clash = props & set(declared(other_body))
+            assert not clash, (
+                f"@media{media} sets {sorted(clash)} on {sel!r}, but a plain "
+                f"{sel!r} rule later in the file (offset {other_pos}) sets the "
+                "same property and wins on source order"
+            )
+
+
+def test_the_titlebar_inset_is_a_variable_the_shell_can_measure_into():
+    # The page's own title row runs up under the real macOS title bar, so it has
+    # to start clear of the traffic lights. That geometry belongs to AppKit: a
+    # hardcoded guess was already wrong twice (an 18px document proxy icon
+    # landed on top of the row on macOS 26, and full screen hides the buttons
+    # entirely and still paid the inset).
+    insets = [
+        (sel, declared(body)["padding-left"])
+        for sel, body, _, _ in css_rules_in_context()
+        if "ms-native-titlebar" in sel and "padding-left" in declared(body)
+    ]
+    assert insets, "nothing insets the page's title row past the traffic lights"
+    for sel, value in insets:
+        assert "var(--ms-titlebar-inset" in value, (
+            f"{sel!r} hardcodes the inset as {value!r}; it must read the "
+            "variable the shell measures"
+        )
+
+
+def test_the_rail_can_be_toggled_out_of_the_way():
+    css = STYLES.read_text(encoding="utf-8")
+    js = VIEWER.read_text(encoding="utf-8")
+    page = render(ms=fixture_blob())
+    assert 'data-act="rail:toggle"' in page, "no control hides or shows the rail"
+    assert "data-rail" in css, "the stylesheet does not honour a rail state"
+    assert "rail:toggle" in js, "the viewer does not handle the rail toggle"
+
+
+# --------------------------------------------------------------------------
 # viewer.js, loaded under node
 # --------------------------------------------------------------------------
 
@@ -321,6 +500,179 @@ def node_call(fn: str, *args):
     )
     assert p.returncode == 0, p.stderr
     return json.loads(p.stdout)
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_an_edit_to_a_block_the_build_no_longer_has_is_held_not_dropped():
+    """The branch that cost an author his abstract, 2026-07-26.
+
+    Ids are content-derived, so the first save renames the block being typed
+    into. The old code answered an unknown block with a bare `return`: no send,
+    no held state, nothing on screen. Every keystroke of a continuous burst after
+    the first save went into a draft under a dead id and never reached disk.
+    """
+    d = node_call("saveDecision", "some new text", None, {"ok": True})
+    assert d["action"] == "held", "an unknown block must be reported, never skipped"
+    assert d["reason"], "a held state with no reason is the same silence"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize(
+    "text,block,validity,want",
+    [
+        (None, {"source": "x"}, None, "none"),
+        ("x", {"source": "x"}, {"ok": True}, "clean"),
+        ("y", {"source": "x", "editable": False}, {"ok": True}, "none"),
+        ("y", {"source": "x"}, {"ok": False, "reason": "unbalanced"}, "held"),
+        ("y", {"source": "x"}, {"ok": True}, "send"),
+    ],
+)
+def test_the_save_decision_covers_every_other_branch(text, block, validity, want):
+    assert node_call("saveDecision", text, block, validity)["action"] == want
+
+
+def test_the_open_editor_reads_its_block_id_from_the_dom():
+    """A captured id is what went stale: the panel is deliberately not rebuilt
+    while its editor has focus, so nothing re-ran the closure that held it."""
+    js = VIEWER.read_text(encoding="utf-8")
+    body = js[js.index("function wireInspector"):js.index("function rememberCaret")]
+    assert "var cur = function () { return src.getAttribute('data-block'); }" in body, (
+        "the editor must resolve its block id from the element, not capture it"
+    )
+    for handler in ("input", "blur"):
+        seg = body[body.index("addEventListener('" + handler + "'"):]
+        seg = seg[:seg.index("});")]
+        assert "cur()" in seg, f"the {handler} handler must read the live id"
+
+    # And the rename must maintain the attribute the editor reads.
+    renames = js[js.index("function applyRenames"):js.index("function applyBlockHtml")]
+    assert "data-block" in renames, "a rename must re-key the open editor"
+    assert "S.saveFor" in renames, "a rename must re-key the pending save"
+
+
+CITES = {
+    "green": {"status": "verbatim"},
+    "amber": {"status": "paraphrase"},
+    "red": {"status": "missing"},
+}
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize(
+    "keys,want",
+    [
+        (["green"], "verbatim"),
+        (["amber"], "para"),
+        (["red"], "miss"),
+        (["unseen"], ""),
+        (["green", "green"], "verbatim"),
+        (["green", "unseen"], "verbatim"),
+        # The stack that shipped the wrong colour: the first key was supported
+        # and a later one was not, and the whole parenthetical read green.
+        (["green", "red"], "miss"),
+        (["green", "amber"], "para"),
+        (["amber", "red"], "miss"),
+        (["red", "green"], "miss"),
+    ],
+)
+def test_a_citation_stack_takes_its_weakest_status(keys, want):
+    assert node_call("citeStatusClass", keys, CITES) == want
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize(
+    "rec,want",
+    [
+        (None, "none"),
+        ({}, "none"),
+        ({"status": "verbatim", "quotes": [{"text": "q"}], "fulltext": True}, "supported"),
+        # Read, and nothing supported the claim. This is the review case.
+        ({"status": "missing", "quotes": [], "fulltext": True}, "unsupported"),
+        # Seen, but there was nothing to read. A library gap, not a writing one.
+        ({"status": "missing", "quotes": [], "fulltext": False}, "unreadable"),
+    ],
+)
+def test_a_red_citation_says_which_kind_of_red_it_is(rec, want):
+    """"Missing" covers two situations and the panel described a third.
+
+    A key with no fulltext could not be checked either way, which is a library
+    gap and what the repair button is for. A key that WAS read and supported
+    nothing is a claim to revisit. Both rendered as "no evidence loaded ... the
+    underline stays neutral" while the underline was red and the pass had
+    finished, which is what sent the author asking why finished passes leave
+    citations unloaded.
+    """
+    assert node_call("evidenceState", rec) == want
+
+
+def test_the_render_is_never_held_back_from_the_block_being_typed_in():
+    """Behaviour 3 protects the caret, and the caret is in the inspector.
+
+    Deferring the DOCUMENT patch for a focused block protected nothing (the
+    caret was never in the rendered paragraph) and cost the author the thing
+    they were watching for: their own sentence appearing in the manuscript. What
+    waits for the blur is the panel rebuild, which really does replace the
+    textarea.
+    """
+    js = VIEWER.read_text(encoding="utf-8")
+    patch = js[js.index("function onPatch"):js.index("function flushDeferred")]
+    assert "S.deferredPatches" not in js, "the document patch must not be deferred"
+    assert "deferredPanels" in patch, "the panel rebuild is what waits for the blur"
+    # The apply must not sit behind a focus test.
+    apply_line = patch.index("applyBlockHtml(id, blocks[raw])")
+    focus_line = patch.index("if (id === S.focusedBlock)")
+    assert apply_line < focus_line, "the block is applied before focus is considered"
+
+
+def test_the_manuscript_column_is_bounded_and_the_inspector_takes_the_surplus():
+    """Measured at 1280 before this: a 544px measure inside a 717px column, so
+    173px of the window was empty gutter while the panel that wants width was
+    clamped at 384."""
+    widths = {
+        name: value
+        for sel, body, _, _ in css_rules_in_context()
+        for name, value in declared(body).items()
+        if name in ("--doc-w", "--insp-w") and sel == ".app"
+    }
+    assert "rem" in widths["--doc-w"], "the manuscript column must be bounded"
+    assert "1fr" not in widths["--doc-w"], (
+        "an unbounded manuscript column is what produced the wide gutters"
+    )
+    assert "1fr" in widths["--insp-w"], "the inspector must take the surplus"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize(
+    "want,vw,expect",
+    [
+        (0, 1280, None),          # no opinion: the default arrangement stands
+        (-40, 1280, None),
+        (200, 1280, 320),         # the 20rem editor floor
+        (500, 1280, 500),
+        (5000, 1280, 794),        # 62% of the window; the manuscript keeps the rest
+        (400, 600, 372),          # a narrow window still leaves prose on screen
+    ],
+)
+def test_the_divide_cannot_be_dragged_somewhere_unrecoverable(want, vw, expect):
+    """Both ends matter. Too narrow and the source editor stops being somewhere
+    you can write LaTeX; too wide and the manuscript is a strip in its own
+    editor, with no way back except knowing about the double-click."""
+    assert node_call("clampSplit", want, vw) == expect
+
+
+def test_the_reader_can_move_the_divide():
+    page = render(ms=fixture_blob())
+    js = VIEWER.read_text(encoding="utf-8")
+    css = STYLES.read_text(encoding="utf-8")
+    assert 'id="split"' in page and 'role="separator"' in page
+    assert 'aria-orientation="vertical"' in page
+    assert "col-resize" in css, "the handle must look draggable"
+    assert 'data-split="user"' in css, "a set divide changes which column takes the surplus"
+    assert "ArrowLeft" in js and "dblclick" in js, (
+        "the divide must be movable from the keyboard and resettable"
+    )
+    # A width the reader chose is theirs, so it survives the window closing.
+    assert "MS_PREF_PREFIX + 'insp'" in js
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
@@ -412,9 +764,14 @@ def test_every_protocol_message_is_named_in_the_client():
     assert "type: 'chat'" in js
 
 
-def test_the_client_defers_a_patch_to_the_focused_block():
+def test_the_client_defers_the_panel_rebuild_for_the_focused_block():
+    """This asked for `deferredPatches` until 2026-07-26, when the deferral was
+    narrowed from the whole patch to the panel alone: the document paragraph never
+    held the caret, so holding it back only kept the author's own sentence out of
+    the render. What must still wait for the blur is the panel.
+    See test_the_render_is_never_held_back_from_the_block_being_typed_in."""
     js = VIEWER.read_text(encoding="utf-8")
-    assert "deferredPatches" in js
+    assert "deferredPanels" in js
     assert "focusedBlock" in js
 
 

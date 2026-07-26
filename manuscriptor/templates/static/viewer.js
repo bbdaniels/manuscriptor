@@ -290,8 +290,86 @@
     });
   }
 
+  /* What should happen to this draft? Separated from the sending so it can be
+     tested, because one of its branches used to be a silent `return` and that
+     silence cost the author an abstract.
+
+     `block` is the block as the CURRENT build knows it, or undefined if the id
+     names a block that no longer exists. Ids are content-derived, so an edit
+     renames its own block: the id a save is keyed to stops existing the moment
+     the previous save lands. Treating that as nothing-to-do drops the text and
+     says nothing, which is the one outcome an editor may never produce. It is a
+     held state now, with a reason, and the draft stays where it is. */
+  function saveDecision(text, block, validity) {
+    if (text === null || text === undefined) return { action: 'none' };
+    if (!block) {
+      return { action: 'held',
+               reason: 'This paragraph was rewritten under this editor, so the '
+                     + 'draft could not be matched to it. Reopen the paragraph '
+                     + 'to edit the current text.' };
+    }
+    if (block.editable === false) return { action: 'none' };
+    if (text === String(block.source || '')) return { action: 'clean' };
+    if (validity && !validity.ok) return { action: 'held', reason: validity.reason };
+    return { action: 'send' };
+  }
+
+  /* The underline for a citation span, from the keys it carries.
+     The render splits a stack into one span per key, so this is normally asked
+     about one key. When it cannot split (a narrative citation, or names the
+     surnames say are out of order) the span keeps all its keys, and then the
+     colour is the WEAKEST of them: taking the first key's status let a five-key
+     stack read as verbatim while three of its sources had no support at all.
+     Red for anything examined and unsupported, amber for paraphrase, green only
+     when every examined key is verbatim, neutral when none was examined. */
+  function citeStatusClass(keys, cites) {
+    var worst = '';
+    for (var i = 0; i < (keys || []).length; i++) {
+      var rec = (cites || {})[keys[i]];
+      var s = rec && rec.status;
+      if (s === 'missing') return 'miss';
+      if (s === 'paraphrase') worst = 'para';
+      else if (s === 'verbatim' && worst !== 'para') worst = 'verbatim';
+    }
+    return worst;
+  }
+
+  /* Which of four situations a citation is in. "Red" was covering two of them
+     and the panel described a third that was not happening.
+
+       none        no record at all: the pass has not seen this key. Neutral.
+       unreadable  seen, but no fulltext to read. A library problem: fetch the PDF.
+       unsupported READ, and no passage supported the claim. A writing problem,
+                   and the sentence belongs on a review list.
+       supported   at least one passage came back.
+
+     Told apart by the facts the pass records rather than by the colour, since
+     unreadable and unsupported are both red and only one of them is about the
+     manuscript. */
+  function evidenceState(rec) {
+    if (!rec || !rec.status) return 'none';
+    if (rec.quotes && rec.quotes.length) return 'supported';
+    return rec.fulltext ? 'unsupported' : 'unreadable';
+  }
+
+  /* How wide the inspector may be, given the window. Both ends matter: too
+     narrow and the source editor stops being somewhere you can write LaTeX (the
+     20rem floor the layout already used), too wide and the manuscript is a strip
+     in its own editor. Kept pure so the arithmetic is tested rather than
+     inspected: an off-by-one here is a panel the reader cannot recover from. */
+  function clampSplit(want, windowWidth) {
+    var min = 20 * 16;                                   // 20rem, the editor floor
+    var max = Math.max(min, Math.round(windowWidth * 0.62));
+    if (!(want > 0)) return null;                        // no opinion: use the default
+    return Math.max(min, Math.min(max, Math.round(want)));
+  }
+
   var api = {
     validateLatex: validateLatex,
+    saveDecision: saveDecision,
+    citeStatusClass: citeStatusClass,
+    evidenceState: evidenceState,
+    clampSplit: clampSplit,
     normId: normId,
     draftKey: draftKey,
     spliceAt: spliceAt,
@@ -318,7 +396,7 @@
     tabMemory: {},          // selection key -> tab index
     tab: 0,
     focusedBlock: null,     // the block whose editor has focus, if any
-    deferredPatches: {},    // behaviour 3: patches waiting for a blur
+    deferredPanels: {},     // blocks whose PANEL waits for a blur (never the render)
     drafts: {},             // behaviour 1: block id -> unsaved source
     restored: {},           // block id -> the draft came back from storage
     save: {},               // block id -> {state, reason, at}
@@ -334,6 +412,7 @@
     sock: null,
     sockState: 'connecting',
     saveTimer: null,
+    saveFor: null,          // the block the pending save is for, renames included
     retry: 0
   };
 
@@ -342,6 +421,7 @@
       outlineEl, pathEl, hueWheel, agentEl, tickerEl;
 
   var anchorEl = null, io = null, warnedBareId = false;
+  var railSync = false;   // one syncRailButton per frame while a window resizes
 
   // ----------------------------------------------------------------- storage
 
@@ -376,19 +456,59 @@
     return b ? String(b.source || '') : '';
   }
 
-  /* A reload must not eat work either, so the drafts come back off disk before
-     anything is rendered. A draft that now matches the file is dropped: the
-     author's change landed while they were away. */
+  /* A reload must not eat work either, so the drafts come back before anything
+     is rendered, from BOTH stores: this browser's localStorage, and the server's
+     own draft file.
+
+     Two stores because each covers what the other cannot. localStorage survives
+     a reload but not a new origin, and until the port became stable every launch
+     was a new origin. The server's file survives a relaunch, a crash, and a
+     window closed in anger, but only holds what reached it, so a draft typed
+     while the socket was down is in the browser alone. Where both have a block,
+     the local copy wins: it is the one the author can still see on screen.
+
+     A draft that now matches the file is dropped from either store: the change
+     landed while they were away. */
   function restoreDrafts() {
+    var served = (S.ms.drafts && typeof S.ms.drafts === 'object') ? S.ms.drafts : {};
     var ids = Object.keys(S.blocks);
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i];
       var text = load(draftKey(S.docKey, id));
+      var fromServer = false;
+      if (text === null && Object.prototype.hasOwnProperty.call(served, id)) {
+        text = String(served[id]);
+        fromServer = true;
+      }
       if (text === null) continue;
-      if (text === String(S.blocks[id].source || '')) { drop(draftKey(S.docKey, id)); continue; }
+      if (text === String(S.blocks[id].source || '')) {
+        drop(draftKey(S.docKey, id));
+        if (fromServer) sendDraft(id, '');     // it saved; stop holding it
+        continue;
+      }
       S.drafts[id] = text;
       S.restored[id] = true;
+      if (fromServer) store(draftKey(S.docKey, id), text);
     }
+  }
+
+  /* Park a draft on the server, which is the copy that survives this window.
+     Silent when there is no socket: the local copy still holds it, and the
+     reconnect flushes every draft it is carrying. */
+  function sendDraft(id, text) {
+    if (!id) return false;
+    return send({ type: 'draft', block: id, source: text });
+  }
+
+  /* On reconnect every draft is re-offered as a save rather than merely parked.
+     `trySave` parks it first and then decides, so this both writes the text to
+     the server's store and replaces the stale "Not connected" line with what is
+     actually true of each block: saved, or held and why. A draft that went stale
+     while the socket was down is refused by the server's own stale-block guard
+     rather than overwriting whatever landed in the meantime. */
+  function flushDrafts() {
+    var ids = Object.keys(S.drafts);
+    for (var i = 0; i < ids.length; i++) trySave(ids[i]);
   }
 
   // -------------------------------------------------------------- hydration
@@ -397,6 +517,28 @@
     var t = document.createElement('template');
     t.innerHTML = String(html === null || html === undefined ? '' : html).trim();
     return t.content.firstElementChild;
+  }
+
+  /* A block can render as SEVERAL elements. The front matter is a title, a
+     byline, an abstract label, the abstract and a keywords line, with the anchor
+     on the first of them, so a patch that swapped one element updated the title
+     and left the abstract alone. */
+  function nodesFromHtml(html) {
+    var t = document.createElement('template');
+    t.innerHTML = String(html === null || html === undefined ? '' : html).trim();
+    return Array.prototype.slice.call(t.content.children);
+  }
+
+  /* The elements this block occupies: its anchor, plus the siblings after it that
+     carry no anchor of their own. Symmetrical with the server's block_html, and
+     for an ordinary paragraph it is a list of one. */
+  function blockRun(el) {
+    var run = [el], n = el.nextElementSibling;
+    while (n && !n.hasAttribute('data-mx') && !n.querySelector('[data-mx]')) {
+      run.push(n);
+      n = n.nextElementSibling;
+    }
+    return run;
   }
 
   var EXHIBIT_KINDS = { table: 1, figure: 1, generated: 1 };
@@ -478,11 +620,8 @@
       c.classList.add('cite');
       c.setAttribute('data-key', keys[0]);
       if (!c.hasAttribute('tabindex')) c.setAttribute('tabindex', '0');
-      var rec = (S.ms.cites || {})[keys[0]];
-      if (rec && rec.status) {
-        c.classList.add(rec.status === 'verbatim' ? 'verbatim'
-          : rec.status === 'paraphrase' ? 'para' : 'miss');
-      }
+      var cls = citeStatusClass(keys, S.ms.cites);
+      if (cls) c.classList.add(cls);
     }
     // computed values, marked by the render pass
     var vals = scope.querySelectorAll('[data-mx-value]');
@@ -824,6 +963,16 @@
   function saveStateHtml(id, b) {
     var s = S.save[id] || {};
     var cls = '', text;
+    /* A dead socket outranks every other reason a block is unsaved. Held text
+       and offline text are both unwritten, but only one of them is unwritten
+       because nothing can be written at all, and that is the fact the author
+       needs: measured live, an unbalanced draft typed while the server was down
+       reported only the brace and said nothing about the connection. */
+    if (S.sockState !== 'live' && draftOf(id) !== null) {
+      return '<div class="savestate offline"><i></i><span><b>Not connected.</b> '
+        + 'Your draft is held in this window and is written to disk the moment '
+        + 'the server is back.</span></div>' + saveButtons(id);
+    }
     if (s.state === 'held') {
       cls = ' held';
       text = '<b>Held.</b> ' + esc(s.reason) + ' Nothing is written while it would not parse.';
@@ -831,8 +980,13 @@
       cls = ' pending';
       text = '<b>Saving…</b> writes on a pause, not a button.';
     } else if (s.state === 'offline') {
+      /* What this line may claim is exactly what is true. It used to say the
+         draft was "on disk", and on 2026-07-26 that sent an author looking for
+         a file that did not exist: the only copy was in this window. It is
+         written to disk on reconnect, and the reconnect is automatic. */
       cls = ' offline';
-      text = '<b>Not connected.</b> Your draft is kept here and on disk until the server is back.';
+      text = '<b>Not connected.</b> Your draft is held in this window and is '
+           + 'written to disk the moment the server is back.';
     } else if (s.state === 'saved') {
       text = '<b>Saved</b> to ' + esc(b.file || 'the file') + ', ' + esc(ago(s.at)) + '. Writes on a pause, not a button.';
     } else if (draftOf(id) !== null) {
@@ -841,19 +995,31 @@
       text = '<b>No unsaved changes</b> in this block.';
     }
     return '<div class="savestate' + cls + '"><i></i><span>' + text + '</span></div>' +
-      '<div class="row" style="padding:0 .7rem .6rem">' +
-      '<button class="btn" data-act="revert" ' + (draftOf(id) === null ? 'disabled' : '') + '>Revert to last good</button>' +
-      '<button class="btn" data-act="discard" ' + (draftOf(id) === null ? 'disabled' : '') + '>Discard draft</button></div>';
+      saveButtons(id);
+  }
+
+  /* "Revert to last good" and "Discard draft" belong to every state of the save
+     line, including the offline one: a self-saving file still needs a way back. */
+  function saveButtons(id) {
+    var off = draftOf(id) === null ? 'disabled' : '';
+    return '<div class="row" style="padding:0 .7rem .6rem">' +
+      '<button class="btn" data-act="revert" ' + off + '>Revert to last good</button>' +
+      '<button class="btn" data-act="discard" ' + off + '>Discard draft</button></div>';
   }
 
   function saveBox(id, b) {
     return '<div data-role="savebox">' + saveStateHtml(id, b) + '</div>';
   }
 
+  /* Refresh the save line in place, and say whether that was possible. The
+     caller uses the answer to decide whether it must rebuild the whole panel,
+     which is the thing it may not do while the editor has focus. */
   function renderSaveBox(id) {
     if (headSaveEl && S.sel && S.sel.kind === 'block' && S.sel.key === id) {
       headSaveEl.innerHTML = saveStateHtml(id, S.blocks[id]);
+      return true;
     }
+    return false;
   }
 
   function chatMsgs(msgs) {
@@ -1150,18 +1316,47 @@
     var status = rec.status || null;
 
     var evidence;
-    if (rec.quotes && rec.quotes.length) {
+    var state = evidenceState(rec);
+    if (state === 'supported') {
       evidence = card('Supporting passages', rec.source || '',
         rec.quotes.map(function (q) {
           return '<p class="quote' + (q.status === 'verbatim' ? '' : ' p') + '">' + esc(q.text) + '</p>';
         }).join('') +
         (rec.reasoning ? '<p class="meta">' + esc(rec.reasoning) + '</p>' : ''));
+    } else if (state === 'unreadable') {
+      // The pass finished and had nothing to read. This is the case that used to
+      // report itself as "no evidence loaded", which sent the author looking for
+      // a pass that had already run.
+      evidence = card('No fulltext to read', 'library',
+        '<p class="meta">The last pass reached <b>' + esc(key) + '</b> and found no ' +
+        'fulltext for it, so no passage could be checked either way. This is a ' +
+        'library gap rather than anything about the sentence: attach a PDF in ' +
+        'Zotero, or use <b>Fetch missing PDFs</b> in the toolbar, which is the one ' +
+        'action that writes to your library, and then run the pass again.</p>');
+    } else if (state === 'unsupported') {
+      evidence = card('Read, and nothing supported it', 'review',
+        '<p class="meta">The pass read ' +
+        (rec.fulltext_chars ? esc(String(rec.fulltext_chars)) + ' characters of ' : '') +
+        '<b>' + esc(key) + '</b> and came back with no passage supporting the claim ' +
+        'this sentence makes. That is the check doing its job: either the sentence ' +
+        'needs a source that says it, or it needs to claim less.</p>');
     } else {
-      evidence = card('No evidence loaded', '',
-        '<p class="meta">This page carries no evidence record for <b>' + esc(key) + '</b>. ' +
-        'The evidence pass writes those records; until it has run on this pair, the underline stays neutral ' +
-        'rather than claiming a status it cannot support.</p>');
+      evidence = card('Not checked yet', '',
+        '<p class="meta">No pass has looked at <b>' + esc(key) + '</b>, so its ' +
+        'underline claims nothing. <b>Run evidence</b> in the toolbar checks every ' +
+        'pair in the manuscript.</p>');
     }
+
+    /* Add a source to THIS citation, with the citation itself as the target.
+       The alternative is the caret dance: click into the source editor, trust
+       that the offset was recorded from a focused textarea, then find the form on
+       another tab. A citation you clicked cannot be measured wrong. */
+    var beside = card('Add a source here', '',
+      '<p class="meta">Puts another key into this citation, with no cursor to '
+      + 'place. A source the paper already cites needs no lookup.</p>'
+      + '<div class="row"><button class="btn pri" type="button" '
+      + 'data-open="insert:cite:beside:' + esc(key) + '">Add a source beside '
+      + esc(key) + '</button></div>');
 
     var claim = card('Cited in', String(users.length),
       users.length
@@ -1178,7 +1373,7 @@
       title: rec.title || key,
       sub: key + (users.length ? ' · ' + fileLine(S.blocks[users[0]]) : ''),
       tabs: [
-        { name: 'Evidence', n: (rec.quotes || []).length || 0, body: evidence },
+        { name: 'Evidence', n: (rec.quotes || []).length || 0, body: evidence + beside },
         { name: 'Claim', n: users.length || 0, body: claim }
       ]
     };
@@ -1275,7 +1470,16 @@
   function wireInspector() {
     var src = ibodyEl.querySelector('textarea.src[data-role="src"]');
     if (src) {
-      var id = src.getAttribute('data-block');
+      /* Read the id off the element on every use, never capture it.
+         Ids are content-derived, so the FIRST save renames this very block, and
+         the panel is deliberately not rebuilt while its editor has focus
+         (behaviour 3), so a captured id goes stale exactly during a burst of
+         continuous typing. Every keystroke after that addressed a block the
+         build no longer had: the drafts were written under a dead key and the
+         saves silently did nothing. `applyRenames` keeps `data-block` current,
+         so asking the element is asking the live build. */
+      var cur = function () { return src.getAttribute('data-block'); };
+      var id = cur();
 
       // Open showing the whole paragraph, not a porthole to drag open.
       autosize(src);
@@ -1286,23 +1490,25 @@
       }
 
       src.addEventListener('input', function () {
+        var live = cur();
         autosize(src);
-        setDraft(id, src.value);
-        rememberCaret(id, src);
-        S.save[id] = { state: 'typing' };
+        setDraft(live, src.value);
+        rememberCaret(live, src);
+        S.save[live] = { state: 'typing' };
         renderBanners();
-        renderSaveBox(id);   // or the line still claims there is nothing unsaved
-        scheduleSave(id);
+        renderSaveBox(live);   // or the line still claims there is nothing unsaved
+        scheduleSave(live);
       });
-      src.addEventListener('keyup', function () { rememberCaret(id, src); });
-      src.addEventListener('click', function () { rememberCaret(id, src); });
-      src.addEventListener('focus', function () { S.focusedBlock = id; });
+      src.addEventListener('keyup', function () { rememberCaret(cur(), src); });
+      src.addEventListener('click', function () { rememberCaret(cur(), src); });
+      src.addEventListener('focus', function () { S.focusedBlock = cur(); });
       src.addEventListener('blur', function () {
+        var live = cur();
         S.focusedBlock = null;
-        rememberCaret(id, src);
+        rememberCaret(live, src);
         if (S.saveTimer) { clearTimeout(S.saveTimer); S.saveTimer = null; }
-        trySave(id);
-        flushDeferred(id);
+        trySave(live);
+        flushDeferred(live);
       });
     }
 
@@ -1324,9 +1530,16 @@
     S.caret = { id: id, start: el.selectionStart, end: el.selectionEnd, scrollTop: el.scrollTop };
   }
 
+  /* The pending save names its block in state rather than in the closure, for
+     the same reason the editor does: a rename landing inside the debounce window
+     would otherwise fire the save against an id that no longer exists. */
   function scheduleSave(id) {
     if (S.saveTimer) clearTimeout(S.saveTimer);
-    S.saveTimer = setTimeout(function () { S.saveTimer = null; trySave(id); }, SAVE_DEBOUNCE_MS);
+    S.saveFor = id;
+    S.saveTimer = setTimeout(function () {
+      S.saveTimer = null;
+      trySave(S.saveFor);
+    }, SAVE_DEBOUNCE_MS);
   }
 
   /* Behaviour 2. No button: a pause of about a second, or a blur, and only if
@@ -1335,14 +1548,15 @@
      author has to guess. */
   function trySave(id) {
     var text = draftOf(id);
-    if (text === null) return;
-    var b = S.blocks[id];
-    if (!b || b.editable === false) return;
-
-    if (text === String(b.source || '')) { clearDraft(id); setSave(id, { state: 'clean' }); return; }
-
-    var v = validateLatex(text);
-    if (!v.ok) { setSave(id, { state: 'held', reason: v.reason }); return; }
+    /* Park it before deciding. Everything below this line can decline to write
+       the manuscript (invalid LaTeX, a block the build no longer has, no
+       socket), and every one of those is a case where the text must still
+       outlive the window. */
+    if (text !== null) sendDraft(id, text);
+    var d = saveDecision(text, S.blocks[id], text === null ? null : validateLatex(text));
+    if (d.action === 'none') return;
+    if (d.action === 'clean') { clearDraft(id); setSave(id, { state: 'clean' }); return; }
+    if (d.action === 'held') { setSave(id, { state: 'held', reason: d.reason }); return; }
 
     S.sent[id] = text;
     if (!send({ type: 'edit', block: id, source: text })) {
@@ -1360,8 +1574,14 @@
   function setSave(id, s) {
     S.save[id] = s;
     if (S.sel && S.sel.blockId === id) {
-      if (S.focusedBlock === id && ibodyEl.querySelector('[data-role="savebox"]')) {
-        renderSaveBox(id);
+      /* This used to look for the save line inside the panel body, where it has
+         never been: it lives in the header. The test therefore failed every time
+         and the panel was rebuilt on EVERY save, replacing the textarea under
+         the author's cursor about once a second while they typed. It survived
+         only because the caret is restored afterwards, which is not the same as
+         not having been taken. Ask the thing that would do the refreshing
+         whether it could. */
+      if (S.focusedBlock === id && renderSaveBox(id)) {
         renderBanners();
       } else {
         renderInspector();
@@ -1436,6 +1656,12 @@
       var el = blockEl(from);
       if (el) el.setAttribute('data-mx', to);
 
+      /* The open editor names its block in an attribute, and reads it there on
+         every keystroke, so this line is what keeps typing after a save landing
+         on the live block instead of on the id the save renamed away. */
+      var wired = document.querySelectorAll('[data-block="' + from + '"]');
+      for (var w = 0; w < wired.length; w++) wired[w].setAttribute('data-block', to);
+
       ['blocks', 'chats', 'drafts', 'blockState', 'save', 'sent'].forEach(function (bag) {
         var store = S[bag];
         if (store && Object.prototype.hasOwnProperty.call(store, from)) {
@@ -1444,6 +1670,7 @@
         }
       });
       if (S.focusedBlock === from) S.focusedBlock = to;
+      if (S.saveFor === from) S.saveFor = to;
       if (S.caret && S.caret.id === from) S.caret.id = to;
       if (S.sel && S.sel.blockId === from) S.sel.blockId = to;
       if (S.sel && S.sel.kind === 'block' && S.sel.key === from) S.sel.key = to;
@@ -1456,13 +1683,21 @@
 
   function applyBlockHtml(id, html) {
     var old = blockEl(id);
-    var node = nodeFromHtml(html);
-    if (!node) return;
-    if (!node.hasAttribute('data-mx')) node.setAttribute('data-mx', id);
-    if (old && old.parentNode) old.parentNode.replaceChild(node, old);
-    else docInner.appendChild(node);
-    hydrateSpans(node);
-    if (anchorEl === old) anchorEl = node;
+    var nodes = nodesFromHtml(html);
+    if (!nodes.length) return;
+    if (!nodes[0].hasAttribute('data-mx')) nodes[0].setAttribute('data-mx', id);
+
+    if (old && old.parentNode) {
+      var parent = old.parentNode;
+      var run = blockRun(old);
+      var after = run[run.length - 1].nextSibling;
+      for (var i = 0; i < run.length; i++) parent.removeChild(run[i]);
+      for (var j = 0; j < nodes.length; j++) parent.insertBefore(nodes[j], after);
+    } else {
+      for (var k = 0; k < nodes.length; k++) docInner.appendChild(nodes[k]);
+    }
+    for (var n = 0; n < nodes.length; n++) hydrateSpans(nodes[n]);
+    if (anchorEl === old) anchorEl = nodes[0];
   }
 
   /* Behaviour 3. A patch for the block under the cursor waits for the blur.
@@ -1494,13 +1729,15 @@
       var id = normId(raw);
       touched[id] = true;
       if (msg.blockdata && msg.blockdata[raw]) S.blocks[id] = msg.blockdata[raw];
-      if (id === S.focusedBlock) {
-        S.deferredPatches[id] = blocks[raw];
-        var el = blockEl(id);
-        if (el) el.classList.add('is-stale');
-        return;
-      }
+      /* The render updates while you type, including for the block you are
+         typing in. What must not be rebuilt under a cursor is the INSPECTOR,
+         because that replaces the textarea and takes the caret with it. The
+         caret was never in the document paragraph, so holding that paragraph
+         back protected nothing and cost the author the one thing they were
+         looking for: their own sentence appearing in the manuscript. The panel
+         rebuild is deferred to the blur instead. */
       applyBlockHtml(id, blocks[raw]);
+      if (id === S.focusedBlock) S.deferredPanels[id] = true;
     });
 
     (msg.removed || []).forEach(function (r) {
@@ -1546,13 +1783,14 @@
     }
   }
 
+  /* The document was patched as it happened; what waited for the blur is the
+     panel, whose source editor still shows the text as it was when the cursor
+     arrived. Rebuilding it now is safe, and it is what puts a change made by
+     someone else into the editor the author is about to use. */
   function flushDeferred(id) {
-    if (!Object.prototype.hasOwnProperty.call(S.deferredPatches, id)) return;
-    var html = S.deferredPatches[id];
-    delete S.deferredPatches[id];
+    if (!Object.prototype.hasOwnProperty.call(S.deferredPanels, id)) return;
+    delete S.deferredPanels[id];
     var ui = captureUI();
-    applyBlockHtml(id, html);
-    hydrate();
     renderInspector();
     restoreUI(ui);
   }
@@ -1587,7 +1825,10 @@
     S.sock = sock;
     setLive('connecting');
 
-    sock.onopen = function () { S.retry = 0; setLive('live'); };
+    /* The server came back, which with a stable port is the ordinary way a
+       server restart ends. Anything typed while it was gone reached no disk, so
+       the first thing the reconnect does is hand those drafts over. */
+    sock.onopen = function () { S.retry = 0; setLive('live'); flushDrafts(); };
     sock.onclose = function () {
       S.sock = null;
       setLive('offline');
@@ -1742,6 +1983,108 @@
     store(MS_PREF_PREFIX + 'skin', name);
   }
 
+  /* The outline: one button, two meanings, decided by what is on screen rather
+     than by the stored state. Wide, the rail is a column and the button hides it
+     to give the manuscript the width; narrow, the rail is not a column at all
+     and the button floats it over the manuscript. Reading the computed
+     visibility is what lets a single control be right in both regimes -- an
+     attribute alone would have the button lying at one of the two widths. */
+  function railShown() {
+    return !!(railEl && railEl.offsetWidth > 0);
+  }
+
+  function syncRailButton() {
+    var b = document.getElementById('rail-toggle');
+    if (!b) return;
+    var on = railShown();
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.setAttribute('title', on ? 'Hide the outline' : 'Show the outline');
+  }
+
+  function applyRail(state) {
+    if (state === 'on' || state === 'off') {
+      appEl.setAttribute('data-rail', state);
+      store(MS_PREF_PREFIX + 'rail', state);
+    } else {
+      appEl.removeAttribute('data-rail');
+      drop(MS_PREF_PREFIX + 'rail');
+    }
+    syncRailButton();
+  }
+
+  function toggleRail() {
+    applyRail(railShown() ? 'off' : 'on');
+  }
+
+  /* An overlaid rail is over the manuscript, so leaving it open after a jump
+     hides the paragraph that was jumped to. As a column it stays, because it is
+     costing the reader nothing. */
+  function railIsOverlay() {
+    return !!(railEl && window.getComputedStyle(railEl).position === 'absolute');
+  }
+
+  /* The manuscript/inspector divide, moved by the reader.
+     The default (inspector takes the surplus) is the arrangement with no wasted
+     gutter beside the prose, so this exists for the case the default cannot
+     serve: a very wide display, or an afternoon spent in the source editor. A
+     width the reader set is theirs, so it is stored; double-click hands it back. */
+  function applySplit(px) {
+    var w = clampSplit(px, window.innerWidth);
+    if (w === null) {
+      appEl.removeAttribute('data-split');
+      appEl.style.removeProperty('--insp-w');
+      drop(MS_PREF_PREFIX + 'insp');
+      return;
+    }
+    appEl.setAttribute('data-split', 'user');
+    appEl.style.setProperty('--insp-w', w + 'px');
+    store(MS_PREF_PREFIX + 'insp', String(w));
+  }
+
+  function currentSplit() {
+    return inspEl ? Math.round(inspEl.getBoundingClientRect().width) : 0;
+  }
+
+  function wireSplit() {
+    var handle = document.getElementById('split');
+    if (!handle || !appEl) return;
+
+    handle.addEventListener('pointerdown', function (e) {
+      e.preventDefault();
+      // Capture keeps the moves coming even when the pointer crosses the prose,
+      // but a pointer id the platform does not know is not a reason to refuse
+      // the drag.
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* uncaptured */ }
+      appEl.setAttribute('data-dragging', '');
+    });
+    handle.addEventListener('pointermove', function (e) {
+      if (!appEl.hasAttribute('data-dragging')) return;
+      // The inspector is flush to the right edge, so its width is the distance
+      // from the pointer to that edge. Read live rather than from a start offset,
+      // which keeps the handle under the finger if the window resizes mid-drag.
+      applySplit(window.innerWidth - e.clientX);
+    });
+    var end = function (e) {
+      if (!appEl.hasAttribute('data-dragging')) return;
+      appEl.removeAttribute('data-dragging');
+      try { handle.releasePointerCapture(e.pointerId); } catch (err) { /* already gone */ }
+    };
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+
+    // Back to the default, which is the layout the design argues for.
+    handle.addEventListener('dblclick', function () { applySplit(0); });
+
+    // The same control from the keyboard, because a drag handle that only takes
+    // a pointer is a control some readers do not have.
+    handle.addEventListener('keydown', function (e) {
+      var step = e.shiftKey ? 64 : 16;
+      if (e.key === 'ArrowLeft') { e.preventDefault(); applySplit(currentSplit() + step); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); applySplit(currentSplit() - step); }
+      else if (e.key === 'Home' || e.key === 'Escape') { e.preventDefault(); applySplit(0); }
+    });
+  }
+
   /* One hue, declared on the ROOT so both skins and the neutrals read it. The
      status colours are excluded from the palette on purpose: they mean
      something, so they must not rotate with the decoration. */
@@ -1885,6 +2228,7 @@
     var goto_ = e.target.closest('[data-goto]');
     if (goto_) {
       e.preventDefault();
+      if (railEl && railEl.contains(goto_) && railIsOverlay()) applyRail('off');
       var gid = normId(goto_.getAttribute('data-goto'));
       if (S.blocks[gid]) select('block', gid, gid, null, { keepDoc: false });
       // After the render, not before it, or the restore lands on top of us.
@@ -1962,6 +2306,7 @@
   }
 
   function doAct(act) {
+    if (act === 'rail:toggle') { toggleRail(); return; }
     if (act === 'evidence:run') { runEvidence(); return; }
     if (act === 'repair:run') { runRepair(); return; }
     if (act.indexOf('finding:dismiss:') === 0) {
@@ -2200,6 +2545,27 @@
     applySkin(savedSkin === 'glass' ? 'glass' : 'instrument');
     var savedHue = load(MS_PREF_PREFIX + 'hue');
     if (savedHue) applyHue(savedHue);
+
+    /* Whether the rail is on screen is a function of the window as well as the
+       preference, so the button is re-read on a resize: crossing the width at
+       which the rail stops being a column changes what the same button does. */
+    /* The divide the reader set, if they set one. Re-clamped on every resize,
+       because a width chosen on a large display would otherwise leave a narrow
+       window with no manuscript at all. */
+    wireSplit();
+    var savedSplit = parseInt(load(MS_PREF_PREFIX + 'insp') || '', 10);
+    if (savedSplit > 0) applySplit(savedSplit);
+    window.addEventListener('resize', function () {
+      if (appEl.getAttribute('data-split') === 'user') applySplit(currentSplit());
+    }, { passive: true });
+
+    var savedRail = load(MS_PREF_PREFIX + 'rail');
+    applyRail(savedRail === 'on' || savedRail === 'off' ? savedRail : null);
+    window.addEventListener('resize', function () {
+      if (railSync) return;
+      railSync = true;
+      window.requestAnimationFrame(function () { railSync = false; syncRailButton(); });
+    }, { passive: true });
 
     /* The hue picker is the page's own popover. The native <input type=color>
        panel anchored wherever the platform pleased (seen opening over the

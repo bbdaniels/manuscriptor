@@ -76,6 +76,11 @@
         directory holds only one document, so the ordinary manuscript never
         shows a control with nothing to choose. -#}
     <select class="tb docswitch" id="doc-switch" aria-label="document" hidden></select>
+    {#- The outline is a column when the window can afford one and an overlay
+        when it cannot, so this button says "hide it" or "show it" depending on
+        what is actually on screen rather than on a stored state. -#}
+    <button class="tb" type="button" data-act="rail:toggle" id="rail-toggle"
+            aria-pressed="true" title="Hide the outline">Outline</button>
     <span class="grp">
       <button class="tb" type="button" data-act="compile:pdf">Compile PDF</button>
       <button class="tb" type="button" data-act="compile:docx">Compile Word</button>
@@ -190,6 +195,13 @@
 
     <!-- ================= inspector ================= -->
     <aside class="insp" id="insp">
+      {#- The divide between reading and working. The inspector takes the surplus
+          width by default, which is right at ordinary window sizes and unbounded
+          on a very wide display; a clamp would only put the empty gutter back
+          beside the prose, so the reader moves the divide instead. Drag it, or
+          focus it and use the arrow keys; double-click returns to the default. -#}
+      <div class="divider" id="split" role="separator" aria-orientation="vertical"
+           tabindex="0" aria-label="Resize the inspector" title="Drag to resize, double-click to reset"></div>
       <div class="insp-head">
         <button class="back" id="back" type="button" hidden></button>
         <div class="eyebrow" id="eyebrow">Nothing open</div>
