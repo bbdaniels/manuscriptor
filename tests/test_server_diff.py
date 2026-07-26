@@ -290,3 +290,44 @@ def test_a_single_directory_manuscript_is_unchanged(tmp_path):
     assert s.current_ref == "main.tex"
     assert s.root == tmp_path.resolve()
     assert s.blob["docs"] == ["main.tex", "appendix.tex"]
+
+
+def test_a_block_that_renders_as_several_elements_patches_all_of_them():
+    """The front matter is one block and five elements.
+
+    Pandoc renders `\\maketitle` plus the abstract environment as a title, a
+    byline, an abstract label, the abstract itself and a keywords line, and the
+    anchor sits on the first of them. Returning only the anchored element meant a
+    patch replaced the title and left the abstract exactly as it was, so an
+    author editing the abstract watched the manuscript ignore them while every
+    ordinary paragraph updated live. Reported 2026-07-26 as "the live refresh
+    works for the main text but still not the abstract".
+    """
+    html = (
+        '<div id="doc-inner">'
+        '<h1 data-mx="b-front">Title</h1>\n'
+        '<p>Byline, no anchor of its own</p>\n'
+        '<h2>ABSTRACT</h2>\n'
+        '<p>The abstract itself.</p>\n'
+        '<p><strong>Keywords:</strong> one; two</p>\n'
+        '<p data-mx="b-intro">The introduction.</p>'
+        "</div>"
+    )
+    run = block_html(html, "b-front")
+    assert run.startswith('<h1 data-mx="b-front">')
+    for part in ("Byline", "ABSTRACT", "The abstract itself.", "Keywords"):
+        assert part in run, f"{part} is part of the block and must travel with it"
+    assert "The introduction." not in run, "the next block must not be swallowed"
+
+    # An ordinary paragraph is still exactly itself.
+    assert block_html(html, "b-intro") == '<p data-mx="b-intro">The introduction.</p>'
+
+
+def test_the_run_stops_at_a_nested_anchor():
+    """A following sibling whose SUBTREE carries an anchor belongs to that block,
+    not to this one: swallowing it would delete a paragraph on every patch."""
+    html = (
+        '<p data-mx="b-one">One</p>\n'
+        '<figure><img src="x.png"><figcaption data-mx="b-two">Two</figcaption></figure>'
+    )
+    assert block_html(html, "b-one") == '<p data-mx="b-one">One</p>'

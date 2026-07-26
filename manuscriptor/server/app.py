@@ -396,11 +396,48 @@ class Session:
 _TAG_OPEN_RE = re.compile(r"<([a-zA-Z][-\w]*)")
 
 
-def block_html(html: str, block_id: str) -> str | None:
-    """The outer HTML of the element carrying `data-mx="<block_id>"`.
+def _element_end(html: str, start: int) -> int | None:
+    """Index just past the element opening at `start`.
 
-    A small scan rather than a parser: find the attribute, walk back to its
-    tag's `<`, then forward counting the same tag name in and out.
+    A small scan rather than a parser: read the tag name, then count the same
+    name in and out. Returns None when `start` is not an element.
+    """
+    tag = _TAG_OPEN_RE.match(html, start)
+    if not tag:
+        return None
+    name = tag.group(1)
+    open_end = html.find(">", start)
+    if open_end < 0:
+        return None
+    if html[open_end - 1] == "/":
+        return open_end + 1
+
+    depth, i = 1, open_end + 1
+    pat = re.compile(rf"<(/?){re.escape(name)}\b", re.I)
+    while depth and i < len(html):
+        nxt = pat.search(html, i)
+        if not nxt:
+            return len(html)
+        depth += -1 if nxt.group(1) else 1
+        i = html.find(">", nxt.end())
+        if i < 0:
+            return len(html)
+        i += 1
+    return i
+
+
+def block_html(html: str, block_id: str) -> str | None:
+    """Everything the block rendered as, not only the element carrying its anchor.
+
+    Most blocks are one element and this returns exactly that. Some are SEVERAL:
+    the front matter renders as a title, a byline, an abstract label, the abstract
+    itself and a keywords line, with the anchor on the first of them. Returning
+    only the anchored element meant a patch replaced the title and left the
+    abstract as it was, so an author editing the abstract watched the manuscript
+    ignore them while every ordinary paragraph updated live (reported 2026-07-26).
+
+    The run ends at the next element that carries an anchor of its own, which is
+    where the next block starts, or at the closing tag of the container.
     """
     m = re.search(r'data-mx="' + re.escape(block_id) + r'"', html)
     if not m:
@@ -408,28 +445,19 @@ def block_html(html: str, block_id: str) -> str | None:
     start = html.rfind("<", 0, m.start())
     if start < 0:
         return None
-    tag = _TAG_OPEN_RE.match(html, start)
-    if not tag:
+    end = _element_end(html, start)
+    if end is None:
         return None
-    name = tag.group(1)
-    open_end = html.find(">", m.end())
-    if open_end < 0:
-        return None
-    if html[open_end - 1] == "/":
-        return html[start : open_end + 1]
 
-    depth, i = 1, open_end + 1
-    pat = re.compile(rf"<(/?){re.escape(name)}\b", re.I)
-    while depth and i < len(html):
-        nxt = pat.search(html, i)
-        if not nxt:
-            return html[start:]
-        depth += -1 if nxt.group(1) else 1
-        i = html.find(">", nxt.end())
-        if i < 0:
-            return html[start:]
-        i += 1
-    return html[start:i]
+    while True:
+        nxt = html.find("<", end)
+        if nxt < 0 or html.startswith("</", nxt):
+            break                                   # the container closes here
+        nend = _element_end(html, nxt)
+        if nend is None or 'data-mx="' in html[nxt:nend]:
+            break                                   # the next block starts here
+        end = nend
+    return html[start:end]
 
 
 def _diff(old, new) -> dict | None:

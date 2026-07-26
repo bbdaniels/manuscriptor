@@ -175,6 +175,128 @@ CITE = '<span class="citation" data-cites="smith2020">(Smith 2020)</span>'
 CITE2 = '<span class="citation" data-cites="jones2019">(Jones 2019)</span>'
 
 
+# A real five-key stack out of dsp-bias, verbatim from the served page. Note
+# `li2025systematic`, whose rendered year is 2026: cite keys lie about years, so
+# the year cannot be used to pair a key with the name it rendered as.
+REAL_STACK = (
+    '<span class="citation" data-cites="persad2016 li2025systematic grevisse2024 '
+    'holderried2024 daniels2026vignette">(Persad, Stroulia, and Forgie 2016; '
+    'D. Li and Lutfi 2026; Grévisse 2024; Holderried et al. 2024; '
+    'Daniels et al. 2026)</span>'
+)
+
+
+def cites_of(html: str) -> list[str]:
+    return re.findall(r'data-cites="([^"]*)"', html)
+
+
+def test_a_citation_stack_becomes_one_span_per_key(tmp_path, harvester):
+    """A five-key stack could only ever carry one evidence colour.
+
+    The page underlines a span, and pandoc emits `\\citep{a,b,c}` as ONE span
+    with three keys, so the first key's status coloured the whole parenthetical
+    and the other four were invisible whether they were supported or not.
+    """
+    out = postprocess(
+        f"<p>{mark(A)}Body {REAL_STACK}.</p>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    html = out["html"]
+    assert cites_of(html) == [
+        "persad2016", "li2025systematic", "grevisse2024",
+        "holderried2024", "daniels2026vignette",
+    ], "each key must get its own span, in source order"
+
+    # Each span carries only its own rendered text, and the punctuation that
+    # joins them stays outside, or the underline would swallow it.
+    inner = re.findall(r'<span class="citation"[^>]*>(.*?)</span>', html)
+    assert inner[0] == "Persad, Stroulia, and Forgie 2016"
+    assert inner[1] == "D. Li and Lutfi 2026"
+    assert inner[4] == "Daniels et al. 2026"
+    assert "(" not in "".join(inner) and ")" not in "".join(inner)
+    assert "(<span" in html and "</span>)" in html
+    assert "</span>; <span" in html
+
+    # And every one of them is separately addressable.
+    ids = re.findall(r'data-cite-id="([^"]+)"', html)
+    assert len(ids) == 5 and len(set(ids)) == 5
+
+
+def test_a_stack_whose_names_contradict_the_key_order_is_left_alone(tmp_path, harvester):
+    """A CSL that sorts a group would pair every key with the wrong name.
+
+    Splitting positionally is only safe while the rendered order matches the
+    key order. When a key's own surname turns up in somebody else's chunk, the
+    group is left whole: one colour on five citations is wrong, and the wrong
+    name against a key is worse.
+    """
+    sorted_group = (
+        '<span class="citation" data-cites="smith2020 jones2019">'
+        "(Jones 2019; Smith 2020)</span>"
+    )
+    out = postprocess(
+        f"<p>{mark(A)}Body {sorted_group}.</p>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    assert cites_of(out["html"]) == ["smith2020 jones2019"], (
+        "a contradicted pairing must not be split"
+    )
+
+
+def test_a_stack_with_an_unrecognisable_key_still_splits(tmp_path, harvester):
+    """`who2019` renders as "World Health Organization 2019", so its surname is
+    unverifiable rather than contradicted. Absence of evidence is not a
+    contradiction, and refusing to split there would give up on institutional
+    authors."""
+    group = (
+        '<span class="citation" data-cites="who2019 smith2020">'
+        "(World Health Organization 2019; Smith 2020)</span>"
+    )
+    out = postprocess(
+        f"<p>{mark(A)}Body {group}.</p>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    assert cites_of(out["html"]) == ["who2019", "smith2020"]
+
+
+def test_a_stack_that_does_not_divide_evenly_is_left_alone(tmp_path, harvester):
+    """Three keys, two rendered names: something about this citation is not what
+    the splitter assumes, so it does not touch it."""
+    group = (
+        '<span class="citation" data-cites="a2001 b2002 c2003">'
+        "(Aye 2001; Bee 2002)</span>"
+    )
+    out = postprocess(
+        f"<p>{mark(A)}Body {group}.</p>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    assert cites_of(out["html"]) == ["a2001 b2002 c2003"]
+
+
+def test_a_single_key_citation_is_untouched(tmp_path, harvester):
+    out = postprocess(
+        f"<p>{mark(A)}Body {CITE}.</p>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    assert "(Smith 2020)" in out["html"], "a lone citation keeps its parentheses"
+    assert cites_of(out["html"]) == ["smith2020"]
+
+
 def test_every_citation_span_gets_a_cite_id(tmp_path, harvester):
     out = postprocess(
         f"<p>{mark(A)}One {CITE} and two {CITE2}.</p>",

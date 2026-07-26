@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -227,6 +228,8 @@ def postprocess(
     html = _hoist_empty_anchors(html)
     html = _frontmatter_classes(html)
     html, unresolved = resolve(html, labels)
+    # Split before tagging, so each key's span gets its own `data-cite-id`.
+    html = _split_citation_groups(html)
     html = _tag_citations(html)
     html, rasterized = _pdf_figures_to_png(html, Path(manuscript_dir), Path(output_dir))
     assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir)) + rasterized
@@ -282,6 +285,81 @@ def _normalize_id(value: str) -> str:
 
 
 # ----------------------------------------------------------------- citations
+
+
+_CITATION_GROUP_RE = re.compile(
+    r'<span\s+class="citation"\s+data-cites="([^"]*)"([^>]*)>(.*?)</span>', re.S
+)
+_SURNAME_RE = re.compile(r"^([A-Za-z]+)")
+
+
+def _fold(text: str) -> str:
+    """Lowercase and strip accents, so the key `grevisse2024` can be recognised
+    in the name it rendered as, `Grévisse 2024`."""
+    stripped = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in stripped if not unicodedata.combining(c)).lower()
+
+
+def _contradicted(keys: list[str], chunks: list[str]) -> bool:
+    """Does any key's own surname turn up in somebody else's rendered name?
+
+    Splitting a group positionally assumes citeproc rendered the keys in the
+    order they were cited, which is true of the styles in this corpus and NOT
+    guaranteed: a CSL that sorts a group would pair every key with the wrong
+    name. This is the check that catches that, and it is deliberately one-sided.
+    A surname that appears nowhere (`who2019` renders as "World Health
+    Organization 2019") is unverifiable, not contradicted, and does not block a
+    split. A surname that appears somewhere else does block it.
+    """
+    folded = [_fold(c) for c in chunks]
+    for i, key in enumerate(keys):
+        m = _SURNAME_RE.match(key)
+        if not m:
+            continue
+        surname = _fold(m.group(1))
+        if len(surname) < 3:
+            continue           # `li2025systematic`: too short to mean anything
+        found = [j for j, c in enumerate(folded) if re.search(r"\b" + re.escape(surname), c)]
+        if found and i not in found:
+            return True
+    return False
+
+
+def _split_citation_groups(html: str) -> str:
+    r"""One span per key, so each citation can carry its own evidence colour.
+
+    Pandoc emits `\citep{a,b,c}` as a single span with three keys, and the page
+    can only underline a span: the first key's status coloured the whole
+    parenthetical and the other keys were invisible, supported or not. A
+    five-key stack in dsp-bias read as verbatim on the strength of one key.
+
+    The rendered names are separated by "; " and wrapped in the style's
+    parentheses. The punctuation is left outside the new spans, so an underline
+    covers a citation and not the bracket beside it. Anything that does not
+    divide cleanly (a narrative `\citet` joined by "and", nested markup, a count
+    that disagrees, or a pairing the surnames contradict) is left exactly as
+    pandoc wrote it, because one colour over a stack is wrong and the wrong name
+    against a key is worse.
+    """
+    def one(m: re.Match) -> str:
+        keys = m.group(1).split()
+        attrs, inner = m.group(2), m.group(3)
+        if len(keys) < 2 or "<" in inner:
+            return m.group(0)
+        lead = trail = ""
+        body = inner
+        if body.startswith("(") and body.endswith(")"):
+            lead, trail, body = "(", ")", body[1:-1]
+        chunks = body.split("; ")
+        if len(chunks) != len(keys) or _contradicted(keys, chunks):
+            return m.group(0)
+        spans = [
+            f'<span class="citation" data-cites="{k}"{attrs}>{c}</span>'
+            for k, c in zip(keys, chunks)
+        ]
+        return lead + "; ".join(spans) + trail
+
+    return _CITATION_GROUP_RE.sub(one, html)
 
 
 def _tag_citations(html: str) -> str:
