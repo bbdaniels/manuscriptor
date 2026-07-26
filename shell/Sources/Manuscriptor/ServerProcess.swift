@@ -76,7 +76,11 @@ final class ServerProcess {
         announced = false
         buffer = Data()
 
-        var args = ["serve", directory.path, "--no-window", "--port", "0"]
+        // No `--port`: the server derives a stable port from the manuscript's own
+        // path (server/ports.py). That is what lets the page's own websocket
+        // reconnect to a restarted server, and what keeps the WebView's
+        // origin-keyed storage (drafts, the colour preference) across a relaunch.
+        var args = ["serve", directory.path, "--no-window"]
         // The server's own fallback is the alphabetically first .tex, which is
         // wrong exactly when the root was found by the documentclass rule.
         if !main.isEmpty && main != ManuscriptRoot.mainName {

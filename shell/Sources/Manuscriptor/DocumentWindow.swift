@@ -29,6 +29,15 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     private var pendingJump = ""
     private var retried = false
 
+    /// A server that dies is restarted, not mourned. Its port is derived from the
+    /// manuscript's path rather than picked at random, so the page's own
+    /// websocket reconnects to the replacement and the reader loses nothing but
+    /// a second. Bounded, because an endless respawn of something that cannot
+    /// start is a spinner where an error belongs.
+    private var respawns = 0
+    private var stopping = false
+    private static let maxRespawns = 5
+
     /// `--snapshot <path>`: photograph the rendered page and quit. Only the
     /// first window opened in a launch carries it.
     private var snapshotPath: String?
@@ -68,7 +77,12 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
 
     var isKey: Bool { window?.isKeyWindow ?? false }
 
-    func stopServer() { server.stop() }
+    /// A deliberate stop, so the exit handler does not read it as a crash and
+    /// respawn the server the app is trying to shut down.
+    func stopServer() {
+        stopping = true
+        server.stop()
+    }
 
     // MARK: - window and web view
 
@@ -77,15 +91,6 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
         // Persistent, so the drafts the viewer mirrors into localStorage survive
         // a relaunch the way they survive a reload.
         config.websiteDataStore = .default()
-        // In the app the real macOS title bar is transparent and the web content
-        // runs up under it (below), so the viewer's own title row IS the top bar.
-        // This class lets the viewer inset for the real traffic lights and hide
-        // its decorative fake dots — only in the app, never in a browser or the
-        // static export.
-        config.userContentController.addUserScript(WKUserScript(
-            source: "document.documentElement.classList.add('ms-native-titlebar')",
-            injectionTime: .atDocumentEnd, forMainFrameOnly: true))
-
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 860),
                             configuration: config)
         webView.navigationDelegate = self
@@ -97,7 +102,12 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
             backing: .buffered,
             defer: false)
         window.title = root.lastPathComponent
-        window.representedFilename = root.path
+        // No `representedFilename`: it makes AppKit draw a document proxy icon,
+        // which on macOS 26 is leading-aligned, is NOT suppressed by
+        // `titleVisibility = .hidden`, and paints on top of the web content —
+        // measured at x 81 to 99 in window coordinates, over the second
+        // character of the page's own title row (the buttons end at 70). It
+        // duplicated the path that row already shows, so the row keeps the bar.
         // Unify the title bar: transparent + full-height content so the viewer's
         // own title row (with the idle/watching indicators) rises into the top
         // bar beside the real traffic lights, instead of sitting as a second bar
@@ -120,19 +130,77 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
 
         windowController = NSWindowController(window: window)
         window.makeKeyAndOrderFront(nil)
+
+        // Now that the window (and so the real buttons) exist, the page can be
+        // told where its title row may start.
+        installUserScripts()
     }
 
     private static func autosaveName(for root: URL) -> String {
         "MSWindow_" + root.path.replacingOccurrences(of: "/", with: "_")
     }
 
+    // MARK: - what the page needs to know about the real title bar
+
+    /// How far the page's own title row must start from the window's left edge.
+    ///
+    /// This is AppKit's geometry, not ours. The stylesheet used to hardcode 78px,
+    /// which was wrong twice over: it did not account for anything else AppKit
+    /// might put at the leading edge (a document proxy icon did exactly that on
+    /// macOS 26, landing on top of the row), and in full screen the buttons are
+    /// gone entirely while the row still paid for them. So it is measured off the
+    /// real button frames, every time the window changes shape.
+    private var titlebarInset: CGFloat {
+        guard let w = window, !w.styleMask.contains(.fullScreen) else { return 0 }
+        let edges = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton]
+            .compactMap { w.standardWindowButton($0) }
+            .filter { !$0.isHidden && !($0.superview?.isHidden ?? true) }
+            .map { $0.frame.maxX }
+        guard let rightmost = edges.max() else { return 0 }
+        return rightmost + 8
+    }
+
+    private func insetScript() -> String {
+        "document.documentElement.style.setProperty("
+        + "'--ms-titlebar-inset', '\(Int(titlebarInset.rounded()))px')"
+    }
+
+    /// In the app the real title bar is transparent and the web content runs up
+    /// under it, so the viewer's own title row IS the top bar: it insets past the
+    /// real buttons and hides its decorative fake dots. Both facts are injected
+    /// rather than served, so a browser and the static export are unaffected.
+    ///
+    /// Re-installed rather than appended, so a document switch or a reload starts
+    /// with the CURRENT inset instead of the one measured at launch.
+    private func installUserScripts() {
+        let ucc = webView.configuration.userContentController
+        ucc.removeAllUserScripts()
+        for source in ["document.documentElement.classList.add('ms-native-titlebar')",
+                       insetScript()] {
+            ucc.addUserScript(WKUserScript(source: source,
+                                           injectionTime: .atDocumentEnd,
+                                           forMainFrameOnly: true))
+        }
+    }
+
+    /// Publish the inset to the page on screen now, and to whatever it loads next.
+    private func publishTitlebarInset() {
+        installUserScripts()
+        webView.evaluateJavaScript(insetScript(), completionHandler: nil)
+    }
+
+    func windowDidResize(_ notification: Notification) { publishTitlebarInset() }
+    func windowDidEnterFullScreen(_ notification: Notification) { publishTitlebarInset() }
+    func windowDidExitFullScreen(_ notification: Notification) { publishTitlebarInset() }
+
     // MARK: - the server child
 
     private func startServer(binary: URL) {
+        let hadServed = serverURL != nil
         serverURL = nil
         retried = false
         pendingJump = rel
-        show(status: "Rendering \(root.lastPathComponent)…")
+        if !hadServed { show(status: "Rendering \(root.lastPathComponent)…") }
 
         server.start(binary: binary,
                      directory: root,
@@ -140,17 +208,58 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
                      onURL: { [weak self] url in
                          guard let self else { return }
                          self.serverURL = url
-                         self.webView.load(URLRequest(url: url))
+                         self.respawns = 0
+                         // A page already showing this manuscript reconnects on
+                         // its own: the port is the manuscript's, so the socket
+                         // it has been retrying against is the one that just came
+                         // back. Reloading would throw away the unsaved draft the
+                         // reader is looking at, which is the whole point.
+                         if !self.webViewIsShowing(url) {
+                             self.webView.load(URLRequest(url: url))
+                         }
                      },
                      onLog: { line in
                          FileHandle.standardError.write(Data(("[server] " + line + "\n").utf8))
                      },
                      onExit: { [weak self] status in
-                         guard let self, self.serverURL == nil else { return }
-                         self.present(error: "The server stopped before it served anything",
-                                      detail: "Exit status \(status). Run the same command in a "
-                                            + "terminal to see why.")
+                         guard let self, !self.stopping else { return }
+                         if self.serverURL == nil && self.respawns == 0 {
+                             self.present(error: "The server stopped before it served anything",
+                                          detail: "Exit status \(status). Run the same command in a "
+                                                + "terminal to see why.")
+                             return
+                         }
+                         self.respawnServer(binary: binary, status: status)
                      })
+    }
+
+    private func webViewIsShowing(_ url: URL) -> Bool {
+        guard let live = webView.url else { return false }
+        return live.host == url.host && live.port == url.port
+    }
+
+    /// The server exited after having served: restart it.
+    ///
+    /// Before this, a dead server left the page frozen with no way back, and the
+    /// only copy of an unsaved paragraph was in that window. Bounded and
+    /// announced: a manuscript that cannot be served says so rather than
+    /// respawning forever behind a page that looks alive.
+    private func respawnServer(binary: URL, status: Int32) {
+        respawns += 1
+        guard respawns <= DocumentWindow.maxRespawns else {
+            present(error: "The server keeps stopping",
+                    detail: "Exit status \(status), after \(respawns - 1) restarts. "
+                          + "Any unsaved draft is in this manuscript's build directory: "
+                          + "run `manuscriptor drafts \(root.path)` to read or apply it.")
+            return
+        }
+        FileHandle.standardError.write(
+            Data("[shell] server exited (\(status)); restart \(respawns)\n".utf8))
+        let delay = 0.4 * Double(respawns)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.stopping else { return }
+            self.startServer(binary: binary)
+        }
     }
 
     // MARK: - window lifecycle
@@ -160,6 +269,7 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
     /// manuscript open with nothing on screen to say so. Removal is deferred one
     /// run-loop turn so this delegate call returns before the object is freed.
     func windowWillClose(_ notification: Notification) {
+        stopping = true
         server.stop()
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

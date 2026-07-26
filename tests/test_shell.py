@@ -27,6 +27,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import plistlib
+import re
 import subprocess
 from pathlib import Path
 
@@ -331,7 +332,10 @@ def test_swift_owns_the_server_child():
     """A server outliving its window is a process quietly holding a paper open."""
     src = _swift_source()
     assert '"--no-window"' in src
-    assert '"--port"' in src and '"0"' in src
+    # The port used to be forced to 0 here. It is the server's to choose now: it
+    # derives a stable one from the manuscript path, which is what lets a page
+    # reconnect to a restarted server and keeps origin-keyed storage across a
+    # relaunch. Pinned by test_the_shell_lets_the_server_choose_its_own_port.
     assert "terminate()" in src, "child is never terminated"
     # Python block-buffers a piped stdout, so the banner never arrives and the
     # window loads nothing. Verified empirically: 12s with no output.
@@ -383,6 +387,95 @@ def test_multiwindow_invariants():
     # now injected per window.
     assert "titlebarAppearsTransparent" in src, "the transparent title bar must stay"
     assert "ms-native-titlebar" in src, "the native-titlebar class injection must stay"
+
+
+def test_the_shell_lets_the_server_choose_its_own_port():
+    """`--port 0` is what made a dead server unrecoverable.
+
+    The page's websocket retries on its own, which is the right behaviour and was
+    useless: the port died with the process, so there was nothing to retry
+    against, and the WebView's origin-keyed storage started empty on every
+    launch. The server derives a stable port from the manuscript path now, so the
+    shell must stop overriding it.
+    """
+    src = re.sub(r"//[^\n]*", "", _swift_source())
+    assert '"--port", "0"' not in src, "the shell must not force an ephemeral port"
+    assert '"serve", directory.path, "--no-window"' in src
+
+
+def test_a_server_that_dies_after_serving_is_restarted():
+    """A dead server used to leave the page frozen with no way back, and the only
+    copy of an unsaved paragraph inside it."""
+    src = _swift_source()
+    assert "respawnServer" in src, "the shell must restart a server that exits"
+    assert "maxRespawns" in src, "the restart must be bounded"
+    assert "stopping" in src, "a deliberate stop must not look like a crash"
+    # And a reconnecting page must not be reloaded out from under its draft.
+    assert "webViewIsShowing" in src, (
+        "a page already on this manuscript reconnects; reloading it would discard "
+        "the draft the reader is looking at"
+    )
+    assert "manuscriptor drafts" in src, (
+        "when it gives up, it must say where the unsaved text is"
+    )
+
+
+def test_the_build_signs_with_a_stable_identity_not_ad_hoc():
+    """TCC keys a permission grant to the app's code identity.
+
+    For an ad-hoc signature that identity is the code-directory hash, which
+    changes on every rebuild, so each build was a new app to macOS and it asked
+    for Documents, Desktop and Downloads again. Measured 2026-07-26: the stored
+    grants named cdhash 6E549497..., the exact hash of that morning's build, and
+    an older row still named a build that no longer existed. A certificate makes
+    the requirement name the bundle id and the leaf, which survives a rebuild.
+    """
+    text = (SHELL / "build.sh").read_text(encoding="utf-8")
+    assert "MANUSCRIPTOR_SIGN_IDENTITY" in text, (
+        "the signing identity must be nameable, not hardcoded ad-hoc"
+    )
+    assert '--sign "$IDENTITY"' in text, "the normal path must sign with an identity"
+    lines = [ln.strip() for ln in text.splitlines()]
+    adhoc = [i for i, ln in enumerate(lines) if "--sign -" in ln]
+    assert adhoc, "an ad-hoc fallback should remain for a machine with no certificate"
+    for i in adhoc:
+        assert any(lines[j] == "else" for j in range(max(0, i - 3), i)), (
+            "ad-hoc signing must be a fallback branch, never the default path"
+        )
+
+
+def test_the_window_claims_no_represented_file():
+    """A represented file draws a document proxy icon in the title bar.
+
+    On macOS 26 that icon is leading-aligned, `titleVisibility = .hidden` does
+    not suppress it, and it paints ON TOP of the web content: measured at x
+    81-99 in window coordinates, over the second character of the page's own
+    title row (the traffic lights end at 70). It duplicated the path the row
+    already shows, so it goes; the row keeps the whole bar.
+    """
+    # Comments stripped: this one is asserting the ABSENCE of an API, and the
+    # comment saying why it is absent names it. A grep that its own explanation
+    # trips is a guard that can only be satisfied by silence.
+    src = re.sub(r"//[^\n]*", "", _swift_source())
+    assert "representedFilename" not in src, (
+        "representedFilename draws a proxy icon over the page's title row"
+    )
+    assert "representedURL" not in src, "same icon by the other name"
+
+
+def test_the_shell_measures_the_titlebar_inset_rather_than_guessing_it():
+    """Where the page's title row may start is AppKit's geometry, not ours.
+
+    Hardcoding 78px in CSS was wrong twice over: it did not account for a
+    leading proxy icon, and in full screen the buttons are gone and the row
+    still paid for them. The shell can read the real button frames, so it does,
+    and it re-publishes them whenever the window changes shape.
+    """
+    src = _swift_source()
+    assert "--ms-titlebar-inset" in src, "the shell must publish the measured inset"
+    assert "standardWindowButton" in src, "the inset must come from the real buttons"
+    assert "windowDidResize" in src, "a resize can change the button geometry"
+    assert "FullScreen" in src, "full screen hides the buttons: the inset is 0 there"
 
 
 # ------------------------------------------------- the Swift/Python parity check
