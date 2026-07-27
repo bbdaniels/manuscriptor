@@ -102,29 +102,20 @@ class _State:
         self.length += len(chunk)
 
 
-def _walk(path: Path, state: _State, stack: tuple[Path, ...]) -> None:
+def _walk(
+    path: Path,
+    state: _State,
+    stack: tuple[Path, ...],
+    *,
+    directive_ends_line: bool = False,
+) -> None:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return
 
-    # A `%` consumes its own line terminator, so an included file whose last
-    # line ends in a comment contributes no newline to the stream that included
-    # it: TeX resumes at the character after the directive. Concatenating the
-    # file's bytes verbatim inserts a newline the compiler never sees, and where
-    # the including line also ends there, the two meet as a blank line and split
-    # a paragraph mid-sentence.
-    #
-    # This is what makes the `\input{fragment}%` idiom work. A generated value
-    # lives in its own file ending in `%` so the include contributes no trailing
-    # space. Observed 2026-07-27 in dsp-bias, where every statistic arrives that
-    # way and twelve sentences broke, always just after a number.
-    #
-    # Only for an included file. The root's trailing newline has nothing after
-    # it, and a blank line following a comment *inside* a file is a real
-    # paragraph break that TeX honors, so neither is touched here.
-    if stack and text.endswith("\n") and _is_commented(text, len(text) - 1):
-        text = text[:-1]
+    if stack:
+        text = _contribution(text, directive_ends_line=directive_ends_line)
 
     pos = 0
     line = 1
@@ -144,7 +135,18 @@ def _walk(path: Path, state: _State, stack: tuple[Path, ...]) -> None:
                 state.missing.append(m.group(2).strip())
             state.emit(m.group(0), path, line)
         else:
-            _walk(target, state, stack + (path,))
+            _walk(
+                target,
+                state,
+                stack + (path,),
+                # `\include` clears the page on both sides, so its file is a
+                # division of the document and the blank line the join leaves is
+                # right. `\input` is a splice into the stream and must not
+                # invent a paragraph break; see `_contribution`.
+                directive_ends_line=(
+                    m.group(1) == "input" and _rest_of_line_is_blank(text, m.end())
+                ),
+            )
 
         line += m.group(0).count("\n")
         pos = m.end()
@@ -152,19 +154,82 @@ def _walk(path: Path, state: _State, stack: tuple[Path, ...]) -> None:
     state.emit(text[pos:], path, line)
 
 
+def _contribution(text: str, *, directive_ends_line: bool) -> str:
+    """What an included file actually hands back to the stream that read it.
+
+    Not its bytes. TeX terminates every *line* it reads, but a file boundary is
+    not a line boundary: at the end of an included file TeX simply resumes at
+    the character after the directive. Concatenating the bytes verbatim
+    therefore invents terminators the compiler never sees, and two of them meet
+    as a blank line that splits a paragraph mid-sentence.
+
+    Two corrections, and they compose:
+
+    A trailing comment consumes its own terminator and hands back nothing, so it
+    is dropped along with the `%` that opened it. Leaving the `%` in the buffer
+    is worse than the newline it was there to eat: in the flattened stream it
+    lands mid-line and comments out the rest of the *parent's* sentence.
+    Observed 2026-07-27 in dsp-bias, where `\\input{frag}%` is how every
+    statistic arrives and every clause following a number vanished from the
+    render.
+
+    Then, if the file still ends its own line and the including line ends at the
+    directive too, one of the two terminators is dropped. Verified against
+    pdflatex: `some text \\input{sub}` followed by `more text`, with `sub.tex`
+    ending in a newline, typesets as one paragraph. Only the pair is collapsed,
+    because a file ending mid-line (`\\input{sub}tail`) really does contribute
+    the space that separates it from what follows.
+    """
+    while True:
+        at = _trailing_comment(text)
+        if at is None:
+            break
+        text = text[:at]
+
+    if directive_ends_line and text.endswith("\n"):
+        text = text[:-1]
+    return text
+
+
+def _trailing_comment(text: str) -> int | None:
+    """Index of the `%` opening a comment that runs to the end of `text`."""
+    body = text[:-1] if text.endswith("\n") else text
+    return _comment_at(body, body.rfind("\n") + 1, len(body))
+
+
+def _rest_of_line_is_blank(text: str, at: int) -> bool:
+    """True when only spaces separate `at` from its line's end (or the file's).
+
+    Trailing spaces before the newline are not a contribution of their own: TeX
+    is skipping blanks by then, so the terminator that follows them is the same
+    single terminator.
+    """
+    eol = text.find("\n", at)
+    return text[at : len(text) if eol < 0 else eol].strip(" \t") == ""
+
+
 def _is_commented(text: str, at: int) -> bool:
     """True when an unescaped `%` precedes `at` on the same line."""
-    bol = text.rfind("\n", 0, at) + 1
-    i = bol
-    while i < at:
+    return _comment_at(text, text.rfind("\n", 0, at) + 1, at) is not None
+
+
+def _comment_at(text: str, start: int, stop: int) -> int | None:
+    """Index of the first unescaped `%` in `text[start:stop]`, or None.
+
+    One scanner. `\\%` is a literal percent sign and opens nothing, and reading
+    that rule two ways is how a manuscript quietly loses the half of a sentence
+    that follows a number.
+    """
+    i = start
+    while i < stop:
         c = text[i]
         if c == "\\":
             i += 2
             continue
         if c == "%":
-            return True
+            return i
         i += 1
-    return False
+    return None
 
 
 def _resolve(target: str, *, including: Path, root: Path) -> Path | None:
