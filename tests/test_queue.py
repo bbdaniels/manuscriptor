@@ -108,7 +108,11 @@ def test_a_queue_entry_carries_what_the_header_and_the_margin_need(tmp_path):
     assert e["id"] == "c-0001"
     assert e["block"] == bid
     assert e["state"] == "queued"
-    assert e["section"] == "Results"
+    # Its own opening words, not its section: the fixture has three paragraphs
+    # under one `\section{Results}` and naming them all "Results" is what the
+    # author read as one item three times over.
+    assert e["section"] == \
+        "We interpret this as evidence that the contract itself, rather than the…"
     assert e["body"] == "This overclaims. Soften it."
     assert e["since"], "a state with no start cannot be aged"
     assert e["waited"] >= 290, e["waited"]
@@ -163,7 +167,9 @@ def test_a_queue_entry_never_names_a_block_the_page_has_lost(tmp_path):
     assert len(q) == 1
     assert q[0]["block"] != bid
     assert q[0]["block"] in b.by_id, "every entry must name a live block"
-    assert q[0]["section"] == "Results"
+    # The edit landed past the clip, so the name is stable across the rename.
+    assert q[0]["section"] == \
+        "We interpret this as evidence that the contract itself, rather than the…"
 
 
 def test_a_chat_whose_paragraph_is_gone_is_listed_without_a_block(tmp_path):
@@ -204,8 +210,99 @@ def test_the_ticker_is_newest_first_and_names_the_section(tmp_path):
     t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
     assert t[0]["state"] == "done"
     assert t[1]["state"] == "working"
-    assert t[0]["section"] == "Results", "the author's terms, not a hex id"
+    assert t[0]["section"] == \
+        "We interpret this as evidence that the contract itself, rather than the…", \
+        "the author's terms, not a hex id and not the section three of them share"
     assert t[0]["when"]
+
+
+def test_a_ticker_entry_carries_what_was_asked(tmp_path):
+    """The ticker reports work, and the work is the request.
+
+    `ticker_view` read only the state records, so an entry knew which block was
+    moving and never what anyone had asked for. The chats are already in hand
+    two lines above -- the id on a state record is the comment it answers.
+    """
+    d, _, _ = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
+    assert t[0]["asked"] == "This overclaims. Soften it."
+
+
+def test_two_requests_on_one_block_are_two_distinguishable_lines(tmp_path):
+    """The case that was impossible. Naming an entry by its block made both
+    requests the same line printed twice, with nothing saying which had moved."""
+    d, _, b = setup(tmp_path)
+    para = [x for x in b.blocks if x.kind == "paragraph"][1]
+    chat.append(
+        paths.comments(d),
+        {"id": "c-0002", "kind": "comment", "block": para.id, "file": str(para.file),
+         "lines": [para.line_start, para.line_end], "quote": para.source_text[:120],
+         "body": "Also check the citation here.", "author": "bb", "ts": ago_iso(200)},
+    )
+    drain.mark(d, "c-0001", "working")
+    drain.mark(d, "c-0002", "working")
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
+
+    two = [e for e in t if e["state"] == "working"]
+    assert len(two) == 2
+    assert two[0]["block"] == two[1]["block"], "same paragraph, which is the point"
+    assert {e["asked"] for e in two} == {
+        "This overclaims. Soften it.", "Also check the citation here."}
+
+    if NODE:
+        lines = [node_call("tickerText", e) for e in two]
+        assert lines[0] != lines[1], "two requests, two lines"
+        assert all("working" in ln for ln in lines)
+
+
+def test_a_long_request_is_clipped_in_python_not_only_in_css(tmp_path):
+    """The queue and the agent's work item read this string too, and neither
+    has a stylesheet."""
+    d, _, b = setup(tmp_path)
+    para = [x for x in b.blocks if x.kind == "paragraph"][0]
+    chat.append(
+        paths.comments(d),
+        {"id": "c-0009", "kind": "comment", "block": para.id, "file": str(para.file),
+         "lines": [para.line_start, para.line_end], "quote": para.source_text[:120],
+         "body": " ".join(["rewrite"] * 60), "author": "bb", "ts": ago_iso(10)},
+    )
+    drain.mark(d, "c-0009", "working")
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
+    asked = next(e for e in t if e["id"] == "c-0009")["asked"]
+    assert len(asked) <= 64
+    assert asked.endswith("…")
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_ticker_line_leads_with_the_request_and_hovers_the_place():
+    e = {"kind": "state", "state": "working", "asked": "Soften this claim",
+         "section": "We interpret this as evidence"}
+    assert node_call("tickerText", e) == "“Soften this claim” · working"
+    title = node_call("tickerTitle", e)
+    assert "Soften this claim" in title and "We interpret this as evidence" in title
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_an_entry_with_no_request_still_names_its_block():
+    """A `patch` has no comment behind it, and a state record written before
+    the field existed has none either. Both must keep rendering."""
+    assert node_call("tickerText", {"kind": "patch", "section": "Data", "n": 2}) \
+        == "Data · edited, 2 blocks"
+    assert node_call("tickerText", {"kind": "state", "state": "done",
+                                    "section": "Results"}) == "Results · done"
+    assert node_call("tickerTitle", {"kind": "state", "state": "done",
+                                     "section": "Results"}) == "Results"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_ticker_key_separates_two_requests_on_one_block():
+    """The key decides whether a refresh redraws. Two requests on one paragraph
+    share kind, state, block and often the second they landed in, so without
+    the comment id the second one never appears."""
+    a = {"kind": "state", "state": "working", "id": "c-1", "block": "b-x", "when": "T"}
+    b = {"kind": "state", "state": "working", "id": "c-2", "block": "b-x", "when": "T"}
+    assert node_call("tickerKey", [a]) != node_call("tickerKey", [b])
 
 
 def test_a_block_with_no_section_is_still_named_something_the_author_can_find(tmp_path):
@@ -213,6 +310,11 @@ def test_a_block_with_no_section_is_still_named_something_the_author_can_find(tm
     ticker read "the manuscript · working". The abstract sits above every
     heading, so it genuinely has no section, and the fallback told the author
     nothing at all. A file and a line is a place he can go.
+
+    The abstract now names itself, by its own first sentence -- which is both
+    better than a file and a line and the reason to check no markup rides along
+    with it: the block's source opens `\\begin{abstract}`, and that environment
+    is part of the block, not part of what the author calls it.
     """
     body = DOC.replace("\\begin{document}\n",
                        "\\begin{document}\n\\begin{abstract}\nThis paper examines a contract.\n\\end{abstract}\n")
@@ -223,6 +325,26 @@ def test_a_block_with_no_section_is_still_named_something_the_author_can_find(tm
     chat.append(paths.comments(tmp_path),
                 {"id": "c-0001", "kind": "comment", "block": blk.id, "file": str(blk.file),
                  "quote": blk.source_text[:120], "body": "tighten", "author": "bb"})
+
+    e = build_mod.queue_view(paths.comments(tmp_path), b.blocks, root=tmp_path)[0]
+    assert e["section"] == "This paper examines a contract."
+    assert "\\" not in e["section"] and "{" not in e["section"]
+    assert e["where"] == f"main.tex:{blk.line_start}", e["where"]
+
+
+def test_a_block_with_neither_a_section_nor_words_falls_back_to_its_place(tmp_path):
+    """The `where` fallback, still exercised now that prose names itself. A
+    captionless figure above every heading has nothing to say about itself."""
+    body = DOC.replace(
+        "\\begin{document}\n",
+        "\\begin{document}\n\\begin{figure}\n\\includegraphics{plot.pdf}\n\\end{figure}\n")
+    (tmp_path / "main.tex").write_text(body, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    blk = next(x for x in b.blocks if x.kind == "figure")
+    assert blk.parent_heading is None and blk.caption is None
+    chat.append(paths.comments(tmp_path),
+                {"id": "c-0001", "kind": "comment", "block": blk.id, "file": str(blk.file),
+                 "quote": blk.source_text[:120], "body": "crop it", "author": "bb"})
 
     e = build_mod.queue_view(paths.comments(tmp_path), b.blocks, root=tmp_path)[0]
     assert e["section"] is None
@@ -1058,11 +1180,22 @@ def test_the_agent_is_the_default(tmp_path, monkeypatch):
 
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     started = []
-    monkeypatch.setattr(cli, "start_agent", lambda d: (started.append(d), None)[1] and None or (None, None))
+
+    def stub(d, *, lock=None):
+        # `lock` is the queue's claim: taken before the drain is spawned and
+        # handed down to it, one drain per comment queue across processes. Its
+        # state is recorded here rather than asserted later, because `serve`
+        # releases on the way out and the object would then read as unheld.
+        started.append((d, lock is not None and lock.held))
+        return None, None
+
+    monkeypatch.setattr(cli, "start_agent", stub)
     monkeypatch.setattr(app_mod, "serve", lambda d, **kw: None)
 
     cli.main(["serve", str(tmp_path), "--no-window"])
     assert started, "serve without flags must run the agent; that is the workflow"
+    assert started[0][1], \
+        "the drain must be handed the queue's claim, or two servers drain one queue"
 
     started.clear()
     cli.main(["serve", str(tmp_path), "--no-window", "--no-agent"])

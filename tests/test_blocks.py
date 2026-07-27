@@ -577,11 +577,141 @@ def test_a_float_is_named_by_its_own_caption(tmp_path):
     ]
 
 
-def test_a_block_with_no_caption_falls_back_to_its_heading(tmp_path):
-    blocks = seg(tmp_path, "\\section{Methods}\nOrdinary prose.")
-    prose = next(b for b in blocks if b.kind == "paragraph")
-    assert prose.caption is None
-    assert blocks_mod.label(prose) == "Methods"
+def test_two_paragraphs_under_one_heading_are_named_differently(tmp_path):
+    """A paragraph has no caption, so before this it answered to its heading.
+
+    Reported live 2026-07-28. The caption fix of the day before named an
+    EXHIBIT by its own words, but a paragraph has no `\\caption` to be named by,
+    so every paragraph under one `\\section` still came back as that section --
+    which is the same "two blocks, one name" the caption fix was written to
+    kill, still armed for the large majority of blocks in any manuscript.
+    """
+    blocks = seg(
+        tmp_path,
+        "\\section{Methods}\n"
+        "We drew the sample from the national register.\n\n"
+        "Attrition was balanced across the two arms.",
+    )
+    prose = [b for b in blocks if b.kind == "paragraph"]
+    assert len(prose) == 2
+    assert [b.caption for b in prose] == [None, None]
+    assert [b.parent_heading for b in prose] == ["Methods", "Methods"], "shared"
+    names = [blocks_mod.label(b) for b in prose]
+    assert names[0] != names[1], names
+    assert names == [
+        "We drew the sample from the national register.",
+        "Attrition was balanced across the two arms.",
+    ]
+
+
+def test_a_heading_is_named_by_its_own_words(tmp_path):
+    """Not by the heading ABOVE it, which is what `parent_heading` holds."""
+    blocks = seg(tmp_path, "\\section{Results}\n\\subsection{Take-up}\nProse.")
+    heads = [b for b in blocks if b.kind == "heading"]
+    assert [b.parent_heading for b in heads] == [None, "Results"]
+    assert [blocks_mod.label(b) for b in heads] == ["Results", "Take-up"]
+
+
+def test_a_paragraph_label_drops_an_inline_input(tmp_path):
+    """An `\\input` is a path, and a path is not what the author called this.
+
+    qutub-india writes auto-exported values mid-sentence. `source_text` holds
+    the directive verbatim -- that is the whole point of it -- so the naming
+    pass has to drop it rather than print `exhibits/pval` at the author.
+    """
+    blocks = seg(
+        tmp_path,
+        "Referrals reached \\input{exhibits/pval} of the sampled cases.",
+        exhibits__pval="0.096",
+    )
+    (prose,) = [b for b in blocks if b.kind == "paragraph"]
+    assert "\\input" in prose.source_text, "the directive must survive in source"
+    name = blocks_mod.label(prose)
+    assert name == "Referrals reached of the sampled cases."
+    assert "exhibits" not in name and "\\" not in name and "{" not in name
+
+
+def test_a_paragraph_opening_with_an_input_is_named_by_its_words(tmp_path):
+    """Built directly, so this is about naming and not about flatten: a block
+    whose source begins with a directive must still come back as words."""
+    prose = Block(
+        id="b-0000000000", kind="paragraph", file=tmp_path / "main.tex",
+        line_start=1, line_end=1, flat_start=0, flat_end=0,
+        source_text="\\input{exhibits/pval} of the sampled cases were referred onward.",
+        flat_text="", parent_heading="Results", editable=True,
+    )
+    name = blocks_mod.label(prose)
+    assert name == "of the sampled cases were referred onward."
+    assert "exhibits" not in name and "pval" not in name
+
+
+def test_a_paragraph_label_is_stripped_the_way_a_caption_is(tmp_path):
+    blocks = seg(
+        tmp_path,
+        "Take-up reached $64$\\% \\citep{cook2010}, well above \\textbf{target}.",
+    )
+    (prose,) = [b for b in blocks if b.kind == "paragraph"]
+    assert blocks_mod.label(prose) == "Take-up reached 64% , well above target."
+
+
+def test_a_long_paragraph_label_is_clipped_in_python(tmp_path):
+    """The ticker clamps at 26ch in CSS, but the queue and the agent work item
+    read the same string and neither has a stylesheet."""
+    body = " ".join(f"word{n}" for n in range(60)) + "."
+    (prose,) = [b for b in seg(tmp_path, body) if b.kind == "paragraph"]
+    name = blocks_mod.label(prose)
+    assert len(name) <= blocks_mod.LABEL_CHARS
+    assert name.endswith("\u2026")
+    assert name.startswith("word0 word1 ")
+
+
+def test_a_paragraph_label_drops_a_leading_latex_comment(tmp_path):
+    """estonia-ecm's Introduction, verbatim in shape: several paragraphs open
+    with a shouted drafting note that prints nothing and named the block."""
+    blocks = seg(
+        tmp_path,
+        "\\section{Introduction}\n%CONTRACTING LITERATURE IS MISSING\n"
+        "The ECM program shifted care from an implicit bargain.",
+    )
+    (prose,) = [b for b in blocks if b.kind == "paragraph"]
+    assert prose.source_text.startswith("%"), "the comment must be in the block"
+    assert blocks_mod.label(prose) == \
+        "The ECM program shifted care from an implicit bargain."
+
+
+def test_grouping_braces_go_even_when_a_command_survives_further_on(tmp_path):
+    """The brace rule is local to the command holding them.
+
+    Deciding it over the whole string -- keep every brace if any backslash is
+    left anywhere -- is what put `Y_{ik,t}` in the first line of estonia-ecm's
+    model paragraphs, because they close with an `\\alpha` forty words later.
+    """
+    (prose,) = [b for b in seg(
+        tmp_path,
+        "The share {of} patients rose. Formally, \\textcolor{red}{note} $\\alpha$ governs it.",
+    ) if b.kind == "paragraph"]
+    assert blocks_mod.label(prose) == "The share of patients rose."
+
+
+def test_a_paragraph_that_is_only_markup_falls_back_to_its_heading(tmp_path):
+    """Its own words are the right name only when it has words. `\\maketitle`
+    names nothing, and printing it at the author names nothing either."""
+    blocks = seg(tmp_path, "\\section{Front matter}\n\\maketitle\n\nReal prose here.")
+    markup = next(b for b in blocks
+                  if b.kind == "paragraph" and "maketitle" in b.source_text)
+    assert blocks_mod.label(markup) == "Front matter"
+
+
+def test_a_captionless_exhibit_still_falls_back_to_its_heading(tmp_path):
+    """Its own words are column specs and ampersands, which name nothing."""
+    blocks = seg(
+        tmp_path,
+        "\\section{Results}\n\\begin{table}\n\\begin{tabular}{ll}\nA & B \\\\\n"
+        "\\end{tabular}\n\\end{table}",
+    )
+    (table,) = [b for b in blocks if b.kind == "table"]
+    assert table.caption is None
+    assert blocks_mod.label(table) == "Results"
 
 
 def test_a_caption_is_read_to_its_own_closing_brace(tmp_path):
