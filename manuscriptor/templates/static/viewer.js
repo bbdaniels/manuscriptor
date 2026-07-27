@@ -208,11 +208,13 @@
      file is written in the order things happened, so a reverse is exact.
      `newestFirst` is right for chats, which arrive minutes apart and out of
      order across two processes. */
-  /* What to call a block. The server decides it in `source/blocks.label` -- an
-     exhibit's own caption, else the heading it sits under -- and the page must
-     not decide it a second way, or the ticker and the inspector end up calling
-     one paragraph two things. `parent_heading` is the fallback for a blob
-     written before `label` existed, which a static export on disk can be. */
+  /* What to call a block. The server decides it in `source/blocks.label` -- its
+     own words, meaning an exhibit's caption or a paragraph's opening clause,
+     and only then the heading it sits under -- and the page must not decide it
+     a second way, or the ticker and the inspector end up calling one paragraph
+     two things. `parent_heading` is the fallback for a blob written before
+     `label` existed, which a static export on disk can be, and it is the reason
+     an old export names every paragraph of a section alike. */
   function blockName(b) {
     if (!b) return null;
     return b.label || b.caption || b.parent_heading || null;
@@ -267,9 +269,18 @@
     }).join(' · ');
   }
 
-  /* One ticker line: what happened, to the block NAMED THE WAY THE AUTHOR NAMES
-     IT. A hex id is not a name he chose, and it changes the moment the
-     paragraph is edited, so it would be the least stable thing on the page. */
+  /* One ticker line: what happened, to the WORK the author asked for.
+
+     The ticker answers "what is going on right now", and the answer to that is
+     the request, not its address. Naming the block instead -- which this did --
+     makes two requests on one paragraph the same line printed twice, and says
+     nothing about which of them is moving. The block name is still here, in the
+     hover title, because "where" is the second question and not the first.
+
+     `label` remains the one name for a block and the queue, the inspector title
+     and the agent's work item all still use it. A hex id is never a name: the
+     author did not choose it, and it changes the moment the paragraph is
+     edited, so it would be the least stable thing on the page. */
   var TICKER_WORDS = {
     queued: 'queued', working: 'working', done: 'done', orphaned: 'orphaned',
     review: 'flagged for review'
@@ -281,7 +292,6 @@
     // have to render, and the contract said `notify(text)` while this read
     // fields that a string does not have.
     if (e.text) return String(e.text);
-    var label = e.section || e.where || 'the manuscript';
     var what;
     if (e.kind === 'patch') {
       what = 'edited';
@@ -289,7 +299,26 @@
     } else {
       what = TICKER_WORDS[e.state] || String(e.state || '');
     }
-    return label + ' · ' + what;
+    // A `patch` has no comment behind it, and a state record whose comment
+    // predates this field has none either, so both keep naming the block.
+    var lead = e.asked ? '“' + e.asked + '”' : tickerWhere(e);
+    return lead + ' · ' + what;
+  }
+
+  /* Where an entry is, for the entries that have no request to lead with and
+     for the hover title of the ones that do. */
+  function tickerWhere(e) {
+    e = e || {};
+    return e.section || e.where || 'the manuscript';
+  }
+
+  /* The hover title: the request in full is already clipped server-side, so
+     what hover adds is the location. Both, when both exist. */
+  function tickerTitle(e) {
+    e = e || {};
+    if (e.text) return String(e.text);
+    if (!e.asked) return tickerWhere(e);
+    return '“' + e.asked + '” · ' + tickerWhere(e);
   }
 
   /* An edit renames its block, so every queue entry has to travel with the
@@ -401,6 +430,8 @@
     feedNewestFirst: feedNewestFirst,
     queueSummary: queueSummary,
     tickerText: tickerText,
+    tickerTitle: tickerTitle,
+    tickerKey: tickerKey,
     renameQueue: renameQueue,
     MS_DRAFT_PREFIX: MS_DRAFT_PREFIX
   };
@@ -1120,24 +1151,53 @@
     var f = S.ms.agent_feed || {};
     var entries = (f.entries || []);
     var state = String(f.state || 'idle');
+    var inner;
     if (!entries.length && state === 'idle') {
-      return card('The agent', 'idle',
+      inner = card('The agent', 'idle',
         '<p class="empty">Nothing queued. A note above becomes a comment, and what ' +
         'the agent does about it appears here as it happens.</p>');
+    } else {
+      var working = (f.working || []);
+      var head = state + (working.length ? ' · ' + working.join(', ') : '');
+      var rows = feedNewestFirst(entries).map(function (e) {
+        var who = e.who === 'teammate' ? 'teammate' : 'agent';
+        return '<div class="fe ' + esc(e.kind) + ' ' + who + '">' +
+          '<b>' + who + '</b> <span>' + esc(e.text) + '</span>' +
+          '<time>' + esc(ago(e.ts)) + '</time></div>';
+      }).join('');
+      var jump = working.length
+        ? '<div class="row"><button class="btn" type="button" data-act="feed:goto">' +
+          'Show the paragraph it is working on</button></div>'
+        : '';
+      inner = card('The agent', head, '<div class="feed-live">' + rows + '</div>' + jump);
     }
-    var working = (f.working || []);
-    var head = state + (working.length ? ' · ' + working.join(', ') : '');
-    var rows = feedNewestFirst(entries).map(function (e) {
-      var who = e.who === 'teammate' ? 'teammate' : 'agent';
-      return '<div class="fe ' + esc(e.kind) + ' ' + who + '">' +
-        '<b>' + who + '</b> <span>' + esc(e.text) + '</span>' +
-        '<time>' + esc(ago(e.ts)) + '</time></div>';
-    }).join('');
-    var jump = working.length
-      ? '<div class="row"><button class="btn" type="button" data-act="feed:goto">' +
-        'Show the paragraph it is working on</button></div>'
-      : '';
-    return card('The agent', head, '<div class="feed-live">' + rows + '</div>' + jump);
+    // The slot is what lets `renderAgentFeed` swap this card by itself.
+    return '<div data-role="agentfeed">' + inner + '</div>';
+  }
+
+  /* The feed had two renderers -- the title-bar line and this card -- and only
+     the title bar was wired to the update. `setAgent` stored every frame and
+     re-drew the line, while the card kept whatever `renderHome` painted at
+     boot: the empty state, from the moment before any frame arrived. Observed
+     2026-07-27 in dsp-bias, where the card read "Nothing queued" beside a feed
+     holding 62 entries and a title bar reading "2 working · 7 to review".
+
+     The card is swapped on its own, not through `renderHome`, because the
+     composer sits directly above it and a rebuild every frame would take the
+     author's focus, caret, and draft with it. Clicks survive the swap without
+     re-wiring: `[data-act]` is delegated from the document. */
+  function renderAgentFeed() {
+    if (S.sel || !ibodyEl) return;
+    var slot = ibodyEl.querySelector('[data-role="agentfeed"]');
+    if (!slot) return;
+    var next = agentFeed();
+    if (slot.outerHTML === next) return;
+    // The scroller is the author's place in the log, so it is put back.
+    var live = slot.querySelector('.feed-live');
+    var at = live ? live.scrollTop : 0;
+    slot.outerHTML = next;
+    var back = ibodyEl.querySelector('[data-role="agentfeed"] .feed-live');
+    if (back) back.scrollTop = at;
   }
 
   function renderHome() {
@@ -2262,11 +2322,17 @@
       agentEl.setAttribute('title', queueTitle());
     }
     renderTicker();
+    // Here rather than in `setAgent`, so the 15-second tick ages the card's own
+    // timestamps too and does not leave it claiming work started "just now".
+    renderAgentFeed();
   }
 
   function tickerKey(items) {
     return items.map(function (e) {
-      return [e.kind, e.state, e.block, e.when, e.n].join('|');
+      // `id` is here because the block no longer identifies a line: two
+      // requests on one paragraph share kind, state, block and often the
+      // second they landed in, and without it the second never re-renders.
+      return [e.kind, e.state, e.id, e.block, e.when, e.n].join('|');
     }).join(';');
   }
 
@@ -2298,11 +2364,12 @@
     tickerEl.innerHTML = items.map(function (e, i) {
       var full = tickerText(e);
       var label = esc(full);
+      var hover = esc(tickerTitle(e));
       var id = e.block ? normId(e.block) : '';
       var title = (id && S.blocks[id])
-        ? '<button type="button" class="tkgo" title="' + esc(full) + '" data-goto="' +
+        ? '<button type="button" class="tkgo" title="' + hover + '" data-goto="' +
           esc(id) + '">' + label + '</button>'
-        : '<span class="tklabel" title="' + esc(full) + '">' + label + '</span>';
+        : '<span class="tklabel" title="' + hover + '">' + label + '</span>';
       return '<span class="tk' + (i ? '' : ' now') + '">' + title +
         '<time>' + esc(e.when ? ago(e.when) : '') + '</time></span>';
     }).join('');

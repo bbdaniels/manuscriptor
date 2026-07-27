@@ -55,7 +55,12 @@ def test_a_pending_comment_arrives_with_its_block(tmp_path):
     assert it.chat_id == "c-0001" and it.block_id == bid
     assert "interpret this as evidence" in it.source
     assert it.editable is True
-    assert it.section == "Results"
+    # The work item names the block the way the page does: by its own opening
+    # words. Naming it "Results" would name the other two paragraphs of the
+    # section equally well, and the agent would report work on a paragraph the
+    # author cannot pick out of the three.
+    assert it.section == \
+        "We interpret this as evidence that the contract itself, rather than the…"
 
 
 def test_context_is_wide_and_the_writable_unit_is_narrow(tmp_path):

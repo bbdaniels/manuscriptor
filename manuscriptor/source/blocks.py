@@ -107,10 +107,52 @@ _BLANK_RE = re.compile(r"\n[ \t\r]*(?:\n[ \t\r]*)+")
 
 # `\captionsetup` and friends must not match, so the name ends where it ends.
 _CAPTION_RE = re.compile(r"\\caption(of)?\*?(?![a-zA-Z])")
-_LABEL_RE = re.compile(r"\\label\s*\{[^{}]*\}")
-_TEXT_MACRO_RE = re.compile(
-    r"\\(?:textbf|textit|textrm|textsf|texttt|textsc|textnormal|emph|text)\s*\{([^{}]*)\}"
-)
+
+# How long a name may be. The ticker clamps at 26ch in CSS and keeps the whole
+# string on hover, but the queue, the inspector title and the work item handed
+# to the agent all read this same string and none of them has a stylesheet.
+LABEL_WORDS = 14
+LABEL_CHARS = 80
+
+# Commands whose argument is machinery rather than words. `\input` is a path and
+# would put `exhibits/pval` where a name goes; `\ref` is a number this module
+# cannot know; a `\footnote` is a different sentence that happens to start here.
+# Dropped whole, command and arguments together. `begin`/`end` are here for the
+# blocks that are a whole environment: an abstract is one paragraph-shaped block
+# whose source opens `\begin{abstract}`, and naming it that put markup in the
+# queue where the abstract's first line belongs.
+_DROP = {
+    "begin", "end",
+    "input", "include", "label", "index", "nocite", "bibliography",
+    "bibliographystyle", "includegraphics", "vspace", "hspace", "footnote",
+    "footnotetext", "thanks", "ref", "eqref", "autoref", "pageref", "nameref",
+    "cref", "Cref", "cpageref", "Cpageref", "vref", "protect",
+    # Document machinery that opens a block ahead of its first real word.
+    # dsp-bias's abstract begins `\begin{singlespace} \setlength{\parskip}{2pt}
+    # \maketitle \vspace{-2em}` and only then says what the paper is about.
+    "setlength", "addtolength", "setcounter", "counterwithin", "numberwithin",
+    "renewcommand", "newcommand", "providecommand", "newcolumntype",
+    "addcontentsline", "captionsetup", "includepdf", "pagenumbering",
+    "pagestyle", "thispagestyle", "hypersetup", "graphicspath",
+}
+# Commands that print nothing and take no argument, so the token goes and
+# whatever follows it stays. `\item` heads every list-item block by
+# construction, which is why the list is not empty.
+_BARE = {
+    "item", "par", "noindent", "indent", "centering", "raggedright",
+    "raggedleft", "clearpage", "newpage", "bigskip", "medskip", "smallskip",
+    "hfill", "linebreak", "newline", "footnotesize", "scriptsize", "small",
+    "normalsize", "large", "Large", "LARGE", "huge", "Huge",
+    "maketitle", "appendix", "tableofcontents", "listoftables", "listoffigures",
+    "singlespacing", "doublespacing", "onehalfspacing",
+}
+# Commands that wrap words the author meant to read. Sectioning is here so a
+# heading block, whose whole source IS the command, comes back as its title.
+_UNWRAP = {
+    "textbf", "textit", "textrm", "textsf", "texttt", "textsc", "textnormal",
+    "emph", "text", "mbox", "textsuperscript", "textsubscript", "uline",
+    "underline", "MakeUppercase", "MakeLowercase", *_SECTION_LEVEL,
+}
 # Words that end in a period and do not end a sentence. Initialisms (`U.S.`,
 # `e.g.`) are matched by shape rather than listed.
 _ABBREV = {
@@ -122,7 +164,10 @@ _INITIALISM_RE = re.compile(r"^(?:[A-Za-z]\.)+$")
 # Inline math only. `$$` and display environments do not appear in a caption,
 # and an unpaired `$` is left alone rather than eating the rest of the name.
 _MATH_RE = re.compile(r"(?<!\\)\$([^$]*)(?<!\\)\$")
-_ESCAPED_RE = re.compile(r"\\([%&_#$])")
+_ESCAPED_RE = re.compile(r"\\([%&_#${}])")
+# Markup that survived the cleaner. A name is words; if this still matches, the
+# block has not told us what it is called and its heading is the better answer.
+_MARKUP_RE = re.compile(r"\\[a-zA-Z@]|[{}]")
 # A citation in a caption is attribution, not part of the exhibit's name, and it
 # cannot be rendered here: `\citealt{rijnhart_mediation}` would put a bibtex key
 # on screen. estonia-ecm's mediation flowchart is captioned "Mediation analysis
@@ -180,21 +225,51 @@ def block_id(source_text: str) -> str:
     return "b-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:10]
 
 
+# Blocks named by their OWN words. A paragraph, a list item and a heading are
+# made of words, so the first of them is a name. A table's own words are column
+# specifications and ampersands, and an equation's are operators, so those keep
+# the caption-then-heading rule.
+_SELF_NAMED = {"paragraph", "list_item", "heading"}
+
+
 def label(block: Block) -> str | None:
     """What to call this block in front of the author.
 
-    Its own caption first, then the heading it sits under. The heading is a fact
-    about position and is often not a name at all: dsp-bias `\\input`s a file of
-    two tables fifty lines below a `\\paragraph{Socioeconomic status.}`, so both
-    tables answered to those words, and the ticker reported an edit landing on
-    one of them in language indistinguishable from the other, which was open in
-    the inspector and untouched. A caption is what the author called the thing.
+    Its own words, in whatever form it has them: a caption if it has one, else
+    its opening words, and only then the heading it sits under. The heading is a
+    fact about position and is usually not a name at all.
+
+    Both halves of that came from the same bug, six days apart. dsp-bias
+    `\\input`s a file of two tables fifty lines below a `\\paragraph{Socioeconomic
+    status.}`, so both tables answered to those words and the ticker reported an
+    edit landing on one of them in language indistinguishable from the other,
+    which was open in the inspector and untouched. Naming an exhibit by its
+    `\\caption` fixed that for exhibits -- and left it armed for the large
+    majority of blocks in any manuscript, because a paragraph has no caption to
+    be named by and so still came back as its section, once per paragraph in the
+    section. An opening clause distinguishes two paragraphs; a shared heading
+    never can.
 
     One function, because the queue, the ticker, the inspector title and the
     work item handed to the agent must all name a block the same way; naming it
     two ways is how the page comes to contradict itself.
     """
-    return block.caption or block.parent_heading
+    if block.caption:
+        return _clip(block.caption)
+    if block.kind in _SELF_NAMED:
+        # Clipped BEFORE the markup test, because the test is about what the
+        # author will read. estonia-ecm's holistic-care paragraph opens with
+        # thirty clean words and then a `\citep`-free bit of math, and testing
+        # the whole first sentence threw the name away over markup that the
+        # ticker was never going to show.
+        own = _clip(_name(block.source_text))
+        # A paragraph that is only markup -- `\maketitle`, a `\setlength` pair, a
+        # displayed derivation carrying `\sum` and `\alpha'` -- has no words to
+        # be named by, and printing what is left of it names nothing. Those are
+        # the blocks the heading was always the right answer for.
+        if own and not _MARKUP_RE.search(own):
+            return own
+    return block.parent_heading
 
 
 def base_id(bid: str) -> str:
@@ -460,37 +535,141 @@ def _caption_of(source_text: str) -> str | None:
         short, i = _read_optional(source_text, i)
         body, _ = _read_group(source_text, i)
         text = short if (short or "").strip() else body
-        cleaned = _clean_caption(text or "")
+        cleaned = _name(text or "")
         if cleaned:
             return cleaned
     return None
 
 
-def _clean_caption(text: str) -> str:
-    """Caption LaTeX as a plain-text name.
+def _name(text: str) -> str:
+    """LaTeX as the plain-text name of the thing it wrote.
+
+    One implementation, used for a caption and for the opening words of a
+    paragraph alike. They are the same job -- turn markup into what the author
+    would say this block is -- and two strippers that have to agree is the split
+    that rots quietly and then names one block two ways.
 
     Inline math keeps its CONTENT and loses its delimiters: `($N = 216$)` is
     part of what the author calls the table, and dropping it loses the sample
     size, but a `$` on screen is LaTeX leaking into a label. Nothing here tries
-    to render math -- a caption whose name is an equation will read oddly, and
-    that is better than a caption that reads as nothing.
+    to render math -- a name that is an equation will read oddly, and that is
+    better than a name that reads as nothing.
+
+    Only the first SENTENCE, since the rest of an academic caption is the note
+    under the table and the rest of a paragraph is the argument, and neither is
+    any use in a status line a hundred pixels wide.
     """
-    text = _LABEL_RE.sub("", text)
+    # A commented-out first line is not what the block is called, and estonia-ecm
+    # opens paragraphs with shouted drafting notes: the Introduction's fourth
+    # paragraph begins `%CONTRACTING LITERATURE IS MISSING FROM ...`.
+    text = _strip_comments(text)
     text = _CITE_RE.sub("", _CITE_PAREN_RE.sub("", text))
-    for _ in range(3):                      # \textbf{\emph{x}} is two rounds deep
-        text, n = _TEXT_MACRO_RE.subn(r"\1", text)
-        if not n:
-            break
+    text = _macros(text)
     text = _MATH_RE.sub(lambda m: m.group(1).strip(), text)
     text = text.replace("\\\\", " ").replace("~", " ")
     text = _ESCAPED_RE.sub(r"\1", text)
-    # What is left of `\caption{{ECM Impact:} On hospitalizations}` is grouping
-    # that prints nothing, and it printed on estonia-ecm's third table. Only
-    # safe once no command remains: braces still holding an argument to a macro
-    # this does not know would be mangled rather than cleaned.
-    if "\\" not in text:
-        text = text.replace("{", "").replace("}", "")
+    # TeX quoting is typography, not markup, and every one of these manuscripts
+    # uses it: `an explicit ``care plan''` would otherwise be read back verbatim.
+    text = text.replace("``", "“").replace("''", "”")
     return _first_sentence(" ".join(text.split()))
+
+
+def _macros(text: str) -> str:
+    """Drop machinery commands with their arguments; unwrap wrapping ones.
+
+    A single scan rather than a pile of regexes, because both jobs need balanced
+    braces: `\\footnote{see \\emph{also} p. 4}` has to be dropped to its closing
+    brace and not to the first one, and `\\textbf{\\emph{x}}` has to unwrap to
+    the bottom. Unwrapping recurses, so nesting costs no extra pass.
+
+    A command this does not know is emitted verbatim WITH its arguments, braces
+    and all: `\\textcolor{red}{flagged}` would otherwise print `red`, and printing
+    the wrong word is worse than printing the markup, which at least reads as
+    something the author can go and fix.
+
+    That is also why the brace strip lives here rather than after. A brace is
+    grouping unless some command this pass did not recognise is holding it, and
+    only the pass knows which is which. Deciding it afterwards on the whole
+    string -- keep every brace if any backslash survives anywhere -- meant one
+    `\\alpha` in the last line of a paragraph left `Y_{ik,t}` in its first.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c != "\\":
+            # A brace reached here is grouping. One held by a command this pass
+            # did not recognise never arrives, because that command is emitted
+            # whole -- braces and arguments together -- below.
+            if c not in "{}":
+                out.append(c)
+            i += 1
+            continue
+        m = _CTRL_RE.match(text, i)
+        if m is None or m.group(1) is None:  # `\\`, `\%`, `\&`: later passes own these
+            out.append(text[i : m.end()] if m else text[i])
+            i = m.end() if m else i + 1
+            continue
+        word, j = m.group(1), m.end()
+        if word in _DROP:
+            i = _args_end(text, j)
+            continue
+        if word in _BARE:
+            i = j
+            continue
+        if word in _UNWRAP:
+            body, k = _read_group(text, _skip_optional(text, j))
+            if body is not None:
+                out.append(_macros(body))
+                i = k
+                continue
+        k = _args_end(text, j)
+        out.append(text[i:k])
+        i = k
+    return "".join(out)
+
+
+def _args_end(text: str, pos: int) -> int:
+    """The end of a command's arguments: `[...]` and `{...}`, run together.
+
+    Adjacency is what stops it running away. `\\addcontentsline{toc}{section}
+    {Appendix}` is three arguments to one command and all three are machinery,
+    but `\\begin{center}` followed on the next line by a `{...}` group is a
+    command and then a group, and eating the group would eat a heading.
+    """
+    j = _skip_optional(text, pos)
+    _, j = _read_group(text, j)
+    while j < len(text) and text[j] in "[{":
+        k = _read_optional(text, j)[1] if text[j] == "[" else _read_group(text, j)[1]
+        if k == j:
+            break
+        j = k
+    return j
+
+
+def clip(text: str | None, *, words: int = LABEL_WORDS, chars: int = LABEL_CHARS) -> str:
+    """Text short enough to be read at a glance, in Python and not in CSS.
+
+    Public because the ticker clips a request the same way the queue clips a
+    name, and two functions that shorten a string to a word boundary would drift
+    into disagreeing about the ellipsis.
+    """
+    if not text:
+        return ""
+    parts = text.split()
+    cut = len(parts) > words
+    parts = parts[:words]
+    out = " ".join(parts)
+    while len(out) > chars - 1 and len(parts) > 1:
+        parts.pop()
+        cut = True
+        out = " ".join(parts)
+    if len(out) > chars - 1:                 # one very long word, and nothing else
+        out, cut = out[: chars - 1], True
+    return out.rstrip(" ,;:") + "…" if cut else out
+
+
+_clip = clip
 
 
 def _first_sentence(text: str) -> str:

@@ -523,6 +523,11 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
                        present)
     heads = {b.id: blocks_mod.label(b) for b in blocks}
     wheres = _wheres(blocks, root)
+    # What was ASKED, keyed by the comment each state record answers. The ticker
+    # reports work; the block is where that work is happening rather than what
+    # it is. Without this, two requests on one paragraph are the same line
+    # printed twice, which is the state the author found it in.
+    asked = {c.id: blocks_mod.clip(c.body, words=12, chars=64) for c in chats}
     # State records carry no doc of their own; they belong to whatever comment
     # they answer, so the in-scope chat ids are the filter.
     in_scope = {c.id for c in chats} if doc is not None else None
@@ -544,6 +549,7 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
             "id": rec.get("id"),
             "state": rec["state"],
             "block": block,
+            "asked": asked.get(rec.get("id")) or None,
             "section": heads.get(block) if block else None,
             "where": wheres.get(block) if block else None,
             "when": rec.get("ts", ""),

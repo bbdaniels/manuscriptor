@@ -211,19 +211,26 @@ def manuscriptor_command(out_dir: Path, *, which=None) -> str:
     return str(shim)
 
 
-def spawn_group(argv: list[str], *, cwd: Path, log_path: Path) -> subprocess.Popen:
+def spawn_group(argv: list[str], *, cwd: Path, log_path: Path,
+                env: dict | None = None, pass_fds: tuple = ()) -> subprocess.Popen:
     """Start a child in its OWN process group, with its output on disk.
 
     The group is the point. A drain loop starts a `claude`, which starts its own
     children; signalling the shell alone would leave those running, and a
     session still editing a manuscript after the server is gone is the worst
     failure this design has.
+
+    `pass_fds` carries the queue lock down to the drain. Popen closes inherited
+    descriptors otherwise, and a lock the detached drain does not hold would be
+    released the moment the server was killed -- while the drain it started kept
+    editing.
     """
     log = open(log_path, "a", buffering=1, encoding="utf-8")
     try:
         return subprocess.Popen(
             argv, cwd=str(cwd), stdout=log, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, start_new_session=True,
+            env=env, pass_fds=tuple(pass_fds),
         )
     finally:
         log.close()   # the child holds its own descriptor
@@ -289,7 +296,7 @@ def repo_root(manuscript_dir: Path) -> Path | None:
     return top if top != Path(manuscript_dir).resolve() else None
 
 
-def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
+def start_agent(manuscript_dir: Path, *, lock=None) -> tuple[subprocess.Popen, Path]:
     """Launch the standing drain beside the server. Says what it started.
 
     The drain is `manuscriptor drain`, a supervisor holding ONE long-lived
@@ -312,7 +319,12 @@ def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
     ms = manuscriptor_command(log.parent)
     # `ms` may be "python3 -m manuscriptor" rather than a single binary.
     argv = [*ms.split(), "drain", str(Path(manuscript_dir).resolve())]
-    proc = spawn_group(argv, cwd=Path(manuscript_dir).resolve(), log_path=log)
+    # The queue lock goes down with it: the drain is detached, so it outlives a
+    # killed server, and the lock has to say so.
+    fds = () if lock is None or lock.fd is None else (lock.fd,)
+    env = lock.child_env() if lock is not None else None
+    proc = spawn_group(argv, cwd=Path(manuscript_dir).resolve(), log_path=log,
+                       env=env, pass_fds=fds)
 
     print(f"  agent  one supervised session, fed as work arrives   (pid {proc.pid})")
     print(f"         silence past {int(STALL_AFTER)}s mid-turn is treated as wedged "
@@ -320,6 +332,22 @@ def start_agent(manuscript_dir: Path) -> tuple[subprocess.Popen, Path]:
     print(f"         feed {feed_mod.progress_path(log.parent)}")
     print(f"         log {log}")
     return proc, log
+
+
+def refusal(lock) -> str:
+    """What to say when the queue already has a drain.
+
+    Names the pid, because the author's next question is always "which one",
+    and on 2026-07-27 there was no way to answer it: two servers, two headless
+    sessions, one working tree, and nothing on disk saying either existed.
+    """
+    pid = lock.holder()
+    who = f"pid {pid}" if pid else "another process"
+    return (f"{who} is already draining {lock.root}\n"
+            f"  its claim: {lock.path}\n"
+            "  a second drain on one comment queue means two sessions editing "
+            "one working tree, which is how four files were rewritten under "
+            "their own workers on 2026-07-27.")
 
 
 def cmd_drain(args: argparse.Namespace) -> int:
@@ -333,12 +361,25 @@ def cmd_drain(args: argparse.Namespace) -> int:
     """
     import threading
 
+    from manuscriptor.server.single import DrainLock
     from manuscriptor.server.supervisor import Drain
 
     d = Path(args.manuscript).resolve()
     root = repo_root(d)
     out = paths.agent_dir(d)
     out.mkdir(parents=True, exist_ok=True)
+
+    # ONE DRAIN PER QUEUE. Started by `serve` the lock is inherited, because the
+    # server took it before spawning and this is the process it took it for.
+    # Typed by hand it is taken here, which is the other way two sessions came
+    # to fan out into one working tree.
+    lock = DrainLock.inherited(d)
+    if lock is None:
+        lock = DrainLock(d)
+        if not lock.acquire():
+            print(refusal(lock), file=sys.stderr)
+            return 1
+
     drain = Drain(
         d,
         manuscriptor=manuscriptor_command(out),
@@ -359,7 +400,13 @@ def cmd_drain(args: argparse.Namespace) -> int:
     print(f"drain  {d}")
     print(f"       feed {drain.feed.path}")
     print(f"       stream {drain.log}")
-    drain.run(stop)
+    if lock.degraded:
+        print("       note: this filesystem cannot lock, so a second drain on "
+              "this queue would not be noticed")
+    try:
+        drain.run(stop)
+    finally:
+        lock.release()
     return 0
 
 
@@ -391,27 +438,60 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # serve the root is `d` throughout, so nothing changes. The switch is driven
     # from an async handler, so the rebind runs off the event loop in a thread,
     # guarded by a lock + a `down` flag so shutdown can't be out-raced.
+    # ONE DRAIN PER COMMENT QUEUE, across processes. Two servers reach the same
+    # queue while looking unrelated at every other layer -- different arguments,
+    # different resolved directories, different derived ports, one
+    # `current_root`. The claim is taken on the document root here and handed to
+    # the drain child, and a server that cannot take it serves anyway: reading a
+    # manuscript somebody else is draining is legitimate, and only the second
+    # AGENT is the damage.
+    from manuscriptor.server.single import DrainLock
+
     want_agent = not args.no_agent and not args.read_only
     have_claude = bool(args.with_agent or shutil.which("claude"))
-    agent_box = {"proc": None, "down": False}
+    agent_box = {"proc": None, "down": False, "lock": None}
     agent_lock = threading.Lock()
+
+    def _release():
+        """Stop the drain, THEN drop the claim. The child holds the same lock,
+        so releasing first would free the queue while a drain still ran on it."""
+        if agent_box["proc"] is not None:
+            terminate_group(agent_box["proc"])
+            agent_box["proc"] = None
+        if agent_box["lock"] is not None:
+            agent_box["lock"].release()
+            agent_box["lock"] = None
+
+    def _bind(new_root):
+        """Take the queue and start the drain on it. Caller holds `agent_lock`."""
+        claim = DrainLock(new_root)
+        if not claim.acquire():
+            print("  agent  " + refusal(claim).replace("\n  ", "\n         "))
+            print("         serving without an agent; your comments queue for "
+                  "the drain that is already running.")
+            return
+        agent_box["lock"] = claim
+        agent_box["proc"], _ = start_agent(new_root, lock=claim)
+        if claim.degraded:
+            print("         note: this filesystem cannot lock, so a second "
+                  "drain on this queue would not be noticed")
 
     def _rebind(new_root):
         def work():
             with agent_lock:
                 if agent_box["down"]:
                     return
-                if agent_box["proc"] is not None:
-                    terminate_group(agent_box["proc"])
-                    agent_box["proc"] = None
-                agent_box["proc"], _ = start_agent(new_root)
+                # The claim moves with the document. Releasing the old root is
+                # what keeps it drainable after the reader switches away.
+                _release()
+                _bind(new_root)
         threading.Thread(target=work, daemon=True).start()
 
     on_switch = None
     if want_agent and have_claude:
         from manuscriptor.source import tree as tree_mod
         with agent_lock:                       # the first bind is synchronous
-            agent_box["proc"], _ = start_agent(tree_mod.current_root(d, args.main))
+            _bind(tree_mod.current_root(d, args.main))
         on_switch = _rebind
     elif want_agent:
         print("  agent  claude CLI not found on PATH; serving without the agent.")
@@ -448,9 +528,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 pass
         with agent_lock:
             agent_box["down"] = True
-            if agent_box["proc"] is not None:
-                terminate_group(agent_box["proc"])
-                agent_box["proc"] = None
+            had = agent_box["proc"] is not None
+            _release()
+            if had:
                 print("  agent stopped")
     return 0
 
