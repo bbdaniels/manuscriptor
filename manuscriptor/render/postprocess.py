@@ -195,15 +195,49 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
 _TABLE_OPEN_RE = re.compile(r"<table\b")
 
 
+_CAPTION_RE = re.compile(r"<caption>(.*?)</caption>", re.S)
+
+
 def _wrap_tables(html: str) -> str:
-    """Give every table its own horizontal scroll container.
+    r"""Give every table its own horizontal scroll container, and lift its notes out.
 
     A regression table with eight columns is wider than the reading measure. It
-    must scroll inside itself; the manuscript column scrolling sideways would
-    take the prose with it.
+    must scroll inside itself; the manuscript column scrolling sideways would take
+    the prose with it.
+
+    Its CAPTION is a different matter, and it was wrong. A `<caption>` belongs to
+    the table, so its width is the table's width: inside the scroll container the
+    notes were as wide as eight columns of numbers, and reading the last sentence
+    meant scrolling sideways to find it. A figure's caption has always sat below
+    the image at the column's own measure. The notes are where the F-statistics
+    are explained and the q-values are defined, so they are the part most likely
+    to be read and were the part hardest to reach.
+
+    So a captioned table becomes a `<figure>`: the scrolling part scrolls, and the
+    caption sits under it as a `<figcaption>`, at the measure, exactly like a
+    figure's. The anchor moves to the wrapper, because the block is now the whole
+    thing rather than the table alone.
     """
-    out = html.replace("<table", '<div class="table-scroll"><table')
-    return out.replace("</table>", "</table></div>")
+    def one(m: re.Match) -> str:
+        table = m.group(0)
+        cap = _CAPTION_RE.search(table)
+        # The anchor rides on the outer element, or a patch would replace the
+        # table and leave the old notes sitting under the new numbers.
+        attrs = m.group(1)
+        anchor = ""
+        mx = re.search(r'\sdata-mx="[^"]*"', attrs)
+        if mx:
+            anchor = mx.group(0)
+            table = table.replace(anchor, "", 1)
+        if cap is None:
+            return f'<div class="table-scroll"{anchor}>{table}</div>'
+        table = table.replace(cap.group(0), "", 1)
+        return (f'<figure class="ms-table"{anchor}>'
+                f'<div class="table-scroll">{table}</div>'
+                f"<figcaption>{cap.group(1)}</figcaption>"
+                "</figure>")
+
+    return re.sub(r"<table([^>]*)>.*?</table>", one, html, flags=re.S)
 
 
 def postprocess(

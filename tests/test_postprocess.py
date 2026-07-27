@@ -667,3 +667,60 @@ def test_a_pdf_outside_the_manuscript_is_left_alone(tmp_path, harvester):
     out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path / "ms",
                       output_dir=tmp_path / "ms" / "out", labels={})
     assert '<embed src="../secret.pdf" />' in out["html"]
+
+
+# ------------------------------------------------------- a table and its notes
+
+
+TABLE_WITH_NOTES = (
+    "<table>"
+    "<caption>Case generation: demographic variation. "
+    "F-statistics test whether the six demographic factors jointly predict each "
+    "outcome; q-values are Benjamini-Hochberg across the sixteen tests.</caption>"
+    "<thead><tr><th>Item</th><th>F</th></tr></thead>"
+    "<tbody><tr><td>Q23</td><td>5.30</td></tr></tbody>"
+    "</table>"
+)
+
+
+def test_a_tables_notes_read_at_the_measure_not_inside_its_scroll(tmp_path, harvester):
+    """A caption inside the scroll container is bound to the TABLE's width.
+
+    A regression table is wider than the reading measure and scrolls inside
+    itself, which is right. Its caption carries the notes, and while it sat in
+    that container the notes were as wide as the table: to read them you scrolled
+    sideways, and the last sentence was off the edge of the page. A figure's
+    caption has always sat below the image at the column's own width. Reported
+    2026-07-26: "table notes aren't properly attached to tables as they are with
+    figures".
+    """
+    out = postprocess(
+        f"<p>{mark(A)}Body.</p>{TABLE_WITH_NOTES}",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    html = out["html"]
+    assert "<figcaption" in html, "the notes belong in a caption below, like a figure's"
+    assert "Benjamini-Hochberg" in html
+    # The notes must NOT be inside the element that scrolls sideways.
+    scroll = html[html.index('class="table-scroll"'):]
+    scroll = scroll[:scroll.index("</div>")]
+    assert "Benjamini-Hochberg" not in scroll, (
+        "the notes are still bound to the table's width"
+    )
+    # And the table itself still scrolls, which was never the problem.
+    assert 'class="table-scroll"' in html and "<table" in html
+
+
+def test_a_table_with_no_caption_is_left_as_it_was(tmp_path, harvester):
+    out = postprocess(
+        f"<p>{mark(A)}Body.</p><table><tbody><tr><td>x</td></tr></tbody></table>",
+        blocks=(FakeBlock(A),),
+        manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        labels={},
+    )
+    assert "<figcaption" not in out["html"]
+    assert 'class="table-scroll"' in out["html"]

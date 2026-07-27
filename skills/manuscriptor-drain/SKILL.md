@@ -200,3 +200,56 @@ along as an added directory, so producing scripts beside the manuscript
 them. Never stop the loop because one comment failed; reply with why and
 continue. The session dies with the server. `--no-agent` opts out;
 `--read-only` implies out.
+
+## Ask, when more than one path is open
+
+A comment often admits several answers, and picking one silently is the failure
+the author notices last. On 2026-07-26 a request for "every panel has all three
+channels, one interesting case per demographic" was answered by choosing the most
+interesting outcome per demographic, which left five of six panels missing a
+channel, and by writing a caption that claimed all three anyway. The instruction
+was satisfiable for four panels and genuinely impossible for two, and that is
+worth a sentence to the author rather than a quiet decision on their behalf.
+
+So: when the paths diverge in a way the author would care about, say so with
+`manuscriptor reply` and leave the comment open rather than guessing. A reply is
+cheap, arrives in the chat beside the paragraph, and the answer comes back as a
+new comment. What deserves the question:
+
+* a constraint that cannot be met for every case ("four of six can, two cannot,
+  here is why");
+* a trade-off with no dominant side (comparability against interest, coverage
+  against significance);
+* anything where you are about to write a caption or a sentence that is true of
+  most of the exhibit rather than all of it.
+
+Offer the alternatives with the numbers attached, in a small table, and name the
+one you would pick. Do not ask about things the comment already decided, and do
+not ask twice.
+
+## Exhibits: the conventions this manuscript keeps
+
+**A float goes immediately after the paragraph that first cites it.** HTML has no
+floats, so where the float sits in the source is where the reader meets it. A
+figure left at the end of a subsection reads as unrelated to the sentence that
+introduced it, fifty lines up.
+
+**A file name matches the number the exhibit carries.** `fig3_heatmap.pdf` as
+Figure 2 is a trap for whoever reads the producing script next. Renumbering an
+exhibit means renaming its output, its `\includegraphics`, and the line in the
+script that writes it, in one pass.
+
+**A name says what the exhibit IS, not what it once was.** The six-panel figure
+stopped being a heatmap when it was rebuilt; it is `fig2_channels.pdf` now.
+
+**Notes belong in the caption**, where the renderer keeps them with the exhibit.
+A note written as a separate paragraph after `\end{tabular}` is detached from its
+table the moment anything moves.
+
+**Never hand-edit a generated exhibit.** Edit the script that writes it and
+regenerate; the file itself refuses edits for the reason the standing rule gives.
+Say which script you ran.
+
+**Report magnitude and inference separately.** This manuscript de-emphasises
+thresholds: print the number (`q = 0.015`, `R² = 0.32`) rather than a star, and
+define the adjustment once in the caption.

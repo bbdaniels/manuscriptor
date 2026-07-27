@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from manuscriptor.server import build as build_mod
+from manuscriptor.server import app
 from manuscriptor.server.app import _diff, block_html
 
 DOC = r"""\documentclass{article}
@@ -331,3 +332,39 @@ def test_the_run_stops_at_a_nested_anchor():
         '<figure><img src="x.png"><figcaption data-mx="b-two">Two</figcaption></figure>'
     )
     assert block_html(html, "b-one") == '<p data-mx="b-one">One</p>'
+
+
+# --------------------------------------------- what a batch of changes means
+
+
+def test_a_mixed_batch_rebuilds_and_refreshes_the_images():
+    """The defect the author hit: a figure that did not update.
+
+    The drain edited `main.tex` to move a figure and regenerated three PDFs in
+    the same second. The batch was classified as source, and the source path
+    patches a block only when its LaTeX differs, so every figure whose LaTeX had
+    not moved kept the raster the browser already had. The new figure was on
+    disk and the page showed the old one.
+    """
+    kind, assets = app.classify([Path("main.tex"), Path("outputs/fig3.pdf")])
+    assert kind == "source", "the source changed, so the manuscript is rebuilt"
+    assert assets is True, "and the images must be refetched past the cache"
+
+
+def test_a_source_only_batch_does_not_bust_the_image_cache():
+    assert app.classify([Path("main.tex")]) == ("source", False)
+
+
+def test_a_figure_alone_is_an_asset_refresh():
+    assert app.classify([Path("outputs/fig3.pdf")]) == ("assets", True)
+
+
+def test_the_comment_log_alone_is_neither():
+    """Re-rendering a manuscript because a comment arrived would be a second of
+    work to repaint a pin."""
+    assert app.classify([Path("comments.jsonl")]) == ("log", False)
+
+
+def test_the_log_beside_a_figure_is_not_treated_as_log_only():
+    kind, assets = app.classify([Path("comments.jsonl"), Path("outputs/f.pdf")])
+    assert kind == "assets" and assets is True

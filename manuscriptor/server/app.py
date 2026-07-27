@@ -201,8 +201,17 @@ class Session:
         for ws in dead:
             self.clients.discard(ws)
 
-    async def on_change(self) -> None:
-        """A .tex file changed on disk. Re-render and push only what moved."""
+    async def on_change(self, *, refresh_assets: bool = False) -> None:
+        """A .tex file changed on disk. Re-render and push only what moved.
+
+        `refresh_assets` when a figure changed in the same batch. A block is
+        patched on a SOURCE difference, and a regenerated figure is not one: its
+        LaTeX is identical and only the bytes behind the image moved, so the page
+        keeps the raster the browser already has. That is how a rebuilt figure
+        stayed stale on 2026-07-26 after the agent edited `main.tex` and
+        regenerated three PDFs in one go: the batch held both kinds of change, the
+        classification allowed only one, and the source path won.
+        """
         async with self.lock:
             try:
                 previous = self.rebuild()
@@ -218,6 +227,10 @@ class Session:
                 drafts_mod.rekey(self.drafts_file, patch["renamed"])
         if patch:
             await self.broadcast(patch)
+        if refresh_assets:
+            # The src path is stable, so the version query is the only thing that
+            # can force the browser past the copy it already has.
+            await self.broadcast({"type": "assets", "v": chat.now()})
 
     async def on_assets_change(self) -> None:
         """A figure changed on disk, with no source change beside it.
@@ -476,6 +489,34 @@ def _element_end(html: str, start: int) -> int | None:
             return len(html)
         i += 1
     return i
+
+
+
+def classify(paths) -> tuple[str, bool]:
+    """What a batch of changed files means: ("log" | "source" | "assets", assets_too).
+
+    A batch can be BOTH kinds of change at once, and treating it as one choice was
+    a real defect. On 2026-07-26 the drain moved a figure in `main.tex` and
+    regenerated three PDFs in the same second; the batch was classified as source,
+    the source path patches a block only when its LaTeX differs, and every figure
+    whose LaTeX had not moved kept the raster the browser already had. The author
+    asked for a new figure, the file on disk was new, and the page showed the old
+    one. So this answers two questions rather than picking one answer.
+
+    The comment log is not source: re-rendering a manuscript because a comment
+    arrived would be a second of work to repaint a pin.
+    """
+    from manuscriptor.server.watch import ASSET_SUFFIXES
+
+    paths = list(paths)
+    if paths and all(p.name == "comments.jsonl" for p in paths):
+        return "log", False
+    assets = any(p.suffix.lower() in ASSET_SUFFIXES for p in paths)
+    source = any(p.suffix.lower() not in ASSET_SUFFIXES and p.name != "comments.jsonl"
+                 for p in paths)
+    if source:
+        return "source", assets
+    return "assets", assets
 
 
 def block_html(html: str, block_id: str) -> str | None:
@@ -872,12 +913,10 @@ def serve(
             # a comment arrived would be a second of work to repaint a pin. And
             # a figure-only change is an asset refresh, not a re-render diff:
             # the LaTeX did not move, only the image behind it.
-            log_only = all(p.name == "comments.jsonl" for p in paths)
-            assets_only = not log_only and all(
-                p.suffix.lower() in ASSET_SUFFIXES for p in paths)
-            coro = (session.on_log_change() if log_only
-                    else session.on_assets_change() if assets_only
-                    else session.on_change())
+            kind, assets = classify(paths)
+            coro = (session.on_log_change() if kind == "log"
+                    else session.on_change(refresh_assets=assets) if kind == "source"
+                    else session.on_assets_change())
             asyncio.run_coroutine_threadsafe(coro, loop)
 
         stop = watch_tree(session.dir, changed)
