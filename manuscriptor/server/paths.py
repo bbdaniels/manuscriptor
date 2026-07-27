@@ -76,6 +76,16 @@ def compile_dir(manuscript_dir: Path | str) -> Path:
     return cache(manuscript_dir) / COMPILE_NAME
 
 
+def drain_lock(manuscript_dir: Path | str) -> Path:
+    """The claim on this manuscript's comment queue. One drain at a time.
+
+    Beside the drain's other private files, and NOT in a temp directory: a
+    tempdir sweep can remove a lock file while it is held, after which the next
+    process locks a fresh inode and drains a queue somebody else already has.
+    """
+    return agent_dir(manuscript_dir) / "drain.lock"
+
+
 def comments(manuscript_dir: Path | str) -> Path:
     """The append-only review record. Tracked in the manuscript's repository."""
     return home(manuscript_dir) / COMMENTS_NAME
