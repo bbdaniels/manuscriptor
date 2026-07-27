@@ -108,6 +108,24 @@ def _walk(path: Path, state: _State, stack: tuple[Path, ...]) -> None:
     except OSError:
         return
 
+    # A `%` consumes its own line terminator, so an included file whose last
+    # line ends in a comment contributes no newline to the stream that included
+    # it: TeX resumes at the character after the directive. Concatenating the
+    # file's bytes verbatim inserts a newline the compiler never sees, and where
+    # the including line also ends there, the two meet as a blank line and split
+    # a paragraph mid-sentence.
+    #
+    # This is what makes the `\input{fragment}%` idiom work. A generated value
+    # lives in its own file ending in `%` so the include contributes no trailing
+    # space. Observed 2026-07-27 in dsp-bias, where every statistic arrives that
+    # way and twelve sentences broke, always just after a number.
+    #
+    # Only for an included file. The root's trailing newline has nothing after
+    # it, and a blank line following a comment *inside* a file is a real
+    # paragraph break that TeX honors, so neither is touched here.
+    if stack and text.endswith("\n") and _is_commented(text, len(text) - 1):
+        text = text[:-1]
+
     pos = 0
     line = 1
     for m in _INCLUDE_RE.finditer(text):
