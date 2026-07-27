@@ -201,6 +201,27 @@
     });
   }
 
+  /* The live feed is newest-first too, but by REVERSING rather than sorting.
+     Its timestamps are second-resolution and its one writer emits a dozen
+     events inside a second on a busy turn; a sort is stable, so each such run
+     would come back oldest-first inside an otherwise newest-first list. The
+     file is written in the order things happened, so a reverse is exact.
+     `newestFirst` is right for chats, which arrive minutes apart and out of
+     order across two processes. */
+  /* What to call a block. The server decides it in `source/blocks.label` -- an
+     exhibit's own caption, else the heading it sits under -- and the page must
+     not decide it a second way, or the ticker and the inspector end up calling
+     one paragraph two things. `parent_heading` is the fallback for a blob
+     written before `label` existed, which a static export on disk can be. */
+  function blockName(b) {
+    if (!b) return null;
+    return b.label || b.caption || b.parent_heading || null;
+  }
+
+  function feedNewestFirst(entries) {
+    return (entries || []).slice().reverse();
+  }
+
   function hslToHex(h, s, l) {
     h = ((h % 360) + 360) % 360;
     var c = (1 - Math.abs(2 * l - 1)) * s,
@@ -376,6 +397,8 @@
     hexToHS: hexToHS,
     clampHue: clampHue,
     newestFirst: newestFirst,
+    blockName: blockName,
+    feedNewestFirst: feedNewestFirst,
     queueSummary: queueSummary,
     tickerText: tickerText,
     renameQueue: renameQueue,
@@ -589,10 +612,22 @@
       return id;
     }
 
+    /* Two stacked lines, not one run: the paragraph ordinal is what the author
+       and the agent talk in, the source line is what an editor jumps to, and
+       side by side they read as one number with a separator in it. */
     if (!isExhibit && !el.classList.contains('is-heading')) {
       var tag = document.createElement('span');
       tag.className = 'tag';
-      tag.textContent = '¶' + ordinal + (b.line_start ? ' · ' + b.line_start : '');
+      var para = document.createElement('span');
+      para.className = 'tag-para';
+      para.textContent = '¶' + ordinal;
+      tag.appendChild(para);
+      if (b.line_start) {
+        var ln = document.createElement('span');
+        ln.className = 'tag-line';
+        ln.textContent = String(b.line_start);
+        tag.appendChild(ln);
+      }
       el.insertBefore(tag, el.firstChild);
     }
 
@@ -759,7 +794,7 @@
     if (!prev) return '';
     if (prev.kind === 'block') {
       var b = S.blocks[prev.key];
-      return b ? (b.parent_heading || 'the paragraph') : 'the paragraph';
+      return blockName(b) || 'the paragraph';
     }
     return prev.key;
   }
@@ -888,7 +923,7 @@
   // be appended here, which repeated back to the reader the words already open
   // in the editor below it.
   function titleFor(b) {
-    return b.parent_heading ? b.parent_heading : 'Manuscript';
+    return blockName(b) || 'Manuscript';
   }
 
   function sourceTab(id, b) {
@@ -1075,9 +1110,12 @@
      that had gone silent, and there was no surface anywhere that could have said
      so. The drain streams its session's events into a file; this renders them.
 
-     Newest LAST, like a conversation, because that is what it is: the thing is
-     talking and the author is reading down. A teammate's line is marked, since
-     "which of them is stuck" is the first question. */
+     Newest FIRST, like everything else in the inspector. It read newest-last
+     for a while, on the theory that it is a conversation; it is not, it is a
+     status. The line that answers "what is it doing now" was the one at the
+     foot of a 22rem scroller, so the author had to scroll to learn the thing
+     the panel exists to say. A teammate's line is marked, since "which of them
+     is stuck" is the first question. */
   function agentFeed() {
     var f = S.ms.agent_feed || {};
     var entries = (f.entries || []);
@@ -1089,7 +1127,7 @@
     }
     var working = (f.working || []);
     var head = state + (working.length ? ' · ' + working.join(', ') : '');
-    var rows = entries.map(function (e) {
+    var rows = feedNewestFirst(entries).map(function (e) {
       var who = e.who === 'teammate' ? 'teammate' : 'agent';
       return '<div class="fe ' + esc(e.kind) + ' ' + who + '">' +
         '<b>' + who + '</b> <span>' + esc(e.text) + '</span>' +
@@ -1759,6 +1797,17 @@
     var touched = {};
     var theirs = Object.keys(blocks).filter(function (raw) { return !isOwnEdit(raw, msg); });
 
+    /* A block that is new to this page has no element to replace, and
+       applyBlockHtml has no position to work from. Route it to the `added`
+       handler, which knows where the server said it goes. The server already
+       keeps the two lists disjoint; this is the belt for that brace, because
+       the fallback it protects against is an append to the end of the document
+       and the symptom is a figure rendering below the bibliography. */
+    var addedIds = {};
+    (msg.added || []).forEach(function (a) {
+      if (a && typeof a !== 'string' && a.id) addedIds[normId(a.id)] = true;
+    });
+
     Object.keys(blocks).forEach(function (raw) {
       var id = normId(raw);
       touched[id] = true;
@@ -1770,7 +1819,7 @@
          back protected nothing and cost the author the one thing they were
          looking for: their own sentence appearing in the manuscript. The panel
          rebuild is deferred to the blur instead. */
-      applyBlockHtml(id, blocks[raw]);
+      if (!addedIds[id]) applyBlockHtml(id, blocks[raw]);
       if (id === S.focusedBlock) S.deferredPanels[id] = true;
     });
 
@@ -1784,17 +1833,41 @@
       // author discarding what they typed into it.
     });
 
+    /* A new block goes where the server says it goes: after the block that
+       precedes it in the rebuilt document, or at the very start when `after` is
+       null because it is now the first thing in the manuscript. Appending to
+       the end instead is what put Figure 2 below the bibliography on
+       2026-07-27, with the source, the built HTML and the PDF all correct. */
     (msg.added || []).forEach(function (a) {
       if (!a || typeof a === 'string') return;   // nothing to insert without html
       var id = normId(a.id);
       touched[id] = true;
       if (a.block) S.blocks[id] = a.block;
-      var node = nodeFromHtml(a.html || '');
-      if (!node) return;
-      node.setAttribute('data-mx', id);
-      var after = a.after ? blockEl(normId(a.after)) : null;
-      if (after && after.parentNode) after.parentNode.insertBefore(node, after.nextSibling);
-      else docInner.appendChild(node);
+      var nodes = nodesFromHtml(a.html || '');
+      if (!nodes.length) return;
+      if (!nodes[0].hasAttribute('data-mx')) nodes[0].setAttribute('data-mx', id);
+
+      var mark = null;                       // insert before this
+      if (a.after) {
+        var prev = blockEl(normId(a.after));
+        /* The preceding block may itself render as several elements, so step
+           past its whole run rather than past its anchor alone. */
+        if (prev && prev.parentNode) {
+          var run = blockRun(prev);
+          mark = run[run.length - 1].nextSibling;
+        } else if (window.console) {
+          /* It should always be there: `after` names a block of the NEW
+             document, which is either untouched, patched, renamed ahead of this
+             loop, or added earlier in this same document-ordered pass. If it is
+             missing the page has drifted, and the append below is a guess. */
+          console.warn('added block ' + id + ' names a predecessor (' + a.after +
+            ') that is not on the page; appending at the end');
+        }
+      } else {
+        mark = docInner.firstChild;
+      }
+      var parent = mark && mark.parentNode ? mark.parentNode : docInner;
+      for (var i = 0; i < nodes.length; i++) parent.insertBefore(nodes[i], mark);
     });
 
     hydrate();
@@ -2152,7 +2225,8 @@
      somewhere he can go. */
   function sectionOf(id) {
     var b = S.blocks[id];
-    if (b && b.parent_heading) return b.parent_heading;
+    var name = blockName(b);
+    if (name) return name;
     for (var i = 0; i < S.queue.length; i++) {
       var e = S.queue[i];
       if (e && e.block === id && (e.section || e.where)) return e.section || e.where;
@@ -2216,12 +2290,19 @@
        flagged for review" and then having to find the Discussion yourself is the
        page knowing where it means and not saying. A document-level entry has no
        block to jump to, so it stays plain rather than pretending. */
+    /* The label is clamped in CSS rather than cut here: a caption is a whole
+       sentence and five of them would push the rest of the ticker off the end
+       of the row, but the full text belongs in the DOM for the tooltip and for
+       anyone reading it aloud. Which means even the plain case needs an
+       element to clamp. */
     tickerEl.innerHTML = items.map(function (e, i) {
-      var label = esc(tickerText(e));
+      var full = tickerText(e);
+      var label = esc(full);
       var id = e.block ? normId(e.block) : '';
       var title = (id && S.blocks[id])
-        ? '<button type="button" class="tkgo" data-goto="' + esc(id) + '">' + label + '</button>'
-        : label;
+        ? '<button type="button" class="tkgo" title="' + esc(full) + '" data-goto="' +
+          esc(id) + '">' + label + '</button>'
+        : '<span class="tklabel" title="' + esc(full) + '">' + label + '</span>';
       return '<span class="tk' + (i ? '' : ' now') + '">' + title +
         '<time>' + esc(e.when ? ago(e.when) : '') + '</time></span>';
     }).join('');
@@ -2752,6 +2833,7 @@
     escape: esc,
     card: card,
     block: function (id) { return S.blocks[normId(id)] || null; },
+    name: function (b) { return blockName(b); },
     selection: function () { return S.sel ? { kind: S.sel.kind, key: S.sel.key, blockId: S.sel.blockId } : null; },
     ms: function () { return S.ms; },
     notify: function (text) { pushTicker({ text: String(text), when: new Date().toISOString() }); },

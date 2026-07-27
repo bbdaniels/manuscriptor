@@ -26,7 +26,15 @@ A live manuscript editor. LaTeX renders to a page where every block is addressab
 
 **Ids are content-derived, so an edit renames its own block.** Anything comparing block ids across two builds must go through `rematch` and carry the rename onward, or drafts and chats keyed to the old id are silently orphaned. This bug has already been introduced once, in the server's patch diff.
 
-**The build directory writes its own `.gitignore`.** The default output sits inside the manuscript directory, which is nearly always a git working tree the author cares about. Serving a paper must never make `git status` grow.
+**Everything on disk goes through `server/paths.py`, and nowhere else names it.** The layout was once fourteen literal spellings of `root / "build" / "manuscriptor"` across five modules, which made it unchangeable in practice. One module answers "where does Manuscriptor keep its files"; a guard in `tests/test_paths.py` fails if anything else spells it.
+
+**The hidden directory writes its own `.gitignore`, and the rule hides itself.** `.manuscriptor/` sits inside the manuscript directory, which is nearly always a git working tree the author cares about. Serving a paper must never make `git status` grow, so the ignore file covers everything including itself. `comments.jsonl` is the single exception, because a coauthor needs the review record.
+
+**Three tiers, and only one of them is disposable.** `cache/` is regenerable by rebuilding and is the ONLY thing `manuscriptor clean` may remove. `drafts.json` and `agent/` are durable but private. `comments.jsonl` is durable and tracked. Do not move anything durable under `cache/`: `clean` was once `rmtree` on the directory holding `drafts.json`, so running it destroyed unsaved text no rebuild can reconstruct.
+
+**Compiling writes only into the cache, except the deliverable.** The `.aux`, `.log`, `.bbl` and `.blg` stay hidden; the reference manuscript has several of those COMMITTED, so writing them beside the source rewrites tracked files. The finished PDF is copied out beside the `.tex` on success and ONLY on success, since replacing a good PDF with the output of a compile that died in pass 2 leaves a file that still opens and is quietly wrong. A read-only serve withholds even that copy.
+
+**`tidy` reports and does not sweep.** It runs against real manuscripts. Whether a file is regenerable is decided by its suffix; whether removing it is safe is decided by asking git. Never conflate the two: dsp-bias tracks `main.bbl` and `supplement.bbl`, so a suffix-based sweep would delete two committed files.
 
 ## Never drive the editor against a real manuscript
 

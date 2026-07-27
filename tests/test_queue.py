@@ -33,6 +33,7 @@ from pathlib import Path
 import pytest
 from jinja2 import Template
 
+from manuscriptor.server import paths
 from manuscriptor import cli
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat, drain
@@ -68,7 +69,7 @@ def setup(tmp_path: Path, body: str = DOC):
     bid = [x.id for x in b.blocks if x.kind == "paragraph"][1]
     blk = b.by_id[bid]
     chat.append(
-        tmp_path / "comments.jsonl",
+        paths.comments(tmp_path),
         {"id": "c-0001", "kind": "comment", "block": bid, "file": str(blk.file),
          "lines": [blk.line_start, blk.line_end], "quote": blk.source_text[:120],
          "body": "This overclaims. Soften it.", "author": "bb", "ts": ago_iso(300)},
@@ -80,7 +81,7 @@ def comment_on(d: Path, blocks, index: int, cid: str, body: str, *, age: float =
     """Leave a comment on the nth paragraph and return its block id."""
     para = [x for x in blocks if x.kind == "paragraph"][index]
     chat.append(
-        d / "comments.jsonl",
+        paths.comments(d),
         {"id": cid, "kind": "comment", "block": para.id, "file": str(para.file),
          "lines": [para.line_start, para.line_end], "quote": para.source_text[:120],
          "body": body, "author": "bb", "ts": ago_iso(age)},
@@ -97,13 +98,13 @@ def test_the_queue_lists_pending_work_oldest_first(tmp_path):
     comment_on(d, b.blocks, 0, "c-0002", "tighten this", age=100)
     comment_on(d, b.blocks, 2, "c-0003", "and this", age=10)
 
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    q = build_mod.queue_view(paths.comments(d), b.blocks)
     assert [e["id"] for e in q] == ["c-0001", "c-0002", "c-0003"]
 
 
 def test_a_queue_entry_carries_what_the_header_and_the_margin_need(tmp_path):
     d, bid, b = setup(tmp_path)
-    e = build_mod.queue_view(d / "comments.jsonl", b.blocks)[0]
+    e = build_mod.queue_view(paths.comments(d), b.blocks)[0]
     assert e["id"] == "c-0001"
     assert e["block"] == bid
     assert e["state"] == "queued"
@@ -115,12 +116,12 @@ def test_a_queue_entry_carries_what_the_header_and_the_margin_need(tmp_path):
 
 def test_a_body_is_one_line_because_the_header_is_one_line(tmp_path):
     d, _, b = setup(tmp_path, DOC)
-    chat.append(d / "comments.jsonl",
+    chat.append(paths.comments(d),
                 {"id": "c-0002", "kind": "comment", "block": b.blocks[1].id,
                  "quote": b.blocks[1].source_text[:120],
                  "body": "Cut the second sentence.\n\nThen fold the claim into the first.",
                  "author": "bb"})
-    e = [x for x in build_mod.queue_view(d / "comments.jsonl", b.blocks) if x["id"] == "c-0002"][0]
+    e = [x for x in build_mod.queue_view(paths.comments(d), b.blocks) if x["id"] == "c-0002"][0]
     assert "\n" not in e["body"]
     assert e["body"].startswith("Cut the second sentence. Then fold")
 
@@ -130,18 +131,18 @@ def test_waited_measures_the_current_state_not_the_comment(tmp_path):
     WORKING for ten seconds. Reporting the hour would say the agent had been
     stuck on it, which is the opposite of what happened."""
     d, _, b = setup(tmp_path)
-    chat.append(d / "comments.jsonl",
+    chat.append(paths.comments(d),
                 {"id": "c-0001", "kind": "state", "state": "working", "ts": ago_iso(9)})
-    e = build_mod.queue_view(d / "comments.jsonl", b.blocks)[0]
+    e = build_mod.queue_view(paths.comments(d), b.blocks)[0]
     assert e["state"] == "working"
     assert e["waited"] < 60, e["waited"]
 
 
 def test_a_finished_chat_leaves_the_queue(tmp_path):
     d, _, b = setup(tmp_path)
-    assert len(build_mod.queue_view(d / "comments.jsonl", b.blocks)) == 1
+    assert len(build_mod.queue_view(paths.comments(d), b.blocks)) == 1
     drain.mark(d, "c-0001", "done")
-    assert build_mod.queue_view(d / "comments.jsonl", b.blocks) == []
+    assert build_mod.queue_view(paths.comments(d), b.blocks) == []
 
 
 def test_a_queue_entry_never_names_a_block_the_page_has_lost(tmp_path):
@@ -158,7 +159,7 @@ def test_a_queue_entry_never_names_a_block_the_page_has_lost(tmp_path):
     b = build_mod.build(d)
     assert bid not in b.by_id, "the fixture must actually change the id"
 
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    q = build_mod.queue_view(paths.comments(d), b.blocks)
     assert len(q) == 1
     assert q[0]["block"] != bid
     assert q[0]["block"] in b.by_id, "every entry must name a live block"
@@ -177,7 +178,7 @@ def test_a_chat_whose_paragraph_is_gone_is_listed_without_a_block(tmp_path):
         encoding="utf-8",
     )
     b = build_mod.build(d)
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks)
+    q = build_mod.queue_view(paths.comments(d), b.blocks)
     assert len(q) == 1, "never silently discarded"
     assert q[0]["block"] is None
     assert q[0]["section"] is None
@@ -200,7 +201,7 @@ def test_the_ticker_is_newest_first_and_names_the_section(tmp_path):
     d, _, b = setup(tmp_path)
     drain.mark(d, "c-0001", "working")
     drain.mark(d, "c-0001", "done")
-    t = build_mod.ticker_view(d / "comments.jsonl", build_mod.build(d).blocks)
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
     assert t[0]["state"] == "done"
     assert t[1]["state"] == "working"
     assert t[0]["section"] == "Results", "the author's terms, not a hex id"
@@ -219,11 +220,11 @@ def test_a_block_with_no_section_is_still_named_something_the_author_can_find(tm
     b = build_mod.build(tmp_path)
     blk = next(x for x in b.blocks if "examines a contract" in x.source_text)
     assert blk.parent_heading is None, "the fixture must actually be sectionless"
-    chat.append(tmp_path / "comments.jsonl",
+    chat.append(paths.comments(tmp_path),
                 {"id": "c-0001", "kind": "comment", "block": blk.id, "file": str(blk.file),
                  "quote": blk.source_text[:120], "body": "tighten", "author": "bb"})
 
-    e = build_mod.queue_view(tmp_path / "comments.jsonl", b.blocks, root=tmp_path)[0]
+    e = build_mod.queue_view(paths.comments(tmp_path), b.blocks, root=tmp_path)[0]
     assert e["section"] is None
     assert e["where"] == f"main.tex:{blk.line_start}", e["where"]
 
@@ -236,20 +237,20 @@ def test_the_authors_own_comment_is_not_agent_activity(tmp_path):
     """
     d, _, _ = setup(tmp_path)
     blocks = build_mod.build(d).blocks
-    assert build_mod.ticker_view(d / "comments.jsonl", blocks) == []
-    chat.append(d / "comments.jsonl", {"id": "c-0001", "kind": "state", "state": "queued"})
-    assert build_mod.ticker_view(d / "comments.jsonl", blocks) == []
+    assert build_mod.ticker_view(paths.comments(d), blocks) == []
+    chat.append(paths.comments(d), {"id": "c-0001", "kind": "state", "state": "queued"})
+    assert build_mod.ticker_view(paths.comments(d), blocks) == []
     drain.mark(d, "c-0001", "working")
-    assert len(build_mod.ticker_view(d / "comments.jsonl", blocks)) == 1
+    assert len(build_mod.ticker_view(paths.comments(d), blocks)) == 1
 
 
 def test_the_ticker_is_a_handful_not_a_scrollback(tmp_path):
     d, _, b = setup(tmp_path)
     for i in range(12):
-        chat.append(d / "comments.jsonl",
+        chat.append(paths.comments(d),
                     {"id": "c-0001", "kind": "state",
                      "state": "working" if i % 2 else "queued", "ts": ago_iso(100 - i)})
-    t = build_mod.ticker_view(d / "comments.jsonl", build_mod.build(d).blocks)
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
     assert 0 < len(t) <= 8, len(t)
 
 
@@ -496,8 +497,8 @@ def test_the_agent_runs_in_the_manuscript_directory(tmp_path):
     assert "/usr/bin/claude" in script
     assert str(tmp_path.resolve()) in script
     log = cli.agent_log_path(tmp_path)
-    assert log.parent.is_dir() or log.parent == tmp_path / "build" / "manuscriptor"
-    assert "build" in str(log)
+    assert log.parent.is_dir()
+    assert log.parent == paths.agent_dir(tmp_path)
 
 
 def test_the_agent_is_killed_with_the_server(tmp_path):
@@ -593,7 +594,7 @@ def test_one_session_starts_at_once_and_works_what_arrives(tmp_path):
         pytest.fail(f"{what}; log:\n{log.read_text(encoding='utf-8') if log.exists() else '(none)'}")
 
     def closed(cid):
-        return cid not in {c.id for c in chat.pending(tmp_path / "comments.jsonl")}
+        return cid not in {c.id for c in chat.pending(paths.comments(tmp_path))}
 
     try:
         wait_until(lambda: closed("c-0001"), 45,
@@ -612,8 +613,11 @@ def test_the_agent_log_is_invisible_to_the_manuscript_repository(tmp_path):
     """Serving a paper must never be the reason git status grows."""
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     log = cli.agent_log_path(tmp_path)
-    assert log.is_relative_to(tmp_path / "build" / "manuscriptor")
-    assert (log.parent / ".gitignore").read_text(encoding="utf-8").strip() == "*"
+    assert log.is_relative_to(paths.home(tmp_path))
+    # The rule sits on the hidden directory, one level above, and covers
+    # everything under it that is not the comment record.
+    rule = (paths.home(tmp_path) / ".gitignore").read_text(encoding="utf-8")
+    assert rule.splitlines() == ["*", "!comments.jsonl"]
 
 
 def test_an_extension_can_say_a_whole_sentence_in_the_ticker():
@@ -664,7 +668,7 @@ def two_docs(tmp_path: Path):
 
 def test_a_comment_is_scoped_to_the_document_it_was_left_on(tmp_path):
     paper, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
     a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
@@ -688,7 +692,7 @@ def test_a_legacy_record_belongs_to_the_document_being_read(tmp_path):
     # treating them as this-doc is exact for the single-document manuscripts
     # that wrote them.
     paper, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
                       "quote": p0.source_text[:120], "body": "written last month",
@@ -699,7 +703,7 @@ def test_a_legacy_record_belongs_to_the_document_being_read(tmp_path):
 
 def test_the_ticker_only_reports_this_documents_work(tmp_path):
     paper, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     p0 = [x for x in paper.blocks if x.kind == "paragraph"][0]
     a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": p0.id,
@@ -724,7 +728,7 @@ def test_the_blob_names_its_document_and_the_alternatives(tmp_path):
 
 def test_the_blob_scopes_its_chats_and_queue_to_its_document(tmp_path):
     _, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
                       "quote": a0.source_text[:120], "body": "appendix only",
@@ -738,7 +742,7 @@ def test_the_blob_scopes_its_chats_and_queue_to_its_document(tmp_path):
 
 def test_the_drain_presents_only_the_documents_own_comments(tmp_path):
     paper, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
                       "quote": a0.source_text[:120], "body": "appendix only",
@@ -756,7 +760,7 @@ def test_a_comment_typed_on_the_page_records_its_document(tmp_path):
     s = Session(tmp_path, main="appendix.tex")
     bid = [x.id for x in s.build.blocks if x.kind == "paragraph"][0]
     asyncio.run(s.on_chat(bid, "note on the appendix"))
-    recs = chat.read_records(tmp_path / "comments.jsonl")
+    recs = chat.read_records(paths.comments(tmp_path))
     assert recs[-1]["doc"] == "appendix.tex"
 
 
@@ -787,7 +791,7 @@ def test_the_session_switches_documents_and_refuses_a_stranger(tmp_path):
 def test_a_reply_joins_its_comments_chat(tmp_path):
     d, bid, b = setup(tmp_path)
     drain.reply(d, "c-0001", "Softened it and moved the caveat up front.")
-    msgs = chat.by_block(d / "comments.jsonl")[bid]
+    msgs = chat.by_block(paths.comments(d))[bid]
     assert len(msgs) == 2
     assert msgs[0]["who"] == "bb"
     assert msgs[1]["who"] == "claude"
@@ -797,7 +801,7 @@ def test_a_reply_joins_its_comments_chat(tmp_path):
 
 def test_a_reply_is_scoped_with_its_comment(tmp_path):
     paper, appendix = two_docs(tmp_path)
-    log = tmp_path / "comments.jsonl"
+    log = paths.comments(tmp_path)
     a0 = [x for x in appendix.blocks if x.kind == "paragraph"][0]
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": a0.id,
                       "quote": a0.source_text[:120], "body": "on the appendix",
@@ -827,16 +831,16 @@ def test_a_document_comment_needs_no_block(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     s = Session(tmp_path)
     asyncio.run(s.on_chat("", "The intro overclaims throughout; tone it down."))
-    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    rec = chat.read_records(paths.comments(tmp_path))[-1]
     assert rec["block"] == ""
     assert rec["doc"] == "main.tex"
-    q = build_mod.queue_view(tmp_path / "comments.jsonl", s.build.blocks, doc="main.tex")
+    q = build_mod.queue_view(paths.comments(tmp_path), s.build.blocks, doc="main.tex")
     assert len(q) == 1 and q[0]["block"] is None
 
 
 def test_the_drain_presents_a_document_comment_as_document_work(tmp_path):
     d, bid, b = setup(tmp_path)
-    chat.append(d / "comments.jsonl",
+    chat.append(paths.comments(d),
                 {"id": "c-0002", "kind": "comment", "block": "", "doc": "main.tex",
                  "quote": "", "body": "Check the tenses across the results section.",
                  "author": "bb"})
@@ -869,7 +873,7 @@ def test_a_todo_is_stored_and_folded_into_the_blob(tmp_path):
     assert frame["type"] == "todos"
     assert frame["todos"][0]["text"].startswith("Recheck")
     assert frame["todos"][0]["done"] is False
-    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    rec = chat.read_records(paths.comments(tmp_path))[-1]
     assert rec["kind"] == "todo" and rec["doc"] == "main.tex"
 
     fresh = build_mod.build(tmp_path)
@@ -886,7 +890,7 @@ def test_toggling_a_todo_appends_rather_than_rewrites(tmp_path):
     assert frame["todos"][0]["done"] is True
     frame = asyncio.run(s.on_todo_toggle(tid, False))
     assert frame["todos"][0]["done"] is False
-    kinds = [r["kind"] for r in chat.read_records(tmp_path / "comments.jsonl")]
+    kinds = [r["kind"] for r in chat.read_records(paths.comments(tmp_path))]
     assert kinds.count("todo") == 1 and kinds.count("todo-state") == 2
 
 
@@ -908,7 +912,7 @@ def test_a_read_only_page_cannot_write_todos(tmp_path):
     s = Session(tmp_path, read_only=True)
     frame = asyncio.run(s.on_todo("nope"))
     assert frame["type"] == "held"
-    assert not (tmp_path / "comments.jsonl").exists()
+    assert not paths.comments(tmp_path).exists()
 
 
 # ---------------------------------------------------- checks, and their findings
@@ -929,7 +933,7 @@ def test_a_check_request_carries_its_skill(tmp_path):
     s = Session(tmp_path)
     asyncio.run(s.on_chat("", "Run the preflight on this document.",
                           check="consistency-check"))
-    rec = chat.read_records(tmp_path / "comments.jsonl")[-1]
+    rec = chat.read_records(paths.comments(tmp_path))[-1]
     assert rec["check"] == "consistency-check"
     items = drain.collect(tmp_path)
     assert items[0].check == "consistency-check"
@@ -946,7 +950,7 @@ def test_a_finding_is_pinned_but_never_drained(tmp_path):
     )
     assert rec is not None
     # Pinned: the queue view lists it, in its own state.
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    q = build_mod.queue_view(paths.comments(d), b.blocks, doc="main.tex")
     states = {e["id"]: e["state"] for e in q}
     assert states[rec["id"]] == "review"
     # Anchored by its quote, like an imported referee comment.
@@ -984,7 +988,7 @@ def test_a_finding_anchors_when_its_quote_is_a_sentence_not_source_bytes(tmp_pat
     rec = drain.comment(d, quote=quote, body="Answer the older-tools objection.",
                         author="proofreader", doc="main.tex", review=True)
     assert rec is not None
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    q = build_mod.queue_view(paths.comments(d), b.blocks, doc="main.tex")
     anchored = [e for e in q if e["id"] == rec["id"]][0]
     assert anchored["block"] == target
 
@@ -1003,7 +1007,7 @@ def test_two_findings_land_on_their_own_paragraphs(tmp_path):
                        doc="main.tex", review=True)
     r2 = drain.comment(d, quote=q2, body="On the second.", author="proofreader",
                        doc="main.tex", review=True)
-    q = build_mod.queue_view(d / "comments.jsonl", b.blocks, doc="main.tex")
+    q = build_mod.queue_view(paths.comments(d), b.blocks, doc="main.tex")
     at = {e["id"]: e["block"] for e in q}
     assert at[r1["id"]] == first
     assert at[r2["id"]] == second
@@ -1034,7 +1038,7 @@ def test_the_author_dismisses_a_finding(tmp_path):
     s = Session(d)
     frame = asyncio.run(s.on_dismiss(rec["id"]))
     assert frame["type"] == "state" and frame["state"] == "done"
-    states = {c.id: c.state for c in chat.read_chats(d / "comments.jsonl")}
+    states = {c.id: c.state for c in chat.read_chats(paths.comments(d))}
     assert states[rec["id"]] == "done"
 
 
@@ -1126,7 +1130,7 @@ def test_a_regenerated_figure_reaches_the_page(tmp_path):
     (tmp_path / "outputs" / "fig.pdf").write_bytes(MINI_PDF)
     (tmp_path / "main.tex").write_text(FIG_DOC, encoding="utf-8")
     s = Session(tmp_path)
-    png = tmp_path / "build" / "manuscriptor" / "outputs" / "fig.png"
+    png = paths.cache(tmp_path) / "outputs" / "fig.png"
     assert png.exists(), "the figure never rasterized at all"
     first = png.stat().st_mtime_ns
 
@@ -1202,3 +1206,96 @@ def test_the_park_still_blocks_on_a_quiet_queue(tmp_path):
     t0 = time.monotonic()
     assert drain.wait(tmp_path, timeout=1.2) is False
     assert time.monotonic() - t0 >= 1.0
+
+
+# ------------------------------------------- naming a block the author reads
+#
+# dsp-bias, 2026-07-27. Two tables live in one `\input`ed file whose nearest
+# preceding heading is a `\paragraph{Socioeconomic status.}` fifty lines above,
+# so both inherited those words. The ticker names an entry by its section, so
+# an edit landing on the second table announced itself in language identical to
+# the first table -- which was open in the inspector, still queued, and had not
+# been touched. The author read the ticker and the queue as contradicting each
+# other about one item. They were talking about two.
+
+TWO_TABLES = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+\paragraph{Socioeconomic status.}
+Education mapped to occupation almost deterministically.
+
+\input{outputs/tab_results}
+\end{document}
+"""
+
+TABLES = r"""\begin{table}[h!]
+\caption{Case generation: demographic variation. Cells report means.}
+\begin{tabular}{ll}
+A & B \\
+\end{tabular}
+\end{table}
+
+\begin{table}[h!]
+\caption{Demographic variation in conversations. Cells report means.}
+\begin{tabular}{ll}
+C & D \\
+\end{tabular}
+\end{table}
+"""
+
+
+def two_tables(tmp_path: Path):
+    (tmp_path / "main.tex").write_text(TWO_TABLES, encoding="utf-8")
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "tab_results.tex").write_text(TABLES, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    tables = [x for x in b.blocks if x.file.name == "tab_results.tex"]
+    assert len(tables) == 2, [x.source_text[:40] for x in tables]
+    return b, tables
+
+
+def test_two_exhibits_under_one_heading_are_not_called_the_same_thing(tmp_path):
+    b, tables = two_tables(tmp_path)
+    assert [x.parent_heading for x in tables] == \
+        ["Socioeconomic status.", "Socioeconomic status."], "the heading really is shared"
+
+    for i, (t, cid) in enumerate(zip(tables, ("c-0001", "c-0002"))):
+        chat.append(
+            paths.comments(tmp_path),
+            {"id": cid, "kind": "comment", "block": t.id, "file": str(t.file),
+             "lines": [t.line_start, t.line_end], "quote": t.source_text[:120],
+             "body": "add the r2", "author": "bb", "ts": ago_iso(300 - i)},
+        )
+    chat.append(paths.comments(tmp_path),
+                {"id": "c-0002", "kind": "state", "state": "working", "ts": ago_iso(10)})
+
+    q = build_mod.queue_view(paths.comments(tmp_path), b.blocks)
+    names = [e["section"] for e in q]
+    assert names == ["Case generation: demographic variation.",
+                     "Demographic variation in conversations."], names
+
+    t = build_mod.ticker_view(paths.comments(tmp_path), b.blocks)
+    assert [e["section"] for e in t] == ["Demographic variation in conversations."]
+
+
+def test_the_block_record_carries_the_name_the_page_shows(tmp_path):
+    b, tables = two_tables(tmp_path)
+    recs = [b.blob["blocks"][t.id] for t in tables]
+    assert [r["label"] for r in recs] == ["Case generation: demographic variation.",
+                                          "Demographic variation in conversations."]
+    assert [r["parent_heading"] for r in recs] == ["Socioeconomic status."] * 2, \
+        "the heading is still reported; it is a fact about where the block sits"
+
+
+def test_the_agent_is_told_which_table_it_is(tmp_path):
+    """The work item's section is what the session repeats back in its replies."""
+    b, tables = two_tables(tmp_path)
+    t = tables[1]
+    chat.append(
+        paths.comments(tmp_path),
+        {"id": "c-0001", "kind": "comment", "block": t.id, "file": str(t.file),
+         "lines": [t.line_start, t.line_end], "quote": t.source_text[:120],
+         "body": "add the r2", "author": "bb", "ts": ago_iso(60)},
+    )
+    (item,) = drain.collect(tmp_path)
+    assert item.section == "Demographic variation in conversations."

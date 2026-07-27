@@ -13,9 +13,12 @@ So drafts get a file. Two rules follow from who writes it:
 else writes here, so there is no interleaving to protect against and a map is
 the honest shape.
 
-**It lives in the build directory**, which writes its own `.gitignore`. The
+**It lives in `.manuscriptor/`, beside the log and OUTSIDE the cache.** The
 manuscript directory is a git working tree the author cares about, and serving a
-paper must never make `git status` grow.
+paper must never make `git status` grow, so the whole hidden directory ignores
+itself. Not under `cache/`, though, and that placement is load-bearing: `cache/`
+is what `manuscriptor clean` removes, and an unsaved paragraph is the one thing
+here that no rebuild can reconstruct. The command used to delete this file.
 
 A draft is keyed by (document, block). The document because one directory serves
 several and a paragraph id could exist in both; the block because that is what
@@ -35,7 +38,11 @@ FILENAME = "drafts.json"
 
 
 def path_for(build_dir: Path | str) -> Path:
-    """Where the store lives for a given build directory."""
+    """Where the store lives, given the directory that holds it.
+
+    Prefer `paths.drafts(manuscript_dir)`, which knows the layout. This stays
+    for callers that already have the containing directory in hand.
+    """
     return Path(build_dir) / FILENAME
 
 

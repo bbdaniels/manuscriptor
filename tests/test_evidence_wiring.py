@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from manuscriptor.server import paths
 from manuscriptor.server import build as build_mod
 
 DOC = r"""\documentclass{article}
@@ -24,7 +25,7 @@ Effects were large \citep{croke2026sickness} and persistent \citep{andrabi2023hu
 
 def build_with_records(tmp_path: Path, citations, evidence):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    out = tmp_path / "build" / "manuscriptor"
+    out = paths.cache(tmp_path)
     out.mkdir(parents=True)
     if citations is not None:
         (out / "citations.json").write_text(json.dumps(citations), encoding="utf-8")
@@ -106,7 +107,7 @@ def test_a_red_key_carries_why_it_is_red(tmp_path):
 
 def test_a_corrupt_record_file_does_not_take_down_the_build(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    out = tmp_path / "build" / "manuscriptor"
+    out = paths.cache(tmp_path)
     out.mkdir(parents=True)
     (out / "citations.json").write_text("{not json", encoding="utf-8")
     b = build_mod.build(tmp_path)
@@ -115,7 +116,7 @@ def test_a_corrupt_record_file_does_not_take_down_the_build(tmp_path):
 
 def test_the_blob_counts_missing_fulltexts(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    out = tmp_path / "build" / "manuscriptor"
+    out = paths.cache(tmp_path)
     out.mkdir(parents=True)
     (out / "missing.json").write_text(json.dumps(
         [{"cite_key": "a"}, {"cite_key": "b"}]), encoding="utf-8")
@@ -127,7 +128,7 @@ def test_no_misses_and_no_run_both_read_as_zero(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
     b = build_mod.build(tmp_path)
     assert b.blob["missing_fulltexts"] == 0
-    out = tmp_path / "build" / "manuscriptor"
+    out = paths.cache(tmp_path)
     (out / "missing.json").write_text("{corrupt", encoding="utf-8")
     assert build_mod.build(tmp_path).blob["missing_fulltexts"] == 0
 

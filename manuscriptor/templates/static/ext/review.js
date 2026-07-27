@@ -147,7 +147,7 @@
         absorb(res.body);
         var b = ctx.block(blockId);
         ctx.notify('placed ' + (res.body.author || 'a comment') + ' on ' +
-                   ((b && b.parent_heading) || (b && b.file) || 'the paragraph'));
+                   (ctx.name(b) || (b && b.file) || 'the paragraph'));
       }
       paintButton();
       ctx.refresh();
@@ -224,7 +224,7 @@
       rows += '<div class="meta" style="margin-top:.6rem">Where they landed</div>' +
         placed.map(function (it) {
           var b = S.ctx.block(it.block);
-          var name = (b && b.parent_heading) || 'the manuscript';
+          var name = S.ctx.name(b) || 'the manuscript';
           var line = b ? (b.file + ':' + b.line_start) : it.block;
           return '<div class="mark-row"><a href="#" data-goto="' + esc(it.block) + '">' +
             esc(name) + '</a> <span class="meta">' + esc(line) + ' · ' +
@@ -246,7 +246,7 @@
     var buttons = (item.candidates || []).map(function (c) {
       var b = ctx.block(c.block);
       if (!b) return '';
-      var name = b.parent_heading || 'the paragraph';
+      var name = ctx.name(b) || 'the paragraph';
       return button(item.id, c.block,
         'Place on ' + name, b.file + ':' + b.line_start + ' · ' + Math.round(c.score * 100) + '%');
     }).filter(Boolean);

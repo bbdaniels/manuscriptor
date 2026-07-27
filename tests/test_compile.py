@@ -36,6 +36,7 @@ from pathlib import Path
 
 import pytest
 
+from manuscriptor.server import paths
 from manuscriptor.server import compile as compile_mod
 
 
@@ -123,7 +124,7 @@ def git_status(d: Path) -> str:
 def test_output_goes_under_the_build_directory(tmp_path):
     d = tiny(tmp_path)
     out = compile_mod.out_dir(d)
-    assert out == d / "build" / "manuscriptor" / "compile"
+    assert out == paths.compile_dir(d)
     assert out.is_dir()
 
 
@@ -379,7 +380,11 @@ def test_a_real_manuscript_compiles_to_a_real_pdf(tmp_path):
     # The include's own aux landed in the mirrored subdirectory, which is the
     # proof that the mirroring was both needed and used.
     assert (compile_mod.out_dir(d) / "tables" / "t.aux").exists()
-    assert git_status(d) == "", "a compile must not make git status grow"
+    # The PDF is the deliverable and it is meant to appear; nothing else may.
+    # Before delivery existed this assertion read `== ""`, which is the right
+    # test for every OTHER byte a compile writes and is still what it checks.
+    assert git_status(d).split() == ["??", "main.pdf"], \
+        "a compile may add the deliverable and nothing else"
 
 
 @pytest.mark.skipif(not HAS_LATEX, reason="pdflatex is not installed")
@@ -398,14 +403,43 @@ def test_the_bibliography_is_resolved(tmp_path):
 
 
 @pytest.mark.skipif(not HAS_LATEX, reason="pdflatex is not installed")
-def test_compiling_never_writes_to_the_manuscript(tmp_path):
+def test_compiling_changes_nothing_and_leaves_only_the_deliverable(tmp_path):
+    """The narrowed invariant.
+
+    A compile still may not touch a byte the author wrote, and still may not
+    scatter `.aux`, `.log`, `.bbl` or `.blg` beside the source: the reference
+    manuscript has several of those COMMITTED, so writing them there rewrites
+    tracked files. What changed on 2026-07-27 is that the PDF now comes back
+    out, because a deliverable nobody can find is not delivered.
+    """
     d = tiny(tmp_path)
     before = {p: p.read_bytes() for p in sorted(d.rglob("*")) if p.is_file()}
-    compile_mod.compile_pdf(d)
+    res = compile_mod.compile_pdf(d)
     for p, was in before.items():
         assert p.read_bytes() == was, f"{p} was modified by a compile"
+
     beside = {p.name for p in d.iterdir() if p.is_file()}
-    assert not {n for n in beside if n.endswith((".aux", ".log", ".pdf", ".bbl", ".blg"))}
+    assert not {n for n in beside if n.endswith((".aux", ".log", ".bbl", ".blg"))}, \
+        "the litter must stay in the cache"
+    assert "main.pdf" in beside
+    assert res.delivered == d / "main.pdf"
+
+
+@pytest.mark.skipif(not HAS_LATEX, reason="pdflatex is not installed")
+def test_a_read_only_manuscript_gets_no_delivered_pdf(tmp_path):
+    """`--read-only` promises nothing reaches the filesystem.
+
+    Delivery is the first thing Manuscriptor ever wrote into the manuscript
+    directory on purpose, so it is the first thing that could break that
+    promise. The compile still runs and the page can still open the result out
+    of the cache; only the copy is withheld.
+    """
+    d = tiny(tmp_path)
+    res = compile_mod.compile_pdf(d, deliver_out=False)
+    assert res.ok, res.error
+    assert res.delivered is None
+    assert not (d / "main.pdf").exists()
+    assert res.output.exists(), "the page must still have something to show"
 
 
 LONG = "a_table_with_a_deliberately_long_file_name_so_the_terminal_would_wrap_it"
@@ -668,7 +702,7 @@ def test_a_read_only_manuscript_can_still_be_compiled(tmp_path):
     assert res.ok, res.error
     for p, was in before.items():
         assert p.read_bytes() == was
-    assert not (d / "comments.jsonl").exists()
+    assert not (paths.comments(d)).exists()
 
 
 @pytest.mark.skipif(not HAS_PANDOC, reason="the session needs pandoc to build")
@@ -799,3 +833,73 @@ def test_the_page_carries_the_extension(tmp_path):
                                 styles_css="", viewer_js="", extensions=load())
     assert 'data-ext="compile"' in page
     assert "compile:pdf" in page
+
+
+# ------------------------------------------------ the deliverable comes back out
+#
+# Everything Manuscriptor writes is hidden, because it is either regenerable or
+# private. The PDF is neither: it is what the author was compiling for, and a
+# deliverable nobody can find is not delivered.
+
+
+def test_deliver_copies_the_pdf_beside_the_tex(tmp_path):
+    d = tiny(tmp_path)
+    built = compile_mod.out_dir(d) / "main.pdf"
+    built.write_bytes(b"%PDF-1.7\nbuilt\n")
+
+    got = compile_mod.deliver(built, d)
+    assert got == d / "main.pdf"
+    assert got.read_bytes() == b"%PDF-1.7\nbuilt\n"
+    # and the original stays put, because that is what the page serves
+    assert built.exists()
+
+
+def test_deliver_leaves_the_latex_litter_behind(tmp_path):
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+    for name in ("main.aux", "main.log", "main.bbl", "main.blg"):
+        (out / name).write_text("x", encoding="utf-8")
+    (out / "main.pdf").write_bytes(b"%PDF")
+
+    compile_mod.deliver(out / "main.pdf", d)
+    beside = {p.name for p in d.iterdir() if p.is_file()}
+    assert "main.pdf" in beside
+    assert not beside & {"main.aux", "main.log", "main.bbl", "main.blg"}
+
+
+def test_a_missing_build_delivers_nothing(tmp_path):
+    d = tiny(tmp_path)
+    assert compile_mod.deliver(compile_mod.out_dir(d) / "main.pdf", d) is None
+    assert not (d / "main.pdf").exists()
+
+
+def test_a_failed_compile_leaves_this_mornings_pdf_alone(tmp_path):
+    """The reason delivery is gated on `ok`.
+
+    Overwriting a good PDF with the wreckage of a compile that died in pass 2
+    is worse than producing no PDF: the file is still there, it still opens,
+    and it is quietly wrong.
+    """
+    d = tiny(tmp_path)
+    good = d / "main.pdf"
+    good.write_bytes(b"%PDF-1.7\nthis mornings good build\n")
+
+    def failing(cmd, cwd, env):
+        return 1, "! LaTeX Error: something went wrong.\n==> Fatal error occurred"
+
+    res = compile_mod.compile_pdf(d, runner=failing)
+    assert res.ok is False
+    assert res.delivered is None
+    assert good.read_bytes() == b"%PDF-1.7\nthis mornings good build\n"
+
+
+def test_the_frame_names_the_file_the_author_opens(tmp_path):
+    d = tiny(tmp_path)
+    built = compile_mod.out_dir(d) / "main.pdf"
+    built.write_bytes(b"%PDF")
+    res = compile_mod.Result(kind="pdf", ok=True, output=built, seconds=1.0, steps=[],
+                             error=None, log=None, delivered=compile_mod.deliver(built, d))
+    frame = res.as_frame(root=d)
+    assert frame["delivered"] == str(d / "main.pdf")
+    # the served URL still resolves against the cache, or the page loses its link
+    assert frame["url"] == "/compile/main.pdf"

@@ -196,7 +196,7 @@
 
   function form(kind, ctx, seed) {
     var b = ctx.block(caret && caret.block);
-    var where = b ? (b.parent_heading || b.file || 'this paragraph') : 'this paragraph';
+    var where = ctx.name(b) || (b && b.file) || 'this paragraph';
     var html = '<p class="note">Into <b>' + esc(where) + '</b>' +
       (kind === 'exhibit' ? ', as a new float after it.'
         : (kind === 'citation' && pendingBeside)

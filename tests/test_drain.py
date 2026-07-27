@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from manuscriptor.server import paths
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat, drain
 
@@ -38,7 +39,7 @@ def setup(tmp_path: Path, body: str = DOC) -> tuple[Path, str]:
     bid = [x.id for x in b.blocks if x.kind == "paragraph"][1]
     blk = b.by_id[bid]
     chat.append(
-        tmp_path / "comments.jsonl",
+        paths.comments(tmp_path),
         {"id": "c-0001", "kind": "comment", "block": bid, "file": str(blk.file),
          "lines": [blk.line_start, blk.line_end], "quote": blk.source_text[:120],
          "body": "This overclaims. Soften it.", "author": "bb"},
@@ -107,9 +108,9 @@ def test_marking_done_removes_it_from_pending(tmp_path):
 
 def test_marking_appends_and_never_rewrites(tmp_path):
     d, _ = setup(tmp_path)
-    before = (d / "comments.jsonl").read_text(encoding="utf-8")
+    before = (paths.comments(d)).read_text(encoding="utf-8")
     drain.mark(d, "c-0001", "working")
-    after = (d / "comments.jsonl").read_text(encoding="utf-8")
+    after = (paths.comments(d)).read_text(encoding="utf-8")
     assert after.startswith(before), "the log is append only"
     assert len(after.splitlines()) == len(before.splitlines()) + 1
 
@@ -133,7 +134,7 @@ def test_a_generated_block_is_flagged_read_only(tmp_path):
     )
     b = build_mod.build(tmp_path)
     gen = next(x for x in b.blocks if not x.editable)
-    chat.append(tmp_path / "comments.jsonl",
+    chat.append(paths.comments(tmp_path),
                 {"id": "c-0001", "kind": "comment", "block": gen.id, "file": str(gen.file),
                  "lines": [1, 1], "quote": gen.source_text[:120], "body": "fix this", "author": "bb"})
     it = drain.collect(tmp_path)[0]
@@ -143,7 +144,8 @@ def test_a_generated_block_is_flagged_read_only(tmp_path):
 
 def test_wait_returns_when_a_comment_lands(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    log = tmp_path / "comments.jsonl"
+    paths.ensure(tmp_path)
+    log = paths.comments(tmp_path)
     log.write_text("", encoding="utf-8")
 
     def later():
@@ -156,7 +158,8 @@ def test_wait_returns_when_a_comment_lands(tmp_path):
 
 def test_wait_gives_up_when_nothing_arrives(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    (tmp_path / "comments.jsonl").write_text("", encoding="utf-8")
+    paths.ensure(tmp_path)
+    (paths.comments(tmp_path)).write_text("", encoding="utf-8")
     assert drain.wait(tmp_path, timeout=0.6) is False
 
 
@@ -209,7 +212,7 @@ def test_a_new_comment_from_elsewhere_reaches_the_page(tmp_path):
     sent = []
     s.broadcast = lambda msg: sent.append(msg) or asyncio.sleep(0)
 
-    chat.append(d / "comments.jsonl",
+    chat.append(paths.comments(d),
                 {"id": "c-0002", "kind": "comment", "block": bid, "body": "and another thing"})
     asyncio.run(s.on_log_change())
     msgs = [m for m in sent if m["type"] == "chat"]

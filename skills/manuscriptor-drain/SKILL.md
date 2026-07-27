@@ -6,7 +6,8 @@ description: Use when Manuscriptor comments need addressing — the user says "p
 # Draining Manuscriptor comments
 
 The author leaves comments in the Manuscriptor editor. They land in
-`comments.jsonl` beside the manuscript. Nothing reads them until you do.
+`.manuscriptor/comments.jsonl` beside the manuscript. Nothing reads them
+until you do.
 
 You are not talking to the server. You share a filesystem with it: you read the
 log, edit `.tex` files with your ordinary tools, and append state records. The
@@ -149,7 +150,7 @@ manuscript's own words exactly. Findings are `review` state: pinned for the
 author, never presented back to you as work, so you cannot end up working
 your own review. Duplicates against open findings are skipped automatically;
 do not pre-filter. When the skill produces an artifact instead (a deck, a
-submission package), put it under `build/manuscriptor/` and reply with the
+submission package), put it under `.manuscriptor/cache/` and reply with the
 path. Either way: reply with a one-line summary and mark the check's own
 comment done.
 
@@ -188,10 +189,20 @@ The protocol, which is also in your launch prompt:
 2. `manuscriptor proc <dir> --json`; for each pending item mark it `working`
    IMMEDIATELY, before reading anything else — the author is watching the
    pin, and the reading can happen after it moves.
-3. Work the items per this skill, then **park**: start
-   `manuscriptor proc <dir> --wait` as a BACKGROUND task and end your turn.
-   The task finishing means new comments are on disk and wakes you.
-4. After roughly 20 wakes, or when your context has grown long, exit cleanly
+3. Work the items per this skill. **A second comment may reach you while you
+   are still on the first** — under `serve` the supervisor hands work to a
+   RUNNING session rather than holding it, and running standalone you should
+   re-run `manuscriptor proc <dir> --json` before you finish rather than after.
+   Either way: dispatch it at once, alongside what is already running. Do not
+   finish the comment you are on first. The author types while you work, and
+   on 2026-07-27 a comment left four seconds after a turn began waited 8m54s,
+   with two others at 5m11s and 2m12s, purely because nothing looked at the
+   queue between the start of a turn and its end.
+4. Only when nothing is left, **park** (standalone only; under `serve` there is
+   nothing to park, work simply arrives): start `manuscriptor proc <dir>
+   --wait` as a BACKGROUND task and end your turn. The task finishing means
+   new comments are on disk and wakes you.
+5. After roughly 20 wakes, or when your context has grown long, exit cleanly
    instead of parking; the outer loop restarts you fresh.
 
 Your working directory is the manuscript, and the git repository root rides
@@ -240,7 +251,15 @@ exhibit means renaming its output, its `\includegraphics`, and the line in the
 script that writes it, in one pass.
 
 **A name says what the exhibit IS, not what it once was.** The six-panel figure
-stopped being a heatmap when it was rebuilt; it is `fig2_channels.pdf` now.
+stopped being a heatmap when it was rebuilt, and stopped being a six-panel figure
+when it was rebuilt again; it is `fig2_gender_items.pdf` now.
+
+**NO COMMENTARY IN AN EXHIBIT. This one is absolute.** An exhibit states what was
+measured. What it means is the author's to write, in the caption and the text.
+Never emit a panel subtitle, an annotation, a callout arrow, a highlighted band,
+or a title that draws the conclusion ("Bias appears only in role-play"). Titles
+name the variables; axis labels name the units and the scale. This is a forbidden
+pattern in every automated exhibit, not a preference to weigh against clarity.
 
 **Notes belong in the caption**, where the renderer keeps them with the exhibit.
 A note written as a separate paragraph after `\end{tabular}` is detached from its

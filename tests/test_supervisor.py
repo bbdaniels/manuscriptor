@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from manuscriptor.server import paths
 from manuscriptor.server import supervisor as sup
 
 
@@ -27,10 +28,50 @@ def test_work_is_handed_to_an_idle_session():
     assert d.do == "send" and d.ids == ("c-1", "c-2")
 
 
-def test_nothing_is_handed_over_while_a_turn_is_in_flight():
-    """Sending a second comment to a session that has not answered the first is
-    how one stuck figure becomes two."""
-    assert sup.decide(pending=("c-2",), in_flight=True, silent_for=5.0).do == "wait"
+def test_a_comment_that_lands_mid_turn_joins_the_running_session():
+    """The behaviour the author asked for, and the one that was not happening.
+
+    Measured on dsp-bias 2026-07-27: c-0009 was left four seconds after c-0008
+    was picked up and waited 8m54s, because this branch answered `wait` until
+    the turn ended. Eleven comments, eleven turns, zero overlap. Measured on a
+    real `claude -p --input-format stream-json`: a message written to stdin
+    mid-turn is acted on WHILE the first turn runs (answered at 9.7s against a
+    turn that ended at 40.5s), so handing it over is worth something.
+    """
+    d = sup.decide(pending=("c-1", "c-2"), in_flight=True, silent_for=5.0, sent=("c-1",))
+    assert d.do == "send" and d.ids == ("c-2",), "the new comment waited for the turn"
+
+
+def test_a_comment_already_handed_over_is_not_handed_over_twice():
+    """A `working` comment stays pending, deliberately, so a restart recovers
+    it. That must not read as new work every two seconds."""
+    assert sup.decide(pending=("c-1",), in_flight=True, silent_for=5.0,
+                      sent=("c-1",)).do == "wait"
+
+
+def test_only_so_much_is_piled_onto_one_running_session():
+    d = sup.decide(pending=("c-1", "c-2", "c-3", "c-4", "c-5"), in_flight=True,
+                   silent_for=5.0, sent=("c-1", "c-2"), max_in_flight=3)
+    assert d.do == "send" and d.ids == ("c-3",), "the cap counts what is already in flight"
+    full = sup.decide(pending=("c-1", "c-2", "c-3", "c-4"), in_flight=True,
+                      silent_for=5.0, sent=("c-1", "c-2", "c-3"), max_in_flight=3)
+    assert full.do == "wait" and full.why, "a cap with no reason is a silent stall"
+
+
+def test_the_cap_does_not_limit_a_backlog_handed_to_an_idle_session():
+    """Idle means nothing is in flight, so the cap has nothing to count. A queue
+    of five at boot is one prompt naming five, which is what the skill fans out."""
+    d = sup.decide(pending=("c-1", "c-2", "c-3", "c-4", "c-5"), in_flight=False,
+                   silent_for=0.0, max_in_flight=3)
+    assert d.do == "send" and len(d.ids) == 5
+
+
+def test_a_wedged_session_is_still_not_given_more_work():
+    """The reason the old blanket wait was written, and it is kept: the stall
+    branch has to win over the send branch."""
+    d = sup.decide(pending=("c-1", "c-2"), in_flight=True, silent_for=200.0,
+                   stall_after=150.0, sent=("c-1",))
+    assert d.do == "restart"
 
 
 def test_an_idle_session_with_nothing_pending_waits():
@@ -45,8 +86,12 @@ def test_a_silent_turn_is_a_fault():
 
 
 def test_a_turn_that_is_merely_slow_is_left_alone():
-    assert sup.decide(pending=("c-6",), in_flight=True, silent_for=149.0,
-                      stall_after=150.0).do == "wait"
+    """Slow is not wedged. `sent` carries the comment the turn is already on,
+    which is the loop's own state: a `working` comment stays pending so a
+    restart recovers it, and must not be handed over a second time."""
+    d = sup.decide(pending=("c-6",), in_flight=True, silent_for=149.0,
+                   stall_after=150.0, sent=("c-6",))
+    assert d.do == "wait"
 
 
 def test_a_dead_session_is_restarted_before_anything_else():
@@ -85,26 +130,32 @@ def test_a_teammates_thinking_is_marked_as_the_teammates():
     assert got[0].who == "teammate"
 
 
-def test_a_tool_call_shows_its_name_and_one_argument():
-    got = sup.summarize(assistant({
-        "type": "tool_use", "name": "Bash",
-        "input": {"command": "Rscript analysis/make_figures.R", "description": "rebuild"},
-    }))
-    assert got[0].kind == "tool" and got[0].text == "Bash: Rscript analysis/make_figures.R"
+@pytest.mark.parametrize(
+    "call",
+    [
+        {"type": "tool_use", "name": "Bash",
+         "input": {"command": "Rscript analysis/make_figures.R", "description": "rebuild"}},
+        {"type": "tool_use", "name": "Glob", "input": {}},
+        {"type": "tool_use", "name": "Read", "input": {"file_path": "main.tex"}},
+    ],
+)
+def test_a_tool_call_is_not_something_the_author_needs_to_read(call):
+    """The feed answers what the session is DOING, and `Bash: manuscriptor reply
+    ...` is not that. The full stream, tool calls included, is still written to
+    `agent-stream.jsonl`, which is where anyone debugging the session looks."""
+    assert sup.summarize(assistant(call)) == []
 
 
-def test_a_tool_call_with_no_useful_argument_still_names_itself():
-    got = sup.summarize(assistant({"type": "tool_use", "name": "Glob", "input": {}}))
-    assert got[0].text == "Glob"
-
-
-def test_the_dispatch_of_a_teammate_is_visible():
-    """The event that was the last thing anyone saw before the silence."""
+def test_the_dispatch_of_a_teammate_is_still_visible():
+    """The one exception, and it is not really a tool call: it is the work
+    moving to someone else. It was the last thing anyone saw before the
+    fourteen-minute silence this panel was built to end."""
     got = sup.summarize(assistant({
         "type": "tool_use", "name": "Agent",
         "input": {"subagent_type": "data-engineer", "description": "Rebuild fig3 as 6-panel"},
     }))
-    assert got[0].text == "Agent: Rebuild fig3 as 6-panel"
+    assert len(got) == 1 and got[0].kind == "note"
+    assert "teammate" in got[0].text and "Rebuild fig3 as 6-panel" in got[0].text
 
 
 def test_a_finished_turn_is_marked():
@@ -204,3 +255,94 @@ def test_the_boot_message_does_not_ask_the_session_to_park():
     text = sup.BOOT.format(root="/tmp/paper")
     assert "park" in text.lower(), "it should say explicitly that there is nothing to park"
     assert "proc --wait" not in text
+
+
+def test_a_feed_written_by_an_older_build_stops_showing_its_tool_calls(tmp_path):
+    """dsp-bias had 17KB of `Bash: ...` on disk the moment this changed.
+
+    The feed is rewritten whole by its one writer, so the stale lines clear
+    themselves on the next turn -- but a session that is idle keeps showing
+    them until then, and the page must not be the thing that decides.
+    """
+    from manuscriptor.server import feed as feed_mod
+    p = tmp_path / "agent-progress.json"
+    p.write_text(json.dumps({
+        "state": "working", "working": ["c-0001"],
+        "entries": [
+            {"ts": "2026-07-27T07:00:00+00:00", "who": "agent", "kind": "tool",
+             "text": "Bash: manuscriptor reply /paper c-0007"},
+            {"ts": "2026-07-27T07:00:01+00:00", "who": "agent", "kind": "text",
+             "text": "Rewriting the caption."},
+        ],
+    }), encoding="utf-8")
+    got = feed_mod.read_feed(p)
+    assert [e["kind"] for e in got["entries"]] == ["text"]
+    assert got["state"] == "working" and got["working"] == ["c-0001"]
+
+
+def test_one_answer_does_not_mean_the_session_is_idle(tmp_path):
+    """Bookkeeping that only breaks once turns overlap.
+
+    The probe that proved mid-turn hand-off works also showed the second
+    message's `result` frame arriving while the FIRST turn was still running.
+    A boolean in-flight flag reads idle there, which would hand the session
+    more work on the strength of an answer to something else, and would tell
+    the author the agent had stopped while it was still going.
+    """
+    from manuscriptor.server.feed import Feed
+    s = sup.Session(tmp_path, feed=Feed(path=tmp_path / "p.json"), manuscriptor="ms")
+    s._in_flight = 0
+    s._note_sent(); s._note_sent()
+    assert s.in_flight
+    s._note_result()
+    assert s.in_flight, "one result closed a turn that was not the only one running"
+    s._note_result()
+    assert not s.in_flight
+    s._note_result()
+    assert not s.in_flight, "a stray result must not drive the count below zero"
+
+
+def test_the_loop_hands_a_mid_turn_comment_to_the_running_session(tmp_path):
+    """The whole thing, driven: a comment arrives while a turn is running.
+
+    `decide` being right is not enough -- the loop has to pass its own `_sent`
+    in, or the cap counts nothing and a capped session looks empty. Driven
+    against a stub session so the assertion is about the dispatcher, not about
+    a model.
+    """
+    from manuscriptor.server import chat
+
+    log = paths.comments(tmp_path)
+
+    class Stub:
+        alive = True
+        silent_for = 0.0
+
+        def __init__(self):
+            self.sent = []
+            self.in_flight = False
+
+        def send(self, text):
+            self.sent.append(text)
+            self.in_flight = True
+            return True
+
+        def start(self): pass
+        def stop(self): pass
+
+    d = sup.Drain(tmp_path, manuscriptor="ms", build_dir=tmp_path / "build")
+    stub = Stub()
+    d.session = stub
+    handed = []
+    d.hand_over = lambda ids: (handed.append(tuple(ids)), stub.send(""), d._sent.update(ids))
+
+    for i in (1, 2, 3, 4, 5):
+        chat.append(log, {"id": f"c-000{i}", "kind": "comment", "block": "b-1",
+                          "body": "x", "author": "bb"})
+        d.step()
+
+    assert handed[0] == ("c-0001",), handed
+    assert stub.in_flight, "the stub must be mid-turn for the rest to mean anything"
+    assert handed[1] == ("c-0002",), "a comment arriving mid-turn waited"
+    assert handed[2] == ("c-0003",), handed
+    assert len(handed) == 3, f"the cap of {d.max_in_flight} did not hold: {handed}"

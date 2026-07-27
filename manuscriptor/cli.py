@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .server import paths
 
 _NOT_YET = "not implemented yet (lands with {milestone}); see the Phase 1 design in the vault"
 
@@ -78,7 +79,7 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     out = Path(args.output).resolve() if args.output else None
     b = build_mod.build(Path(args.manuscript).resolve(), main=args.main, bib=args.bib, output_dir=out)
-    out = out or Path(args.manuscript).resolve() / "build" / "manuscriptor"
+    out = out or paths.cache(args.manuscript)
 
     tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
     css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
@@ -138,14 +139,13 @@ def agent_prompt(manuscript_dir, manuscriptor: str) -> str:
 def agent_log_path(manuscript_dir: Path) -> Path:
     """Where the session's output goes.
 
-    Inside the build directory, which writes its own `.gitignore`, because
-    serving a paper must never be the reason `git status` grows.
+    Durable but private, so it lives in the hidden directory beside the drain's
+    other logs rather than under the cache: a rebuild does not reconstruct what
+    the agent said, and `clean` has no business taking it.
     """
-    from manuscriptor.server.build import keep_out_of_git
-
-    out = Path(manuscript_dir).resolve() / "build" / "manuscriptor"
+    paths.ensure(manuscript_dir)
+    out = paths.agent_dir(manuscript_dir)
     out.mkdir(parents=True, exist_ok=True)
-    keep_out_of_git(out)
     return out / "agent.log"
 
 
@@ -337,7 +337,7 @@ def cmd_drain(args: argparse.Namespace) -> int:
 
     d = Path(args.manuscript).resolve()
     root = repo_root(d)
-    out = d / "build" / "manuscriptor"
+    out = paths.agent_dir(d)
     out.mkdir(parents=True, exist_ok=True)
     drain = Drain(
         d,
@@ -538,7 +538,7 @@ def cmd_import(args: argparse.Namespace) -> int:
 
     try:
         report = importer.ingest(path.read_bytes(), path.name,
-                                 blocks=blocks, log=d / "comments.jsonl")
+                                 blocks=blocks, log=paths.comments(d))
     except importer.Unreadable as exc:
         sys.exit(str(exc))
 
@@ -555,7 +555,7 @@ def cmd_import(args: argparse.Namespace) -> int:
             print(f"{head} -> tray: {it['reason']}")
         if it["marked"]:
             print(f"        \"{_clip(it['marked'])}\"")
-    waiting = importer.tray(d / "comments.jsonl")
+    waiting = importer.tray(paths.comments(d))
     if waiting:
         print(f"\n{len(waiting)} waiting in the tray. Place them in the page, "
               f"or in a session with `manuscriptor state`.")
@@ -592,7 +592,7 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     d = Path(args.manuscript).resolve()
     main_tex = bmod.find_main_tex(d, args.main)
     root = main_tex.parent
-    store = dmod.path_for(root / "build" / "manuscriptor")
+    store = paths.drafts(root)
     held = dmod.read(store)
     if not held:
         print(f"no drafts held for {root}")
@@ -685,7 +685,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     manuscript_dir = Path(args.manuscript).resolve()
     if not manuscript_dir.is_dir():
         sys.exit(f"manuscript path is not a directory: {manuscript_dir}")
-    output_dir = Path(args.output).resolve() if args.output else manuscript_dir / "build" / "manuscriptor"
+    output_dir = Path(args.output).resolve() if args.output else paths.cache(manuscript_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     main_tex, bib_file = _resolve_manuscript_paths(manuscript_dir, args.main, args.bib)
@@ -724,11 +724,64 @@ def cmd_repair(args: argparse.Namespace) -> int:
     return repair.run(build_dir=build_dir)
 
 
+def cmd_tidy(args: argparse.Namespace) -> int:
+    """Say what is lying around beside the manuscript. Remove it only if asked.
+
+    Reports by default, because this runs against real manuscripts and the
+    standing rule here is that automation which writes to one eventually writes
+    the wrong thing. `--sweep` removes only what git already ignores or has
+    never seen, and never a `.tex`.
+    """
+    from manuscriptor.server import tidy as tidy_mod
+
+    d = Path(args.manuscript).resolve()
+    if not d.is_dir():
+        sys.exit(f"not a directory: {d}")
+    findings = tidy_mod.scan(d)
+    print(tidy_mod.report(d, findings))
+    if not args.sweep or not findings:
+        return 0
+
+    gone, kept = tidy_mod.sweep(findings)
+    print()
+    print(f"removed {len(gone)} file{'s' if len(gone) != 1 else ''}")
+    for f in kept:
+        print(f"  kept {f.path.name}: {f.reason}")
+    return 0
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
-    target = Path(args.build).resolve()
+    """Remove the regenerable tier, and refuse to remove anything else.
+
+    This command used to take a path and delete it. The path it was documented
+    with held `drafts.json`, so running it on a manuscript with unsaved text
+    destroyed text no rebuild can reconstruct. It now resolves a manuscript to
+    its own `cache/` and will not act on a directory that is not one.
+    """
+    given = Path(args.manuscript).resolve()
+    if paths.is_cache(given):
+        target = given
+    elif paths.HOME in given.parts:
+        # Inside the hidden directory but not the cache: they have named the
+        # drafts store, the agent logs, or the whole thing. Deriving a cache
+        # path from here would silently invent `.manuscriptor/.manuscriptor/
+        # cache` and report success against a directory that never existed.
+        sys.exit(f"refusing to remove {given}: name the manuscript directory, "
+                 f"or {paths.CACHE_NAME} itself")
+    else:
+        target = paths.cache(given)
+    if not paths.is_cache(target):
+        sys.exit(f"refusing to remove {target}: not a manuscriptor cache directory")
     if target.exists():
         shutil.rmtree(target)
         print(f"removed {target}")
+    else:
+        print(f"nothing to remove at {target}")
+    kept = [p for p in (paths.drafts(target.parent.parent),
+                        paths.comments(target.parent.parent),
+                        paths.agent_dir(target.parent.parent)) if p.exists()]
+    if kept:
+        print("kept: " + ", ".join(p.name for p in kept))
     if args.cache:
         from .evidence.cache import CACHE_ROOT
 
@@ -870,8 +923,17 @@ def main(argv: list[str] | None = None) -> int:
     p_repair.add_argument("build", help="Path to build directory containing missing.json")
     p_repair.set_defaults(func=cmd_repair)
 
-    p_clean = sub.add_parser("clean", help="Remove build artifacts; optionally clear the shared cache.")
-    p_clean.add_argument("build", help="Path to build directory to remove")
+    p_tidy = sub.add_parser("tidy", help="Report stray artifacts beside a manuscript.")
+    p_tidy.add_argument("manuscript", help="Manuscript directory to look at")
+    p_tidy.add_argument("--sweep", action="store_true",
+                        help="Also remove the ones git ignores or has never seen. "
+                             "Never removes a tracked file, and never a .tex.")
+    p_tidy.set_defaults(func=cmd_tidy)
+
+    p_clean = sub.add_parser("clean", help="Remove regenerable render output; optionally clear the shared cache.")
+    p_clean.add_argument("manuscript",
+                         help="Manuscript directory (its .manuscriptor/cache is removed). "
+                              "Drafts, comments and agent logs are never touched.")
     p_clean.add_argument("--cache", action="store_true", help="Also clear the evidence cache")
     p_clean.set_defaults(func=cmd_clean)
 

@@ -243,7 +243,12 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 .blk { position: relative; font-family: var(--serif); font-size: 1.0625rem; line-height: 1.68; margin: 0 0 1.15rem; padding: .35rem .6rem .35rem .7rem; border-radius: 5px; border-left: 2px solid transparent; cursor: text; }
 .blk:hover { background: var(--sunken); border-left-color: var(--rule); }
 .blk.sel { background: var(--accent-soft); border-left-color: var(--accent); }
-.blk .tag { position: absolute; left: -3.6rem; top: .5rem; font-family: var(--mono); font-size: .62rem; color: var(--faint); opacity: 0; font-variant-numeric: tabular-nums; }
+/* The gutter number stacks: ¶ordinal over source line. Anchored by its RIGHT
+   edge, clear of the insert-after button at -1.5rem, so two lines of different
+   width still line up with each other and with the paragraph they label. */
+.blk .tag { position: absolute; right: calc(100% + 1.8rem); top: .38rem; text-align: right; line-height: 1.3; white-space: nowrap; font-family: var(--mono); font-size: .62rem; color: var(--faint); opacity: 0; font-variant-numeric: tabular-nums; }
+.blk .tag > span { display: block; }
+.blk .tag .tag-line { color: var(--faint); opacity: .72; }
 .blk:hover .tag, .blk.sel .tag { opacity: 1; }
 @media (max-width: 1240px) { .blk .tag { display: none; } }
 .blk.is-heading { font-weight: 600; cursor: pointer; }
@@ -678,11 +683,13 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .fe time { font-family: var(--mono); font-size: .62rem; color: var(--faint); opacity: .8; }
 .fe.thinking span { color: var(--muted); font-style: italic; }
 .fe.text span { color: var(--ink); }
-.fe.tool span { font-family: var(--mono); font-size: .68rem; color: var(--muted); }
 .fe.note span { color: var(--faint); }
 .fe.result span { color: var(--verbatim); }
 
 /* A ticker entry names a place, so it is a way to get there. */
+/* A block is named by its caption now, which is a sentence. Clamped so five
+   entries still fit the row; the full text stays in the title attribute. */
+.tkgo, .tklabel { max-width: 26ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tkgo { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer;
   text-align: left; }
 .tkgo:hover { color: var(--accent); text-decoration: underline; }

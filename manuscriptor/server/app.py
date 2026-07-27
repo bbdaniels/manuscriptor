@@ -36,6 +36,8 @@ from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 from manuscriptor.server import compile as compile_mod
 from manuscriptor.server import drafts as drafts_mod
+from manuscriptor.server import migrate as migrate_mod
+from manuscriptor.server import paths
 from manuscriptor.server import ports
 from manuscriptor.source import insert as insert_mod
 from manuscriptor.source import splice as splice_mod
@@ -78,6 +80,10 @@ class Session:
         self.docs = tree_mod.discover(self.dir)
         self.current = self._default_current(main)
         self.build = None
+        # Roots already moved into the hidden layout this session, and the
+        # running account of what was moved, for the terminal and the page.
+        self._migrated: set[Path] = set()
+        self.notices: list[str] = []
         self.rebuild()
 
     def _default_current(self, main: str | None) -> tree_mod.Document | None:
@@ -117,8 +123,8 @@ class Session:
 
     @property
     def log(self) -> Path:
-        """The current document's comment log, beside the document itself."""
-        return self.root / "comments.jsonl"
+        """The current document's comment log, inside the hidden directory."""
+        return paths.comments(self.root)
 
     @property
     def doc(self) -> str:
@@ -127,10 +133,10 @@ class Session:
 
     @property
     def drafts_file(self) -> Path:
-        """Unsaved text, on disk. In the build directory rather than beside the
-        log, because that directory writes its own `.gitignore` and serving a
-        paper must never make `git status` grow."""
-        return drafts_mod.path_for(self.root / "build" / "manuscriptor")
+        """Unsaved text, on disk. Durable but private, so it sits beside the log
+        in the hidden directory and outside the cache the `clean` command may
+        remove: no rebuild can reconstruct a paragraph the author never saved."""
+        return paths.drafts(self.root)
 
     @property
     def current_ref(self) -> str:
@@ -155,13 +161,43 @@ class Session:
 
     def rebuild(self):
         previous = self.build
+        target = self.dir if self.current is None else Path(self.current.root_dir)
+        self._migrate(target)
         if self.current is None:
             self.build = build_mod.build(self.dir, main=None, bib=self.bib)
         else:
             self.build = build_mod.build(
-                Path(self.current.root_dir), main=self.current.main, bib=self.bib)
+                target, main=self.current.main, bib=self.bib)
         self._overlay_tree_docs()
         return previous
+
+    def _migrate(self, root: Path) -> None:
+        """Move a pre-2026-07-27 manuscript into `.manuscriptor/`, once.
+
+        Here rather than in `build()` because this is the only place that knows
+        whether the serve is read-only, and migrating a manuscript the author
+        opened to READ would break the promise that nothing reaches the disk.
+        Here rather than in `cmd_serve` because a document switch reaches a root
+        the command line never named, and that root needs moving too.
+
+        Never silent: a migration that says nothing is indistinguishable from
+        files going missing.
+        """
+        if self.read_only or root in self._migrated:
+            return
+        self._migrated.add(root)
+        try:
+            report = migrate_mod.run(root)
+        except OSError as exc:
+            self.notices.append(f"could not reorganize {root}: {exc}")
+            return
+        if not report:
+            return
+        self.notices.append(f"{root.name}: {report.summary()}")
+        for src, why in report.skipped:
+            self.notices.append(f"  left {src.name} where it was: {why}")
+        for line in self.notices[-(1 + len(report.skipped)):]:
+            print(line, flush=True)
 
     def switch(self, rel_main: str) -> None:
         """Serve a different document from anywhere in the tree.
@@ -259,8 +295,7 @@ class Session:
 
         if self.build is None:
             return
-        out = self.root / "build" / "manuscriptor"
-        fresh = feed_mod.read_feed(feed_mod.progress_path(out))
+        fresh = feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(self.root)))
         if fresh == self.build.blob.get("agent_feed"):
             return
         self.build.blob["agent_feed"] = fresh
@@ -440,7 +475,9 @@ class Session:
                 **({"check": str(check)} if check else {}),
                 "file": str(block.file) if block else "",
                 "lines": [block.line_start, block.line_end] if block else [],
-                "quote": (block.source_text[:120] if block else ""),
+                # Long enough to identify this block and no other, so the chat
+                # is re-found after the edit that answers it changes the id.
+                "quote": (build_mod.quote_for(block, self.build.blocks) if block else ""),
                 "body": body,
                 "author": "bb",
             },
@@ -580,17 +617,42 @@ def _diff(old, new) -> dict | None:
             renamed[old_id] = new_id
 
     claimed = {v for v in mapping.values() if v}
-    added = sorted(set(new_by_id) - claimed)
+    order = [b.id for b in new.blocks]
+    at = {bid: i for i, bid in enumerate(order)}
+    # Document order, not id order. Each new block is positioned after the one
+    # before it, so a run of them has to arrive in the order the document reads
+    # or the second lands before the first is on the page.
+    added_ids = sorted(set(new_by_id) - claimed, key=lambda b: at[b])
     removed = sorted(k for k, v in mapping.items() if v is None)
-    if not (changed or added or removed or renamed):
+    if not (changed or added_ids or removed or renamed):
         return None
 
     html = new.blob["html"]
+    # An added block goes through `added` ALONE. `blocks` is applied by replacing
+    # an element already on the page, and an id with no element there falls
+    # through to an append at the end of the document -- which is how a figure,
+    # moved and recaptioned so `rematch` could not map it, rendered below the
+    # bibliography on 2026-07-27 while the source and the PDF both had it in place.
     frag = {}
-    for bid in changed + added:
+    for bid in changed:
         piece = block_html(html, bid)
         if piece is not None:
             frag[bid] = piece
+
+    # `after` is the id of the preceding block in the new document, or None when
+    # this block is now the first thing in it.
+    added = []
+    for bid in added_ids:
+        piece = block_html(html, bid)
+        if piece is None:
+            continue
+        i = at[bid]
+        added.append({
+            "id": bid,
+            "html": piece,
+            "after": order[i - 1] if i else None,
+            "block": new.blob["blocks"].get(bid),
+        })
     return {
         "type": "patch",
         "blocks": frag,
@@ -813,7 +875,7 @@ def make_app(session: Session) -> web.Application:
                 status=403)
         if _busy():
             return web.json_response({"error": "a run is already underway"}, status=409)
-        out = session.root / "build" / "manuscriptor"
+        out = paths.cache(session.root)
         if not (out / "missing.json").exists():
             return web.json_response({"error": "nothing to repair; run the evidence pass first"},
                                      status=409)
@@ -859,7 +921,7 @@ def make_app(session: Session) -> web.Application:
     # Registered last so the explicit routes above always win.
     async def assets(request):
         rel = request.match_info.get("path", "")
-        base = (session.root / "build" / "manuscriptor").resolve()
+        base = paths.cache(session.root)
         target = (base / rel).resolve()
         if base not in target.parents and target != base:
             raise web.HTTPNotFound()

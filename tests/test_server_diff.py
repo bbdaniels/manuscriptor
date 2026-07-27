@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from manuscriptor.server import paths
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import app
 from manuscriptor.server.app import _diff, block_html
@@ -180,7 +181,7 @@ def test_read_only_refuses_every_write(tmp_path):
 
     chat_reply = asyncio.run(s.on_chat(bid, "a note"))
     assert chat_reply["type"] == "held"
-    assert not (tmp_path / "comments.jsonl").exists(), "not even the log"
+    assert not paths.comments(tmp_path).exists(), "not even the log"
 
 
 def test_read_write_is_still_the_default(tmp_path):
@@ -245,7 +246,7 @@ def test_switching_serves_a_document_from_its_own_folder(tmp_path):
     assert s.doc == "response.tex"
     # The comment log and build output follow the document into its own folder.
     assert s.root == (tmp_path / "response").resolve()
-    assert s.log == (tmp_path / "response" / "comments.jsonl")
+    assert s.log == paths.comments(tmp_path / "response")
 
 
 def test_switch_rebinds_the_drain_to_the_new_document_root(tmp_path):
@@ -335,6 +336,131 @@ def test_the_run_stops_at_a_nested_anchor():
 
 
 # --------------------------------------------- what a batch of changes means
+
+
+def _strip_js_comments(src: str) -> str:
+    """Assertions below look for real code, never for a comment describing it."""
+    import re
+
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    return re.sub(r"^\s*//.*$", "", src, flags=re.M)
+
+
+def _new_block_builds(tmp_path: Path):
+    """A build, a wholly new paragraph inserted in the middle, and the build after."""
+    manuscript(tmp_path)
+    before = build_mod.build(tmp_path)
+    src = (tmp_path / "main.tex").read_text(encoding="utf-8")
+    (tmp_path / "main.tex").write_text(
+        src.replace(
+            "Third paragraph,",
+            "Inserted paragraph, wholly new, and long enough to stand as a block of its own.\n\n"
+            "Third paragraph,",
+        ),
+        encoding="utf-8",
+    )
+    return before, build_mod.build(tmp_path)
+
+
+def test_a_new_block_carries_the_place_it_belongs(tmp_path):
+    """The figure that jumped to the foot of the manuscript.
+
+    Reported 2026-07-27: Figure 2 rendered below the bibliography, though the
+    source, the built HTML and the PDF all had it after the paragraph that cites
+    it. The figure had been moved and its caption rewritten, so `rematch` could
+    not map the old id onto the new one and the block arrived as removed plus
+    added. `added` was a list of bare id strings, which says WHAT is new and
+    never WHERE it goes, so the client had nothing to position it by.
+    """
+    before, after = _new_block_builds(tmp_path)
+    patch = _diff(before, after)
+    assert len(patch["added"]) == 1, "the fixture inserts exactly one block"
+    entry = patch["added"][0]
+    assert isinstance(entry, dict), "a bare id tells the client nothing about placement"
+
+    order = [b.id for b in after.blocks]
+    i = order.index(entry["id"])
+    assert entry["after"] == order[i - 1], "the block it follows in the document"
+    assert entry["html"], "and the markup to insert"
+
+
+def test_an_added_block_is_not_also_sent_as_a_patch(tmp_path):
+    """`blocks` is applied by replacing an element already on the page. An id with
+    no element on the page falls through to an append at the end of the document,
+    which is the second half of how a figure ended up below the bibliography."""
+    before, after = _new_block_builds(tmp_path)
+    patch = _diff(before, after)
+    ids = {e["id"] for e in patch["added"]}
+    assert ids, "the fixture must add a block"
+    assert not (ids & set(patch["blocks"])), "an added block travels through `added` only"
+
+
+def test_added_blocks_are_sent_in_document_order(tmp_path):
+    """Each is positioned after the one before it, so a run of new blocks has to
+    arrive in the order the document reads. Sorting by id shuffles them."""
+    manuscript(tmp_path)
+    before = build_mod.build(tmp_path)
+    src = (tmp_path / "main.tex").read_text(encoding="utf-8")
+    (tmp_path / "main.tex").write_text(
+        src.replace(
+            "Third paragraph,",
+            "Alpha inserted paragraph, new, and long enough to stand as a block of its own.\n\n"
+            "Beta inserted paragraph, new, and long enough to stand as a block of its own.\n\n"
+            "Third paragraph,",
+        ),
+        encoding="utf-8",
+    )
+    after = build_mod.build(tmp_path)
+    patch = _diff(before, after)
+    order = [b.id for b in after.blocks]
+    got = [e["id"] for e in patch["added"]]
+    assert len(got) == 2
+    assert got == sorted(got, key=order.index), "document order, not id order"
+    assert patch["added"][1]["after"] == patch["added"][0]["id"], "the second follows the first"
+
+
+def test_the_viewer_places_an_added_block_rather_than_appending_it():
+    """Checked against the shipped viewer, because no browser runs in this suite."""
+    js = Path(__file__).resolve().parent.parent / "manuscriptor/templates/static/viewer.js"
+    src = js.read_text(encoding="utf-8")
+    fn = src[src.rindex("(msg.added || []).forEach"):]
+    fn = _strip_js_comments(fn[: fn.index("\n    });")])
+    assert "a.html" in fn, "this must be the loop that inserts, not the one that indexes"
+    assert "nodesFromHtml" in fn, "an added block can render as several elements"
+    assert "insertBefore" in fn, "it goes where the server says it goes"
+    assert "docInner.appendChild" not in fn, (
+        "appending to the end is what put a figure below the bibliography"
+    )
+
+
+def test_the_viewer_does_not_patch_a_block_it_has_never_placed():
+    """`applyBlockHtml` has no position to work from, so an id that is new to the
+    page must be routed to the `added` handler instead of falling through it."""
+    js = Path(__file__).resolve().parent.parent / "manuscriptor/templates/static/viewer.js"
+    src = js.read_text(encoding="utf-8")
+    fn = src[src.index("function onPatch"):]
+    fn = _strip_js_comments(fn[: fn.index("\n  }\n")])
+    assert "addedIds" in fn, "onPatch must know which ids are new before applying blocks"
+
+
+def test_the_gutter_stacks_the_source_line_under_the_paragraph_number():
+    """Side by side, `¶38 · 1013` reads as one number with a separator in it.
+    They are two different addresses: the ordinal is what the author and the
+    agent talk in, the line is what an editor jumps to."""
+    base = Path(__file__).resolve().parent.parent / "manuscriptor/templates/static"
+    js = _strip_js_comments((base / "viewer.js").read_text(encoding="utf-8"))
+    css = (base / "styles.css").read_text(encoding="utf-8")
+
+    tag = js[js.index("tag.className = 'tag'"):]
+    tag = tag[: tag.index("el.insertBefore(tag")]
+    assert "'¶' + ordinal" in tag, "the ordinal is still shown"
+    assert "tag-line" in tag, "and the source line as its own element"
+    assert " · " not in tag, "no inline separator: the two are stacked, not joined"
+
+    rule = next(l for l in css.splitlines() if l.startswith(".blk .tag {"))
+    assert "text-align: right" in rule, "two lines of different width must align"
+    assert "left:" not in rule, "anchored by its right edge, clear of the add button"
+    assert ".blk .tag > span { display: block; }" in css, "one line each"
 
 
 def test_a_mixed_batch_rebuilds_and_refreshes_the_images():

@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from manuscriptor.server import paths
 from manuscriptor.server import chat
 from manuscriptor.server import importer
 from manuscriptor.source.blocks import segment
@@ -70,7 +71,7 @@ def block_with(blocks, needle: str) -> str:
 
 
 def records(d: Path, kind: str) -> list[dict]:
-    return [r for r in chat.read_records(d / "comments.jsonl") if r.get("kind") == kind]
+    return [r for r in chat.read_records(paths.comments(d)) if r.get("kind") == kind]
 
 
 # ----------------------------------------------------------- a marked-up PDF
@@ -237,7 +238,7 @@ def test_a_highlight_lands_on_the_paragraph_it_marks(tmp_path):
          "contents": "this overstates what the design can show", "author": "Reviewer 2"},
     ])
 
-    report = importer.ingest(data, "referee-report.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "referee-report.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     assert report["unplaced"] == 0
@@ -257,7 +258,7 @@ def test_the_page_number_is_not_what_places_it(tmp_path):
          "contents": "say how many were lost to follow-up", "author": "Reviewer 1"},
     ])
 
-    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     assert report["items"][0]["block"] == block_with(blocks, P1)
@@ -283,7 +284,7 @@ def test_an_anchor_survives_the_manuscript_being_rewritten_above_it(tmp_path):
         r"\section{Results}")
     d2, moved = manuscript(tmp_path / "after", grown)
 
-    report = importer.ingest(data, "r2.pdf", blocks=moved, log=d2 / "comments.jsonl")
+    report = importer.ingest(data, "r2.pdf", blocks=moved, log=paths.comments(d2))
 
     assert report["anchored"] == 1
     assert report["items"][0]["block"] == block_with(moved, P2)
@@ -311,7 +312,7 @@ def test_a_mark_on_a_computed_value_finds_the_paragraph_that_inputs_it(tmp_path)
                       [{"page": 0, "lines": [0, 1], "subtype": "Highlight",
                         "contents": "report the test statistic too", "author": "Reviewer 1"}])
 
-    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     assert report["items"][0]["score"] == 1.0
@@ -321,7 +322,7 @@ def test_a_re_exported_pdf_with_new_pagination_is_the_same_markup(tmp_path):
     """The author rewrote section 2 and the referee's file was re-exported. Every
     page number moved and not one mark is new."""
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     mark = {"lines": [0, 1], "subtype": "Highlight",
             "contents": "this overstates it", "author": "Reviewer 2"}
 
@@ -342,7 +343,7 @@ def test_a_strikeout_carries_the_struck_text_and_is_placed_by_it(tmp_path):
         {"page": 0, "lines": [0, 1], "subtype": "StrikeOut", "author": "Reviewer 1"},
     ])
 
-    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     item = report["items"][0]
@@ -366,7 +367,7 @@ def test_a_sticky_note_with_no_marked_text_goes_to_the_tray(tmp_path):
          "contents": "the whole section needs restructuring", "author": "Reviewer 2"},
     ])
 
-    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 0
     assert report["unplaced"] == 1
@@ -382,7 +383,7 @@ def test_text_that_matches_nothing_goes_to_the_tray(tmp_path):
         [{"page": 0, "lines": [0, 1], "subtype": "Highlight",
           "contents": "check this", "author": "Reviewer 3"}])
 
-    report = importer.ingest(data, "r3.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r3.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["unplaced"] == 1
     assert report["items"][0]["block"] is None
@@ -400,7 +401,7 @@ def test_a_mark_matching_several_paragraphs_equally_goes_to_the_tray(tmp_path):
         {"page": 0, "lines": [0, 1], "subtype": "Highlight",
          "contents": "which table?", "author": "Reviewer 2"}])
 
-    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["unplaced"] == 1
     assert report["items"][0]["block"] is None
@@ -409,7 +410,7 @@ def test_a_mark_matching_several_paragraphs_equally_goes_to_the_tray(tmp_path):
 
 def test_the_tray_lets_him_place_it_by_hand(tmp_path):
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     data = marked_pdf([P1, P2], [
         {"page": 1, "lines": [], "subtype": "Text",
          "contents": "restructure the section", "author": "Reviewer 2"}])
@@ -439,7 +440,7 @@ def test_a_tray_item_offers_the_paragraphs_it_nearly_matched(tmp_path):
         {"page": 0, "lines": [0, 1], "subtype": "Highlight",
          "contents": "mechanism?", "author": "Reviewer 2"}])
 
-    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=paths.comments(d))
     item = report["items"][0]
 
     assert item["block"] is None
@@ -452,7 +453,7 @@ def test_a_tray_item_offers_the_paragraphs_it_nearly_matched(tmp_path):
 
 def test_an_imported_comment_queues_like_any_other(tmp_path):
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     data = marked_pdf([P2], [
         {"page": 0, "lines": [0, 1], "subtype": "Highlight",
          "contents": "this overstates it", "author": "Reviewer 2"}])
@@ -489,7 +490,7 @@ def test_an_imported_comment_survives_its_block_being_edited(tmp_path):
                "(Nishtar 2018), and the effect persisted for at least two "
                "further years of follow-up in both arms.")
     d, blocks = manuscript(tmp_path, DOC.replace(P2, cited))
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
 
     data = marked_pdf([typeset], [
         {"page": 0, "lines": [1, 2], "subtype": "Highlight",
@@ -506,6 +507,279 @@ def test_an_imported_comment_survives_its_block_being_edited(tmp_path):
     moved = build_mod.reanchor_chats(chat.by_block(log), after, chat.read_chats(log))
     assert now in moved
     assert moved[now][0]["who"] == "Reviewer 2"
+
+
+# -------------------------------- re-anchoring must not merge two chats
+#
+# Reported 2026-07-27: the Chat tab on one generated table showed messages that
+# had been written against a different table in the same file. Every LaTeX float
+# opens with the same bytes, so the truncated keys `match_by_quote` falls back to
+# are boilerplate: six of dsp-bias's figure comments shared the 40-character key
+# `\begin{figure}[h!] \centering \includegr`, and three of its table comments
+# shared `\begin{table}[h!] \centering \caption{De`. A tie resolved by document
+# order stacks every exhibit's conversation onto the first exhibit.
+#
+# A chat belongs to one block. Where that block cannot be identified, the chat
+# waits -- the same rule the tray is built on, applied to re-anchoring.
+
+TWO_TABLES = "\n\n".join([
+    r"\documentclass{article}",
+    r"\begin{document}",
+    r"\section{Results}",
+    P1,
+    "\n".join([
+        r"\begin{table}[h!]",
+        r"\centering",
+        r"\caption{Demographic variation in conversation responses. Panel A: scripted.}",
+        r"\begin{tabular}{lcc}\toprule A & 1 & 2 \\ \bottomrule\end{tabular}",
+        r"\end{table}",
+    ]),
+    "\n".join([
+        r"\begin{table}[h!]",
+        r"\centering",
+        r"\caption{Demographic variation in case generation. Panel B: all 16 characteristics.}",
+        r"\begin{tabular}{lcc}\toprule B & 3 & 4 \\ \bottomrule\end{tabular}",
+        r"\end{table}",
+    ]),
+    r"\end{document}",
+]) + "\n"
+
+
+def _tables(tmp_path: Path):
+    d, blocks = manuscript(tmp_path, TWO_TABLES)
+    tabs = [b for b in blocks if r"\begin{table}" in b.source_text]
+    assert len(tabs) == 2, "the fixture must give two separately addressable tables"
+    return d, blocks, tabs
+
+
+def test_a_chat_is_not_moved_onto_a_different_exhibit_with_the_same_opening(tmp_path):
+    """The second table's chat must never resolve to the first."""
+    from manuscriptor.server import build as build_mod
+
+    _, blocks, tabs = _tables(tmp_path)
+    first, second = tabs
+    assert build_mod.flatten_ws(first.source_text)[:40] == \
+        build_mod.flatten_ws(second.source_text)[:40], \
+        "precondition: the fallback key really is shared, or this proves nothing"
+
+    assert build_mod.match_by_quote(second.source_text[:120], blocks) == second.id
+    assert build_mod.match_by_quote(first.source_text[:120], blocks) == first.id
+
+
+def test_an_ambiguous_quote_leaves_a_chat_unanchored_rather_than_guessing(tmp_path):
+    """Boilerplate alone identifies nothing, and a guess reads to the author as a
+    statement about the paragraph it landed on."""
+    from manuscriptor.server import build as build_mod
+
+    _, blocks, _ = _tables(tmp_path)
+    assert build_mod.match_by_quote(r"\begin{table}[h!] \centering \caption{De", blocks) is None
+
+
+def test_a_reply_is_placed_by_its_own_comment_never_a_neighbours(tmp_path):
+    """A reply carries no quote of its own -- it belongs wherever its comment
+    belongs. Resolving it from whatever quote happened to be first in the group
+    is how an agent's answer about Panel A appeared under Panel B."""
+    from manuscriptor.server import build as build_mod
+
+    _, blocks, tabs = _tables(tmp_path)
+    first, second = tabs
+    # Both chats were written against ids that no longer exist, so they share one
+    # absent key -- exactly the state the log reaches after a table is rebuilt.
+    by_block = {"": [
+        {"id": "c-0001", "who": "bb", "body": "about the first", "ts": "1", "state": "done"},
+        {"id": "c-0001#r1", "who": "claude", "body": "answer about the first",
+         "ts": "2", "state": None},
+        {"id": "c-0002", "who": "bb", "body": "about the second", "ts": "3", "state": "queued"},
+        {"id": "c-0002#r1", "who": "claude", "body": "answer about the second",
+         "ts": "4", "state": None},
+    ]}
+
+    class Q:
+        def __init__(self, cid, quote):
+            self.id, self.quote, self.file = cid, quote, ""
+
+    chats = [Q("c-0001", first.source_text[:120]), Q("c-0002", second.source_text[:120])]
+    moved = build_mod.reanchor_chats(by_block, blocks, chats)
+
+    assert [m["id"] for m in moved.get(first.id, [])] == ["c-0001", "c-0001#r1"]
+    assert [m["id"] for m in moved.get(second.id, [])] == ["c-0002", "c-0002#r1"]
+
+
+SHARED = (r"\newcolumntype{m}[1]{>{\centering\arraybackslash}p{#1}}" "\n"
+          r"\setlength{\LTleft}{-20cm plus -1fill}" "\n"
+          r"\setlength{\LTright}{\LTleft}" "\n")
+
+TWIN_TABLES = "\n\n".join([
+    r"\documentclass{article}", r"\begin{document}", r"\section{Results}", P1,
+    SHARED + r"\begin{tabular}{mm}\toprule Screening & 1 \\ \bottomrule\end{tabular}",
+    SHARED + r"\begin{tabular}{mm}\toprule Mortality & 2 \\ \bottomrule\end{tabular}",
+    r"\end{document}",
+]) + "\n"
+
+
+def test_a_recorded_quote_identifies_the_block_it_came_from(tmp_path):
+    """Two blocks opening with the same boilerplate preamble.
+
+    Measured on estonia-ecm: 30 of 384 blocks have a 120-character opening that
+    appears in another block as well, one longtable preamble run matching eleven
+    others. A comment on any of them records a quote that does not say which
+    block it means, so it can never be re-found -- the failure is upstream of the
+    matcher, in what gets written to the log.
+    """
+    from manuscriptor.server import build as build_mod
+
+    _, blocks = manuscript(tmp_path, TWIN_TABLES)
+    twins = [b for b in blocks if r"\newcolumntype" in b.source_text]
+    assert len(twins) == 2, "the fixture must give two blocks sharing an opening"
+
+    flat = [build_mod.flatten_ws(b.source_text) for b in blocks]
+    fixed = build_mod.flatten_ws(twins[0].source_text)[:120]
+    assert sum(fixed in t for t in flat) > 1, \
+        "precondition: a fixed 120 characters really is ambiguous here"
+
+    for twin in twins:
+        q = build_mod.quote_for(twin, blocks)
+        assert build_mod.match_by_quote(q, blocks) == twin.id
+        assert twin.source_text.startswith(q), "still a prefix, which stage one needs"
+        assert len(q) <= build_mod.QUOTE_MAX
+
+
+def test_two_files_opening_with_identical_bytes_are_told_apart_by_file(tmp_path):
+    """estonia-ecm opens twelve table files with the same 113-byte
+    `\\newcolumntype` preamble run, byte for byte. No quote can separate them at
+    any length, and growing one is not the answer -- the comment record already
+    carries the file it was written in, and that is what distinguishes them."""
+    from manuscriptor.server import build as build_mod
+
+    d = tmp_path / "ms"
+    d.mkdir(parents=True, exist_ok=True)
+    twin = SHARED + r"\begin{tabular}{mm}\toprule A & 1 \\ \bottomrule\end{tabular}" + "\n"
+    (d / "t_one.tex").write_text(twin, encoding="utf-8")
+    (d / "t_two.tex").write_text(twin, encoding="utf-8")
+    (d / "main.tex").write_text("\n\n".join([
+        r"\documentclass{article}", r"\begin{document}", P1,
+        r"\input{t_one}", r"\input{t_two}", r"\end{document}"]) + "\n", encoding="utf-8")
+    doc = flatten(d / "main.tex")
+    blocks = segment(doc)
+
+    homes = {}
+    for b in blocks:
+        if r"\newcolumntype" in b.source_text:
+            homes[Path(b.file).name] = b
+    assert set(homes) == {"t_one.tex", "t_two.tex"}, "the fixture must span two files"
+    a, b2 = homes["t_one.tex"], homes["t_two.tex"]
+    assert a.source_text == b2.source_text, "precondition: identical bytes"
+
+    q = build_mod.quote_for(a, blocks)
+    assert build_mod.match_by_quote(q, blocks) is None, "content alone cannot decide"
+    assert build_mod.match_by_quote(q, blocks, file=str(a.file)) == a.id
+    assert build_mod.match_by_quote(q, blocks, file=str(b2.file)) == b2.id
+    # And by basename, so moving the manuscript on disk orphans nothing.
+    assert build_mod.match_by_quote(q, blocks, file="elsewhere/t_two.tex") == b2.id
+
+
+def test_a_quote_is_not_grown_past_what_it_needs(tmp_path):
+    """Ordinary prose is distinctive from its first words, and a quote that
+    swallowed the whole paragraph would break on any edit inside it."""
+    from manuscriptor.server import build as build_mod
+
+    _, blocks = manuscript(tmp_path)
+    target = block_with(blocks, P2)
+    blk = next(b for b in blocks if b.id == target)
+    assert len(build_mod.quote_for(blk, blocks)) == min(len(blk.source_text), 120)
+
+
+def test_a_block_with_nothing_distinctive_is_not_grown_forever(tmp_path):
+    """`\\clearpage` cannot be made identifiable by taking more of it."""
+    from manuscriptor.server import build as build_mod
+
+    body = "\n\n".join([
+        r"\documentclass{article}", r"\begin{document}", P1,
+        r"\clearpage", P2, r"\clearpage", P3, r"\end{document}"]) + "\n"
+    _, blocks = manuscript(tmp_path, body)
+    breaks = [b for b in blocks if b.source_text.strip() == r"\clearpage"]
+    assert len(breaks) == 2, "the fixture must give two identical break blocks"
+    q = build_mod.quote_for(breaks[0], blocks)
+    assert q.strip() == r"\clearpage", "returned as-is, not grown into its neighbour"
+
+
+def _figure(spec: str, asset: str, caption: str) -> str:
+    return "\n".join([
+        rf"\begin{{figure}}{spec}",
+        r"\centering",
+        rf"\includegraphics[width=\textwidth]{{outputs/{asset}}}",
+        rf"\caption{{{caption}}}",
+        r"\end{figure}",
+    ])
+
+
+COEF = _figure("[h!]", "fig3_coef_plot.pdf",
+               "Demographic effects by measurement channel. Points are OLS coefficients.")
+ITEMS = _figure("[!htb]", "fig2_gender_items.pdf",
+                "Nine risk-factor items, men against women, in both role-play channels.")
+
+TWO_FIGURES = "\n\n".join([
+    r"\documentclass{article}", r"\begin{document}", r"\section{Results}", P1,
+    COEF, ITEMS, r"\end{document}",
+]) + "\n"
+
+
+def _figures(tmp_path: Path):
+    d, blocks = manuscript(tmp_path, TWO_FIGURES)
+    figs = {}
+    for b in blocks:
+        if "fig3_coef_plot" in b.source_text:
+            figs["coef"] = b
+        elif "fig2_gender_items" in b.source_text:
+            figs["items"] = b
+    assert len(figs) == 2, "the fixture must give two separately addressable figures"
+    return blocks, figs
+
+
+def test_a_chat_on_a_deleted_exhibit_does_not_land_on_a_surviving_one(tmp_path):
+    """The figure a comment was written against was replaced outright.
+
+    Its quote's first 60 bytes are `\\begin{figure}[h!] \\centering
+    \\includegraphics[width=\\textwi` -- identical to the surviving figure's,
+    because the asset path that says WHICH figure this is falls past every
+    truncation. The key is unique here (the other float opens `[!htb]`) and still
+    wrong, which is how a comment on the retired six-panel figure appeared on the
+    coefficient plot. There is no block it belongs to, so it waits.
+    """
+    from manuscriptor.server import build as build_mod
+
+    blocks, figs = _figures(tmp_path)
+    retired = _figure("[h!]", "fig3_heatmap.pdf",
+                      "One demographic factor per panel, all three measurement channels.")
+    quote = build_mod.flatten_ws(retired)[:120]
+
+    # Precondition: the truncated key really does single out the wrong figure.
+    flat = [(b.id, build_mod.flatten_ws(b.source_text)) for b in blocks]
+    head_hits = [bid for bid, t in flat if t.startswith(quote[:60])]
+    assert head_hits == [figs["coef"].id], "or this test proves nothing"
+
+    assert build_mod.match_by_quote(quote, blocks) is None
+
+
+def test_a_renamed_asset_still_finds_its_own_exhibit(tmp_path):
+    """The other half. Renaming a figure's file changes about one character in
+    120, and the chat must follow it rather than be cast adrift."""
+    from manuscriptor.server import build as build_mod
+
+    blocks, figs = _figures(tmp_path)
+    old_name = COEF.replace("fig3_coef_plot.pdf", "fig2_coef_plot.pdf")
+    quote = build_mod.flatten_ws(old_name)[:120]
+    assert build_mod.match_by_quote(quote, blocks) == figs["coef"].id
+
+
+def test_prose_is_not_subject_to_the_exhibit_rule(tmp_path):
+    """A typeset quote carries no asset path, and matching it on a distinctive
+    40-character phrase is how an imported reviewer note anchors at all."""
+    from manuscriptor.server import build as build_mod
+
+    d, blocks = manuscript(tmp_path)
+    target = block_with(blocks, P2)
+    assert build_mod.match_by_quote(P2[:44], blocks) == target
 
 
 def test_a_verbatim_match_is_not_lost_behind_paragraphs_that_merely_resemble_it(tmp_path):
@@ -541,7 +815,7 @@ def test_a_verbatim_match_is_not_lost_behind_paragraphs_that_merely_resemble_it(
 
     data = marked_pdf([quoted], [{"page": 0, "lines": [0, 1, 2], "subtype": "Highlight",
                                   "contents": "which sample?", "author": "Reviewer 1"}])
-    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r1.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["items"][0]["candidates"], "the verbatim paragraph must at least be offered"
     assert report["items"][0]["candidates"][0]["block"] == target
@@ -575,7 +849,7 @@ def test_an_accent_and_a_ligature_are_the_same_letters_on_both_sides(tmp_path):
          + '<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r>'),
     ], [{"id": "1", "author": "Sam Okoro", "text": "which five?"}])
 
-    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     assert report["items"][0]["block"] == block_with(blocks, tex)
@@ -583,7 +857,7 @@ def test_an_accent_and_a_ligature_are_the_same_letters_on_both_sides(tmp_path):
 
 def test_the_log_is_only_ever_appended_to(tmp_path):
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     chat.append(log, {"id": "c-0001", "kind": "comment", "block": "b-existing",
                       "body": "mine", "author": "bb"})
     before = log.read_bytes()
@@ -609,16 +883,16 @@ def test_importing_writes_the_comment_log_and_nothing_else(tmp_path):
 
     data = marked_pdf([P2], [{"page": 0, "lines": [0, 1], "subtype": "Highlight",
                               "contents": "3.14 is the number I get", "author": "Reviewer 2"}])
-    importer.ingest(data, "r2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    importer.ingest(data, "r2.pdf", blocks=blocks, log=paths.comments(d))
 
     after = {p: p.read_bytes() for p in sorted(d.rglob("*")) if p.is_file()}
     changed = {p for p in after if before.get(p) != after[p]}
-    assert changed == {d / "comments.jsonl"}
+    assert changed == {paths.comments(d)}
 
 
 def test_importing_the_same_file_twice_does_not_duplicate(tmp_path):
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     data = marked_pdf([P1, P2], [
         {"page": 0, "lines": [0, 1], "subtype": "Highlight",
          "contents": "how many dropped out?", "author": "Reviewer 1"},
@@ -648,7 +922,7 @@ def test_a_tracked_deletion_is_read_with_its_author(tmp_path):
          + _runs("is what drove the change in provider behaviour.")),
     ], [])
 
-    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     item = report["items"][0]
@@ -669,7 +943,7 @@ def test_a_tracked_insertion_anchors_on_the_paragraph_not_on_the_new_words(tmp_p
          + _runs(".")),
     ], [])
 
-    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     item = report["items"][0]
@@ -686,7 +960,7 @@ def test_a_docx_comment_anchors_on_the_text_it_covers(tmp_path):
          '<w:r><w:commentReference w:id="7"/></w:r>'),
     ], [{"id": "7", "author": "Sam Okoro", "text": "cut this paragraph entirely"}])
 
-    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=paths.comments(d))
 
     assert report["anchored"] == 1
     item = report["items"][0]
@@ -705,7 +979,7 @@ def test_a_docx_comment_on_text_the_manuscript_lost_goes_to_the_tray(tmp_path):
          + '<w:commentRangeEnd w:id="1"/><w:r><w:commentReference w:id="1"/></w:r>'),
     ], [{"id": "1", "author": "Sam Okoro", "text": "this contradicts section 2"}])
 
-    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "coauthor.docx", blocks=blocks, log=paths.comments(d))
 
     assert report["unplaced"] == 1
     assert report["items"][0]["block"] is None
@@ -722,7 +996,7 @@ def test_the_report_says_what_happened_and_which_file_it_came_from(tmp_path):
         {"page": 2, "lines": [0], "subtype": "Highlight", "contents": "c", "author": "R2"},
     ])
 
-    report = importer.ingest(data, "reviewer-2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "reviewer-2.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["file"] == "reviewer-2.pdf"
     assert report["marks"] == 3
@@ -735,7 +1009,7 @@ def test_the_report_says_what_happened_and_which_file_it_came_from(tmp_path):
 def test_an_unreadable_kind_of_file_is_refused_by_name(tmp_path):
     d, blocks = manuscript(tmp_path)
     with pytest.raises(importer.Unreadable) as exc:
-        importer.ingest(b"nope", "notes.txt", blocks=blocks, log=d / "comments.jsonl")
+        importer.ingest(b"nope", "notes.txt", blocks=blocks, log=paths.comments(d))
     assert ".txt" in str(exc.value)
 
 
@@ -756,7 +1030,7 @@ def test_a_mark_too_short_to_be_distinctive_is_not_guessed_at(tmp_path):
         {"page": 0, "lines": [0], "subtype": "Highlight",
          "contents": "which one?", "author": "Reviewer 2"}])
 
-    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=d / "comments.jsonl")
+    report = importer.ingest(data, "r2.pdf", blocks=blocks, log=paths.comments(d))
 
     assert report["unplaced"] == 1
     assert report["items"][0]["block"] is None
@@ -853,9 +1127,9 @@ def test_the_route_reads_a_file_and_places_from_the_tray(tmp_path):
     assert placed["block"] == target
     assert placed["tray"] == []
     # It landed as an ordinary comment, attributed, queued, in the margin.
-    bodies = {c.author: c.body for c in chat.pending(d / "comments.jsonl")}
+    bodies = {c.author: c.body for c in chat.pending(paths.comments(d))}
     assert bodies["Reviewer 2"]
-    assert len(chat.pending(d / "comments.jsonl")) == 2
+    assert len(chat.pending(paths.comments(d))) == 2
 
 
 def test_a_read_only_manuscript_refuses_to_read_markup_in(tmp_path):
@@ -882,7 +1156,7 @@ def test_a_read_only_manuscript_refuses_to_read_markup_in(tmp_path):
 
     assert up == 403 and place == 403
     assert tray == 200 and body["read_only"] is True
-    assert not (d / "comments.jsonl").exists()
+    assert not paths.comments(d).exists()
 
 
 def test_a_file_the_importer_cannot_read_is_refused_over_the_route(tmp_path):
@@ -901,7 +1175,7 @@ def test_a_file_the_importer_cannot_read_is_refused_over_the_route(tmp_path):
     status, body = asyncio.run(go())
     assert status == 415
     assert ".txt" in body["error"]
-    assert not (d / "comments.jsonl").exists()
+    assert not paths.comments(d).exists()
 
 
 def test_a_mark_that_marked_nothing_is_offered_no_candidates(tmp_path):
@@ -914,7 +1188,7 @@ def test_a_mark_that_marked_nothing_is_offered_no_candidates(tmp_path):
     exactly this before it was fixed.
     """
     d, blocks = manuscript(tmp_path)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     data = marked_pdf([P1, P2], [
         {"page": 1, "lines": [], "subtype": "Text",
          "contents": "the whole section needs restructuring, compare the 2019 trial",
@@ -935,7 +1209,7 @@ def test_the_tray_re_scores_on_the_text_the_placer_matched(tmp_path):
                         same + " One.", same + " Two.", same + " Three.",
                         r"\end{document}"]) + "\n"
     d, blocks = manuscript(tmp_path, body)
-    log = d / "comments.jsonl"
+    log = paths.comments(d)
     data = marked_pdf([same], [{"page": 0, "lines": [0, 1], "subtype": "Highlight",
                                 "contents": "which table?", "author": "Reviewer 2"}])
     report = importer.ingest(data, "r2.pdf", blocks=blocks, log=log)

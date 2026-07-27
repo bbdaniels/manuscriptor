@@ -48,6 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+from manuscriptor.server import paths
 from manuscriptor.server.feed import (  # the file the server reads
     KEEP, PROGRESS_NAME, Entry, Feed, now, progress_path, read_feed,
 )
@@ -57,6 +58,12 @@ from manuscriptor.server.feed import (  # the file the server reads
 # waiting on a figure is not left guessing for a quarter of an hour, which is
 # what happened on 2026-07-26.
 STALL_AFTER = 150.0
+
+# How many comments may be in flight at one running session. Work arriving while
+# a turn runs is handed straight over rather than queued, but not without bound:
+# the author can leave six comments in a minute, and six turns dispatching their
+# own subagents at once is a session doing bookkeeping instead of writing.
+MAX_IN_FLIGHT = 3
 
 # The tools this work legitimately needs. Named rather than bypassed: a print
 # session cannot ask for permission, so anything it might reach for and cannot
@@ -109,9 +116,20 @@ def summarize(event: dict) -> list[Entry]:
             if text:
                 out.append(Entry(now(), who, "text", text[:400]))
         elif what == "tool_use":
-            name = part.get("name") or "a tool"
-            arg = _tool_argument(part.get("input") or {})
-            out.append(Entry(now(), who, "tool", f"{name}{(': ' + arg) if arg else ''}"))
+            # A tool call is not something the author needs to read. `Bash:
+            # manuscriptor reply /paper c-0007 "Fixed at the root in..."` says
+            # nothing about the manuscript, and a dozen of them per turn push
+            # the sentences that DO out of an 80-entry window. The whole stream,
+            # tool calls included, is still written to `agent-stream.jsonl`.
+            #
+            # Dispatching a teammate is the exception, and it is not really a
+            # tool call: it is the work moving to someone else, which was the
+            # last thing anyone saw before the fourteen-minute silence this
+            # panel exists to end. So it goes in as a note, in those words.
+            if (part.get("name") or "") == "Agent":
+                arg = _tool_argument(part.get("input") or {})
+                out.append(Entry(now(), who, "note",
+                                 "dispatched a teammate" + (f": {arg}" if arg else "")))
     return out
 
 def _tool_argument(data: dict) -> str:
@@ -139,23 +157,49 @@ class Decision:
 
 
 def decide(*, pending: tuple[str, ...], in_flight: bool, silent_for: float,
-           stall_after: float = STALL_AFTER, alive: bool = True) -> Decision:
+           stall_after: float = STALL_AFTER, alive: bool = True,
+           sent: tuple[str, ...] | frozenset[str] = (),
+           max_in_flight: int = MAX_IN_FLIGHT) -> Decision:
     """What the supervisor should do, given what it can see.
 
     Order matters. A dead session is restarted before anything else is
     considered, and a wedged one is restarted before more work is handed to it:
     sending a second comment to a session that has stopped answering the first is
     how one stuck figure becomes two.
+
+    A RUNNING session, though, is given new work as it arrives. This used to
+    wait, and the waiting was the whole of the missing parallelism: on dsp-bias
+    every one of eleven comments was worked to completion before the next
+    started, because a comment left four seconds after a turn began was invisible
+    until that turn ended -- 8m54s for one of them, against 0-2s for every
+    comment that happened to land while the loop was idle. The machinery
+    underneath was always concurrent (`splice` holds a per-file lock across
+    read-locate-write, and eight concurrent splices all land), and the drain
+    skill has always said to dispatch together; this branch was what none of it
+    ever got to do. Measured against a real `claude -p --input-format
+    stream-json`: a message written mid-turn is acted on while the first turn is
+    still running.
+
+    `sent` is what has already been handed over and is why a `working` comment --
+    still pending, deliberately, so a restart recovers it -- is not handed over
+    again every poll. The cap bounds only what is added to a RUNNING session; an
+    idle one takes the whole backlog in one prompt, which is the fan-out the
+    skill describes.
     """
     if not alive:
         return Decision("restart", why="the session exited")
     if in_flight and silent_for >= stall_after:
         return Decision("restart", why=f"nothing for {int(silent_for)}s while working")
-    if in_flight:
+    already = frozenset(sent)
+    fresh = tuple(c for c in pending if c not in already)
+    if not fresh:
         return Decision("wait")
-    if pending:
-        return Decision("send", ids=tuple(pending))
-    return Decision("wait")
+    if not in_flight:
+        return Decision("send", ids=fresh)
+    room = max_in_flight - sum(1 for c in pending if c in already)
+    if room <= 0:
+        return Decision("wait", why=f"{max_in_flight} already in flight")
+    return Decision("send", ids=fresh[:room])
 
 
 # ================================================================== the session
@@ -178,7 +222,12 @@ class Session:
         self.proc: subprocess.Popen | None = None
         self.turns = 0
         self._last_event = time.monotonic()
-        self._in_flight = False
+        # A COUNT, not a flag. Turns overlap now: a message handed over mid-turn
+        # is acted on while the first is still running, and its `result` frame
+        # arrives first. A boolean read idle there -- which would hand the
+        # session more work on the strength of an answer to something else, and
+        # would tell the author it had stopped while it was still going.
+        self._in_flight = 0
         self._reader: threading.Thread | None = None
         self._lock = threading.Lock()
 
@@ -211,7 +260,7 @@ class Session:
             text=True, bufsize=1, start_new_session=True,
         )
         self._last_event = time.monotonic()
-        self._in_flight = False
+        self._in_flight = 0
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
         self.feed.set(state="starting")
@@ -222,7 +271,25 @@ class Session:
 
     @property
     def in_flight(self) -> bool:
+        return self._in_flight > 0
+
+    @property
+    def turns_running(self) -> int:
         return self._in_flight
+
+    def _note_sent(self) -> None:
+        with self._lock:
+            self._in_flight += 1
+            self._last_event = time.monotonic()
+
+    def _note_result(self) -> None:
+        """One turn answered. Idle only when the last of them has."""
+        with self._lock:
+            self._in_flight = max(0, self._in_flight - 1)
+            self.turns += 1
+            done = self._in_flight == 0
+        if done:
+            self.feed.set(state="idle")
 
     @property
     def silent_for(self) -> float:
@@ -240,9 +307,7 @@ class Session:
             self.proc.stdin.flush()
         except (BrokenPipeError, ValueError, OSError):
             return False
-        with self._lock:
-            self._in_flight = True
-            self._last_event = time.monotonic()
+        self._note_sent()
         return True
 
     def stop(self) -> None:
@@ -286,13 +351,10 @@ class Session:
             if entries:
                 self.feed.add(entries)
             if event.get("type") == "result":
-                with self._lock:
-                    self._in_flight = False
-                    self.turns += 1
-                self.feed.set(state="idle")
+                self._note_result()
         # The stream ended: the process is gone, and the loop will see it.
         with self._lock:
-            self._in_flight = False
+            self._in_flight = 0
 
     def _append_log(self, line: str) -> None:
         try:
@@ -322,7 +384,13 @@ WORK = (
     "Say what you are about to do before you delegate, in one line, so the author "
     "reading the feed knows what is happening. If you need a decision only the "
     "author can make, ask it with `reply` and leave the comment working rather "
-    "than guessing."
+    "than guessing.\n"
+    "MORE WORK MAY ARRIVE WHILE YOU ARE STILL ON THIS. The author types while you "
+    "work, and a comment that lands mid-turn is handed straight to you rather than "
+    "held until you finish. Dispatch it at once, alongside what is already running. "
+    "Do not finish the comment you are on first: two teammates editing two "
+    "paragraphs of the same file at the same time is safe by construction, and "
+    "waiting is what made a comment left four seconds late wait nine minutes."
 )
 
 
@@ -337,7 +405,8 @@ class Drain:
     def __init__(self, root: Path, *, manuscriptor: str, claude: str | None = None,
                  add_dirs=(), model: str | None = None, agents: str | None = None,
                  stall_after: float = STALL_AFTER, poll: float = 2.0,
-                 log: Path | None = None, build_dir: Path | None = None):
+                 log: Path | None = None, build_dir: Path | None = None,
+                 max_in_flight: int = MAX_IN_FLIGHT):
         self.root = Path(root).resolve()
         self.manuscriptor = manuscriptor
         self.claude = claude
@@ -346,9 +415,10 @@ class Drain:
         self.agents = agents
         self.stall_after = stall_after
         self.poll = poll
-        build = Path(build_dir) if build_dir else self.root / "build" / "manuscriptor"
-        self.feed = Feed(path=progress_path(build))
-        self.log = log if log is not None else build / "agent-stream.jsonl"
+        self.max_in_flight = max_in_flight
+        agent = Path(build_dir) if build_dir else paths.agent_dir(self.root)
+        self.feed = Feed(path=progress_path(agent))
+        self.log = log if log is not None else agent / "agent-stream.jsonl"
         self.session: Session | None = None
         self.restarts = 0
         self._sent: set[str] = set()
@@ -364,7 +434,7 @@ class Drain:
         """
         from manuscriptor.server import chat
 
-        return tuple(c.id for c in chat.pending(self.root / "comments.jsonl"))
+        return tuple(c.id for c in chat.pending(paths.comments(self.root)))
 
     # -------------------------------------------------------------------- turns
 
@@ -408,6 +478,23 @@ class Drain:
 
     # --------------------------------------------------------------------- run
 
+    def step(self) -> Decision:
+        """One pass of the loop: look, decide, act. Separate from `run` so a test
+        can drive the real thing rather than a second copy of it -- passing
+        `_sent` in is load-bearing (the cap counts what is already in flight, so
+        a filter anywhere else would let a capped session look empty)."""
+        s = self.session
+        assert s is not None
+        d = decide(pending=self.pending_ids(), in_flight=s.in_flight,
+                   silent_for=s.silent_for, stall_after=self.stall_after,
+                   alive=s.alive, sent=frozenset(self._sent),
+                   max_in_flight=self.max_in_flight)
+        if d.do == "restart":
+            self.restart(d.why)
+        elif d.do == "send":
+            self.hand_over(d.ids)
+        return d
+
     def run(self, stop: threading.Event | None = None) -> None:
         stop = stop or threading.Event()
         self.session = self.new_session()
@@ -417,15 +504,7 @@ class Drain:
             while not stop.is_set():
                 s = self.session
                 assert s is not None
-                d = decide(pending=self.pending_ids(), in_flight=s.in_flight,
-                           silent_for=s.silent_for, stall_after=self.stall_after,
-                           alive=s.alive)
-                if d.do == "restart":
-                    self.restart(d.why)
-                elif d.do == "send":
-                    fresh = tuple(i for i in d.ids if i not in self._sent)
-                    if fresh:
-                        self.hand_over(fresh)
+                self.step()
                 stop.wait(self.poll)
         finally:
             self.feed.set(state="stopped")

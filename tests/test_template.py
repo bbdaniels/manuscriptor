@@ -934,3 +934,79 @@ def test_chats_read_newest_first_by_time():
     ]
     out = node_call("newestFirst", msgs)
     assert [m["id"] for m in out] == ["c-0001#r1", "c-0002", "c-0001"]
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_agent_feed_reads_newest_first():
+    """The panel showed the newest line last, at the foot of a 22rem scroller.
+
+    Everywhere else in the inspector reads reverse-chron; the feed did not, so
+    the one line that answers "what is it doing NOW" was the one you had to
+    scroll to.
+    """
+    entries = [
+        {"ts": "2026-07-27T10:00:00+00:00", "who": "agent", "kind": "note", "text": "first"},
+        {"ts": "2026-07-27T10:00:04+00:00", "who": "agent", "kind": "tool", "text": "second"},
+        {"ts": "2026-07-27T10:00:09+00:00", "who": "agent", "kind": "text", "text": "third"},
+    ]
+    out = node_call("feedNewestFirst", entries)
+    assert [e["text"] for e in out] == ["third", "second", "first"]
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_feed_reverses_arrival_rather_than_sorting_its_timestamps():
+    """Why this is not `newestFirst`.
+
+    Feed timestamps are second-resolution and one writer emits a dozen events
+    inside a second on a busy turn. Sorting on them is stable, so every such
+    run would come back in oldest-first order inside an otherwise newest-first
+    list — the newest line of a burst buried under its own burst. The file is
+    written in the order things happened, so newest-first is a reverse.
+    """
+    same = "2026-07-27T10:00:00+00:00"
+    entries = [
+        {"ts": same, "who": "agent", "kind": "tool", "text": "read main.tex"},
+        {"ts": same, "who": "agent", "kind": "tool", "text": "read tab/t1.tex"},
+        {"ts": same, "who": "agent", "kind": "text", "text": "rewriting the claim"},
+    ]
+    out = node_call("feedNewestFirst", entries)
+    assert [e["text"] for e in out] == [
+        "rewriting the claim", "read tab/t1.tex", "read main.tex",
+    ]
+    assert node_call("feedNewestFirst", None) == []
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+@pytest.mark.parametrize(
+    "block,want",
+    [
+        ({"label": "Case generation.", "parent_heading": "Socioeconomic status."},
+         "Case generation."),
+        # A static export written before `label` existed still has to name things.
+        ({"caption": "Case generation.", "parent_heading": "Socioeconomic status."},
+         "Case generation."),
+        ({"parent_heading": "Methods"}, "Methods"),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_the_page_names_a_block_the_way_the_server_does(block, want):
+    """One rule, on both sides of the wire. The page deciding for itself is how
+    the ticker and the inspector come to call one paragraph two things."""
+    assert node_call("blockName", block) == want
+
+
+def test_the_ticker_label_is_an_element_so_a_caption_can_be_clamped():
+    """A caption is a sentence; five of them would push the row off the end.
+
+    The clamp is CSS, so the full text stays in the DOM -- but a bare text node
+    cannot be clamped, so even the un-jumpable entry needs an element.
+    """
+    js = VIEWER.read_text(encoding="utf-8")
+    body = js[js.index("function renderTicker"):js.index("function pushTicker")]
+    assert 'class="tklabel"' in body, "a plain ticker label has no element to clamp"
+    assert body.count("title=") >= 2, "the clamped label must keep its full text somewhere"
+    css = STYLES.read_text(encoding="utf-8")
+    rule = [v for sel, v in css_rules() if ".tklabel" in sel]
+    assert rule, ".tklabel is never clamped"
+    assert "ellipsis" in rule[0] and "max-width" in rule[0], rule

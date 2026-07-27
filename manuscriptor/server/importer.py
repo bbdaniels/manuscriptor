@@ -57,6 +57,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 
 # ---------------------------------------------------------------- the dials
@@ -570,7 +571,7 @@ def ingest(data: bytes, source: str, *, blocks, log, doc: str = "") -> dict:
                 # edit like every other comment. Recording the referee's quote
                 # here instead would look right and would break re-anchoring for
                 # precisely the comments most likely to cause an edit.
-                "quote": b.source_text[:120],
+                "quote": build_mod.quote_for(b, blocks),
                 "body": body_of(p.mark),
                 "author": p.mark.author,
                 "from": iid,
@@ -728,7 +729,7 @@ def place_mark(log, import_id: str, block_id: str, *, blocks, doc: str = "") -> 
         "id": cid, "kind": "comment", "block": block.id, "doc": doc,
         "file": str(block.file),
         "lines": [block.line_start, block.line_end],
-        "quote": block.source_text[:120], "body": body_of(mark),
+        "quote": build_mod.quote_for(block, blocks), "body": body_of(mark),
         "author": mark.author, "from": import_id,
     })
     chat.append(log, {"id": import_id, "kind": "import", "state": "placed",

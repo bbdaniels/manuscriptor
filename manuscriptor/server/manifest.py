@@ -28,9 +28,9 @@ this every Mumbai coefficient would be attributed to the Patna model.
 `coef(m)` means one of the two is lying and nothing here can tell which, so the
 producer is kept and the statistic claim is dropped.
 
-The manifest is a cache, and it lives in the build directory rather than beside
-the fragments. That is a deliberate departure from the obvious placement: the
-build directory writes its own `.gitignore`, whereas a file dropped next to the
+The manifest is a cache, and it lives in `.manuscriptor/cache/` rather than
+beside the fragments. That is a deliberate departure from the obvious placement:
+the hidden directory ignores itself, whereas a file dropped next to the
 fragments makes `git status` grow inside the author's repository on a
 **read-only** serve, which `build()` cannot currently distinguish. The
 hand-editable half is `values.json` in the manuscript directory, which this

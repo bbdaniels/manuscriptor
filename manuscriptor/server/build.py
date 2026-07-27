@@ -10,6 +10,7 @@ every rebuild afterwards, and a test can call it without opening a socket.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from pathlib import Path
 from manuscriptor.render import pandoc, postprocess, refs, tikz
 from manuscriptor.source import anchors, blocks as blocks_mod, root
 from manuscriptor.source.flatten import flatten
-from manuscriptor.server import chat, drafts, feed as feed_mod, manifest, producers
+from manuscriptor.server import chat, drafts, feed as feed_mod, manifest, paths, producers
 
 
 @dataclass
@@ -73,9 +74,9 @@ def build(
     manuscript_dir = Path(manuscript_dir).resolve()
     main_tex = find_main_tex(manuscript_dir, main)
     bib_path = find_bib(manuscript_dir, bib)
-    out = Path(output_dir).resolve() if output_dir else manuscript_dir / "build" / "manuscriptor"
+    out = Path(output_dir).resolve() if output_dir else paths.cache(manuscript_dir)
     out.mkdir(parents=True, exist_ok=True)
-    keep_out_of_git(out)
+    paths.ensure(manuscript_dir)
 
     flat = flatten(main_tex)
     produced = producers.scan(manuscript_dir)
@@ -107,7 +108,7 @@ def build(
     values = manifest.describe(
         manuscript_dir, [inc.target for b in bl for inc in b.includes], cache_dir=out
     )
-    log = manuscript_dir / "comments.jsonl"
+    log = paths.comments(manuscript_dir)
     doc = main_tex.name
     blob = {
         "title": _title(main_tex, post["html"]),
@@ -174,22 +175,6 @@ def build(
     )
 
 
-def keep_out_of_git(out: Path) -> None:
-    """Make the build directory invisible to the manuscript's repository.
-
-    The default output lives inside the manuscript directory, which is almost
-    always a git working tree the author cares about. Serving a paper should
-    never be the reason `git status` grows a page of untracked files, and the
-    author should not have to know to add the entry themselves.
-    """
-    marker = out / ".gitignore"
-    if not marker.exists():
-        try:
-            marker.write_text("*\n", encoding="utf-8")
-        except OSError:
-            pass
-
-
 def reanchor_chats(by_block: dict, blocks, chats) -> dict:
     """Move each chat onto the block its paragraph has become.
 
@@ -210,6 +195,7 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
     """
     present = {blk.id for blk in blocks}
     quotes = {c.id: c.quote for c in chats}
+    files = {c.id: c.file for c in chats}
     out: dict[str, list] = {}
     for block_id, msgs in by_block.items():
         if block_id in present:
@@ -217,9 +203,14 @@ def reanchor_chats(by_block: dict, blocks, chats) -> dict:
             continue
         # A key the page no longer has, or none at all. Resolve message by
         # message: they only share this key by accident of it being absent.
-        fallback = next((quotes.get(m["id"], "") for m in msgs if quotes.get(m["id"])), "")
         for m in msgs:
-            match = match_by_quote(quotes.get(m["id"]) or fallback, blocks)
+            # A reply carries no quote of its own and belongs wherever ITS
+            # comment belongs. Its id is `c-0009#r1`, so the comment is the head.
+            # Borrowing whichever quote came first in the group is how an agent's
+            # answer about one table appeared under another on 2026-07-27.
+            cid = str(m.get("id", "")).split("#", 1)[0]
+            own = quotes.get(cid, "")
+            match = match_by_quote(own, blocks, file=files.get(cid, "") or "")
             out.setdefault(match or block_id, []).append(m)
     return out
 
@@ -229,7 +220,44 @@ def flatten_ws(text: str) -> str:
     return " ".join(text.split())
 
 
-def match_by_quote(quote: str, blocks) -> str | None:
+QUOTE_MIN = 120
+QUOTE_MAX = 600
+QUOTE_STEP = 60
+
+
+def quote_for(block, blocks) -> str:
+    """The quote to record with a comment: enough of the block to identify it.
+
+    A quote exists so `reanchor_chats` can re-find a paragraph after an edit has
+    changed its id. A fixed 120 characters is not always enough of one. Measured
+    on estonia-ecm, 30 of 384 blocks have a 120-character opening that appears in
+    another block too -- a `\\clearpage` matches eleven others, and a longtable's
+    shared `\\newcolumntype` preamble run matches eleven more. A comment on any of
+    those cannot be placed, because its quote does not say which block it means.
+
+    So grow the prefix until no other block contains it. Still a prefix, which is
+    what `match_by_quote`'s strongest key needs, and capped so a block of pure
+    boilerplate stores a bounded amount of it rather than the whole table.
+
+    A block with nothing distinctive in it at all (`\\clearpage` is ten
+    characters) cannot be made identifiable by taking more of it, and this
+    returns the short quote rather than pretending otherwise. Such blocks render
+    nothing and are not addressable on the page anyway.
+    """
+    text = block.source_text
+    others = [flatten_ws(b.source_text) for b in blocks if b.id != block.id]
+    cap = min(len(text), QUOTE_MAX)
+    n = min(QUOTE_MIN, cap) or len(text)
+    while True:
+        head = flatten_ws(text[:n])
+        if not head or not any(head in other for other in others):
+            return text[:n]
+        if n >= cap:
+            return text[:n]
+        n = min(n + QUOTE_STEP, cap)
+
+
+def match_by_quote(quote: str, blocks, *, file: str = "") -> str | None:
     """The one rule for placing a quote on a block. Used by every re-anchoring.
 
     Both sides are compared with their whitespace flattened. A quote arrives
@@ -246,15 +274,80 @@ def match_by_quote(quote: str, blocks) -> str | None:
         return None
     quote = flatten_ws(quote)
     flat = [(blk.id, flatten_ws(blk.source_text)) for blk in blocks]
-    head = quote[:60]
-    for bid, text in flat:
-        if head and text.startswith(head):
-            return bid
-    part = quote[:40]
-    for bid, text in flat:
-        if part and part in text:
-            return bid
+    head, part = quote[:60], quote[:40]
+    homes = {blk.id: blk.file for blk in blocks}
+
+    def in_recorded_file(bid) -> bool:
+        """A block's identity is its content AND the file it lives in.
+
+        Some blocks cannot be told apart by content at any length. estonia-ecm
+        opens twelve of its table files with the same 113-byte `\\newcolumntype`
+        preamble run, byte for byte, so no quote can separate them -- but the
+        comment record already carries the file, and that does. Compared on the
+        full path first and the basename second, so moving the manuscript on disk
+        does not orphan every comment in it.
+        """
+        home = homes.get(bid)
+        if not file or home is None:
+            return False
+        return str(home) == str(file) or Path(home).name == Path(str(file)).name
+
+    def only(pred) -> str | None:
+        """The block this key identifies, or None when it identifies several.
+
+        Every LaTeX float opens with the same bytes, so the truncated keys below
+        are boilerplate on an exhibit: six of dsp-bias's figure comments shared
+        `\\begin{figure}[h!] \\centering \\includegr` and three of its table
+        comments shared `\\begin{table}[h!] \\centering \\caption{De`. Taking the
+        first hit in document order stacked every exhibit's chat onto the first
+        exhibit, so the author read an answer about Panel A under Panel B.
+        Ambiguity is not a match; the chat waits, exactly as an unplaceable
+        reviewer note waits in the tray.
+        """
+        hits = [bid for bid, text in flat if pred(text)]
+        if len(hits) > 1:
+            hits = [bid for bid in hits if in_recorded_file(bid)] or hits
+        return hits[0] if len(hits) == 1 else None
+
+    # Strongest key first, and the whole quote before any truncation of it.
+    for exact, pred in (
+        (True, lambda t: t.startswith(quote)),
+        (True, lambda t: quote in t),
+        (False, lambda t: bool(head) and t.startswith(head)),
+        (False, lambda t: bool(part) and part in t),
+    ):
+        got = only(pred)
+        if got and (exact or _exhibit_agrees(quote, dict(flat)[got])):
+            return got
     return None
+
+
+_ASSET_RE = re.compile(r"\\(?:includegraphics|input)\s*(?:\[[^\]]*\])?\{([^}]+)\}")
+
+
+def _exhibit_agrees(quote: str, text: str) -> bool:
+    """Guard on the truncated keys, for exhibits only.
+
+    A float's first 120 bytes are almost entirely boilerplate --
+    `\\begin{figure}[h!] \\centering \\includegraphics[width=\\textwidth]{outputs/`
+    is 72 of them -- so the one token that says WHICH exhibit this is, the asset
+    path, falls past every truncation. A key can therefore be unique and still
+    wrong: on 2026-07-27 a comment quoting the retired `fig3_heatmap.pdf` landed
+    on the coefficient plot, because after truncation the two floats were the
+    same string.
+
+    An exhibit is identified by its asset. When the quote names one and the
+    candidate names a different one, the two are the same exhibit only if
+    everything else about them still agrees -- a rename changes about one
+    character in 120 (0.99), whereas a different figure with a different caption
+    scored 0.825 against a runner-up of 0.800, which is noise. Prose carries no
+    asset path and is not touched by this.
+    """
+    want = {Path(p).stem for p in _ASSET_RE.findall(quote)}
+    have = {Path(p).stem for p in _ASSET_RE.findall(text)}
+    if not want or not have or want & have:
+        return True
+    return difflib.SequenceMatcher(None, quote, text[: len(quote)]).ratio() >= 0.95
 
 
 # ------------------------------------------------------------- the evidence
@@ -388,7 +481,7 @@ def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None,
     where = _anchor_of(anchored if anchored is not None
                        else reanchor_chats(chat.by_block(log, doc=doc), blocks, chats),
                        present)
-    heads = {b.id: b.parent_heading for b in blocks}
+    heads = {b.id: blocks_mod.label(b) for b in blocks}
     wheres = _wheres(blocks, root)
     starts = state_starts(log)
     at = _parse_ts(now) or datetime.now(timezone.utc)
@@ -428,7 +521,7 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
     where = _anchor_of(anchored if anchored is not None
                        else reanchor_chats(chat.by_block(log, doc=doc), blocks, chats),
                        present)
-    heads = {b.id: b.parent_heading for b in blocks}
+    heads = {b.id: blocks_mod.label(b) for b in blocks}
     wheres = _wheres(blocks, root)
     # State records carry no doc of their own; they belong to whatever comment
     # they answer, so the in-scope chat ids are the filter.
@@ -557,6 +650,9 @@ def _block_record(b, html: str, produced: dict, root: Path | None = None,
         "source": b.source_text,
         "editable": b.editable,
         "parent_heading": b.parent_heading,
+        "caption": b.caption,
+        # What to call it, decided once in `source/blocks.label`.
+        "label": blocks_mod.label(b),
         "producer": str(produced[b.file]) if b.file in produced else None,
         "includes": [
             {"directive": inc.directive, "target": str(inc.target),

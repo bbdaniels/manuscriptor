@@ -31,6 +31,7 @@ from pathlib import Path
 
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
+from manuscriptor.server import paths
 
 NEIGHBOURS = 2
 
@@ -74,7 +75,7 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
     # document in the directory, and working the appendix's comments against
     # the paper's blocks would re-anchor them onto the wrong paragraphs.
     doc = build_mod.find_main_tex(manuscript_dir, main).name
-    waiting = chat.pending(manuscript_dir / "comments.jsonl", doc=doc)
+    waiting = chat.pending(paths.comments(manuscript_dir), doc=doc)
     if not waiting:
         return []
 
@@ -131,7 +132,7 @@ def collect(manuscript_dir: Path, *, main: str | None = None, bib: str | None = 
                 line_end=rec["line_end"],
                 editable=rec["editable"],
                 source=rec["source"],
-                section=rec["parent_heading"],
+                section=rec["label"],
                 before=[b.blocks[j].source_text for j in range(max(0, i - NEIGHBOURS), i)],
                 after=[b.blocks[j].source_text for j in range(i + 1, min(len(b.blocks), i + 1 + NEIGHBOURS))],
                 cites=rec["cites"],
@@ -149,7 +150,7 @@ def mark(manuscript_dir: Path, chat_id: str, state: str, *, edit: dict | None = 
     rec = {"id": chat_id, "kind": "state", "state": state}
     if edit:
         rec["edit"] = edit
-    return chat.append(Path(manuscript_dir).resolve() / "comments.jsonl", rec)
+    return chat.append(paths.comments(manuscript_dir), rec)
 
 
 def comment(manuscript_dir: Path, *, body: str, quote: str = "", author: str = "bb",
@@ -167,7 +168,7 @@ def comment(manuscript_dir: Path, *, body: str, quote: str = "", author: str = "
     finding re-found by a later run is a new comment, deliberately: the check
     is telling the author it still thinks so.
     """
-    log = Path(manuscript_dir).resolve() / "comments.jsonl"
+    log = paths.comments(manuscript_dir)
     if quote:
         for c in chat.read_chats(log):
             if (c.quote == quote and c.author == author
@@ -194,7 +195,7 @@ def reply(manuscript_dir: Path, chat_id: str, body: str, *, author: str = "claud
     if not str(body).strip():
         raise ValueError("an empty reply says nothing; use a state for that")
     rec = {"id": chat_id, "kind": "reply", "body": str(body), "author": author}
-    return chat.append(Path(manuscript_dir).resolve() / "comments.jsonl", rec)
+    return chat.append(paths.comments(manuscript_dir), rec)
 
 
 def wait(manuscript_dir: Path, *, timeout: float | None = None) -> bool:
@@ -214,7 +215,12 @@ def wait(manuscript_dir: Path, *, timeout: float | None = None) -> bool:
 
     from manuscriptor.server.watch import block_until_log_grows
 
-    log = Path(manuscript_dir).resolve() / "comments.jsonl"
+    # The log lives inside the hidden directory now, and a park may be the
+    # first thing that ever runs against a manuscript: `proc --wait` on a paper
+    # nobody has served yet has no directory to watch, and the watcher raises
+    # on the missing parent rather than waiting.
+    paths.ensure(manuscript_dir)
+    log = paths.comments(manuscript_dir)
     try:
         doc = build_mod.find_main_tex(Path(manuscript_dir).resolve()).name
     except (LookupError, FileNotFoundError):
@@ -316,7 +322,7 @@ def _locate(c, b, records) -> tuple[str | None, str | None]:
     """
     if c.block in records:
         return c.block, None
-    match = build_mod.match_by_quote(c.quote, b.blocks)
+    match = build_mod.match_by_quote(c.quote, b.blocks, file=c.file or "")
     if match:
         return match, "re-anchored by quote match; check it landed on the right paragraph"
     return None, None

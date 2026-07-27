@@ -105,6 +105,32 @@ _ID_RE = re.compile(r"^b-[0-9a-f]{10}(?:-\d+)?$")
 _CTRL_RE = re.compile(r"\\(?:([a-zA-Z@]+)\*?|(.))", re.S)
 _BLANK_RE = re.compile(r"\n[ \t\r]*(?:\n[ \t\r]*)+")
 
+# `\captionsetup` and friends must not match, so the name ends where it ends.
+_CAPTION_RE = re.compile(r"\\caption(of)?\*?(?![a-zA-Z])")
+_LABEL_RE = re.compile(r"\\label\s*\{[^{}]*\}")
+_TEXT_MACRO_RE = re.compile(
+    r"\\(?:textbf|textit|textrm|textsf|texttt|textsc|textnormal|emph|text)\s*\{([^{}]*)\}"
+)
+# Words that end in a period and do not end a sentence. Initialisms (`U.S.`,
+# `e.g.`) are matched by shape rather than listed.
+_ABBREV = {
+    "fig.", "figs.", "tab.", "tabs.", "eq.", "eqs.", "no.", "nos.", "vs.", "cf.",
+    "al.", "approx.", "est.", "ref.", "refs.", "sec.", "ch.", "pp.", "p.", "dr.",
+    "prof.", "st.", "mr.", "ms.", "mrs.",
+}
+_INITIALISM_RE = re.compile(r"^(?:[A-Za-z]\.)+$")
+# Inline math only. `$$` and display environments do not appear in a caption,
+# and an unpaired `$` is left alone rather than eating the rest of the name.
+_MATH_RE = re.compile(r"(?<!\\)\$([^$]*)(?<!\\)\$")
+_ESCAPED_RE = re.compile(r"\\([%&_#$])")
+# A citation in a caption is attribution, not part of the exhibit's name, and it
+# cannot be rendered here: `\citealt{rijnhart_mediation}` would put a bibtex key
+# on screen. estonia-ecm's mediation flowchart is captioned "Mediation analysis
+# flowchart (based on \citealt{...})", whose name is the part before the paren.
+_CITE = r"\\cite[a-zA-Z]*\*?(?:\[[^\]]*\])*\s*\{[^{}]*\}"
+_CITE_PAREN_RE = re.compile(r"\s*\([^()]*" + _CITE + r"[^()]*\)")
+_CITE_RE = re.compile(_CITE)
+
 
 @dataclass(frozen=True)
 class Include:
@@ -137,6 +163,7 @@ class Block:
     parent_heading: str | None
     editable: bool
     includes: tuple[Include, ...] = ()
+    caption: str | None = None
 
 
 # ------------------------------------------------------------------ public API
@@ -151,6 +178,23 @@ def block_id(source_text: str) -> str:
     """
     norm = " ".join(source_text.split())
     return "b-" + hashlib.sha256(norm.encode("utf-8")).hexdigest()[:10]
+
+
+def label(block: Block) -> str | None:
+    """What to call this block in front of the author.
+
+    Its own caption first, then the heading it sits under. The heading is a fact
+    about position and is often not a name at all: dsp-bias `\\input`s a file of
+    two tables fifty lines below a `\\paragraph{Socioeconomic status.}`, so both
+    tables answered to those words, and the ticker reported an edit landing on
+    one of them in language indistinguishable from the other, which was open in
+    the inspector and untouched. A caption is what the author called the thing.
+
+    One function, because the queue, the ticker, the inspector title and the
+    work item handed to the agent must all name a block the same way; naming it
+    two ways is how the page comes to contradict itself.
+    """
+    return block.caption or block.parent_heading
 
 
 def base_id(bid: str) -> str:
@@ -223,6 +267,7 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
                 parent_heading=parent,
                 editable=whole,  # splicing safety only; see producers.apply
                 includes=tuple(includes),
+                caption=_caption_of(source_text),
             )
         )
 
@@ -369,13 +414,13 @@ def _read_group(text: str, pos: int) -> tuple[str | None, int]:
     return None, pos
 
 
-def _skip_optional(text: str, pos: int) -> int:
-    """Skip an optional `[...]` argument, e.g. `\\item[Label]`, `\\section[short]`."""
+def _read_optional(text: str, pos: int) -> tuple[str | None, int]:
+    """Read a balanced `[...]` at or after `pos`, e.g. `\\caption[short]`."""
     i = pos
     while i < len(text) and text[i] in " \t":
         i += 1
     if i >= len(text) or text[i] != "[":
-        return pos
+        return None, pos
     depth = 0
     j = i
     while j < len(text):
@@ -388,9 +433,79 @@ def _skip_optional(text: str, pos: int) -> int:
         elif c == "]":
             depth -= 1
             if depth == 0:
-                return j + 1
+                return text[i + 1 : j], j + 1
         j += 1
-    return pos
+    return None, pos
+
+
+def _skip_optional(text: str, pos: int) -> int:
+    """Skip an optional `[...]` argument, e.g. `\\item[Label]`, `\\section[short]`."""
+    return _read_optional(text, pos)[1]
+
+
+def _caption_of(source_text: str) -> str | None:
+    """The block's own caption, as words rather than as LaTeX.
+
+    The first caption in the block, because a longtable declares its head twice
+    and both say the same thing. The `[short]` form wins when it is there: an
+    author writes it precisely so the exhibit has a name shorter than its
+    explanation. Only the title SENTENCE is kept, since the rest of an academic
+    caption is the note under the table and is no use as a name in a status line
+    a hundred pixels wide.
+    """
+    for m in _CAPTION_RE.finditer(source_text):
+        i = m.end()
+        if m.group(1):                      # \captionof{table}{...}: the type first
+            _, i = _read_group(source_text, i)
+        short, i = _read_optional(source_text, i)
+        body, _ = _read_group(source_text, i)
+        text = short if (short or "").strip() else body
+        cleaned = _clean_caption(text or "")
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _clean_caption(text: str) -> str:
+    """Caption LaTeX as a plain-text name.
+
+    Inline math keeps its CONTENT and loses its delimiters: `($N = 216$)` is
+    part of what the author calls the table, and dropping it loses the sample
+    size, but a `$` on screen is LaTeX leaking into a label. Nothing here tries
+    to render math -- a caption whose name is an equation will read oddly, and
+    that is better than a caption that reads as nothing.
+    """
+    text = _LABEL_RE.sub("", text)
+    text = _CITE_RE.sub("", _CITE_PAREN_RE.sub("", text))
+    for _ in range(3):                      # \textbf{\emph{x}} is two rounds deep
+        text, n = _TEXT_MACRO_RE.subn(r"\1", text)
+        if not n:
+            break
+    text = _MATH_RE.sub(lambda m: m.group(1).strip(), text)
+    text = text.replace("\\\\", " ").replace("~", " ")
+    text = _ESCAPED_RE.sub(r"\1", text)
+    # What is left of `\caption{{ECM Impact:} On hospitalizations}` is grouping
+    # that prints nothing, and it printed on estonia-ecm's third table. Only
+    # safe once no command remains: braces still holding an argument to a macro
+    # this does not know would be mangled rather than cleaned.
+    if "\\" not in text:
+        text = text.replace("{", "").replace("}", "")
+    return _first_sentence(" ".join(text.split()))
+
+
+def _first_sentence(text: str) -> str:
+    """Up to the first sentence-ending period. `Fig. 2` and `U.S.` do not end one."""
+    i = 0
+    while True:
+        j = text.find(". ", i)
+        if j < 0:
+            return text
+        word = text[:j].split()
+        last = (word[-1] + "." if word else "").lower()
+        if last in _ABBREV or _INITIALISM_RE.match(last):
+            i = j + 2
+            continue
+        return text[: j + 1]
 
 
 def _body_bounds(text: str, tokens: list[_Tok]) -> tuple[int, int]:

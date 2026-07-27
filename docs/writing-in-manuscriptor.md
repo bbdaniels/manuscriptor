@@ -177,7 +177,7 @@ again is the check telling you it still thinks so.
 **Produce…** is the generative half: the declaude rewrite (decomposed
 paragraph by paragraph, one block per write as always), drafting a section,
 the seminar deck, and the submission packages. Artifacts land in
-`build/manuscriptor/` and the reply tells you where.
+`.manuscriptor/cache/` and the reply tells you where.
 
 The whole exchange is records in `comments.jsonl`, so the review, your
 decisions, and the fixes are one audit trail beside the paper.
@@ -219,8 +219,12 @@ Word goes through your `pandoc-docx` skill, so it arrives with its table rules,
 its cross-references resolved, and its figures embedded, and it is not handed
 over until `textutil` confirms Word can open it.
 
-Both write into `build/manuscriptor/` inside the manuscript, which ignores
-itself, so compiling never grows your `git status`.
+Both write into `.manuscriptor/cache/` inside the manuscript, which ignores
+itself, so the `.aux`, `.log` and `.bbl` never land beside your `.tex` again.
+The finished PDF is the one thing that comes back out, beside the source where
+you would look for it, and only when the compile actually succeeded: a run that
+dies halfway will not replace this morning's good PDF with wreckage that still
+opens.
 
 ## Bringing in a reviewer
 

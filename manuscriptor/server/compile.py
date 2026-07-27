@@ -10,11 +10,15 @@ has zero knowledge of Claude survives untouched.
 
 Four things here are load-bearing, and each of them was found by running it.
 
-**Everything is written inside `build/manuscriptor/compile`.** LaTeX lays down
-`.aux`, `.log`, `.out`, `.bbl` and the PDF, and the reference manuscript has
-several of those COMMITTED, so a compile beside the source rewrites tracked
-files and `git status` grows. The build directory already writes its own
-`.gitignore`; the compile lives under it and inherits that.
+**Everything is written inside `.manuscriptor/cache/compile`, and exactly one
+file comes back out.** LaTeX lays down `.aux`, `.log`, `.out`, `.bbl` and the
+PDF, and the reference manuscript has several of those COMMITTED, so a compile
+beside the source rewrites tracked files and `git status` grows. The hidden
+directory writes its own `.gitignore` and the compile inherits it. The PDF is
+the exception, because it is what the author was compiling for: `deliver` copies
+it beside the `.tex` on a successful run, and only on a successful run, so a
+compile that dies in pass 2 cannot replace this morning's good PDF with wreckage
+that still opens. A read-only serve withholds even that copy.
 
 **A `\\include` in a subdirectory needs that subdirectory mirrored under the
 output directory.** `\\include{tables/t}` makes TeX open `tables/t.aux` for
@@ -46,7 +50,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from manuscriptor.server import build as build_mod
+from manuscriptor.server import build as build_mod, paths
 
 # ------------------------------------------------------------------- the skill
 
@@ -85,6 +89,10 @@ class Result:
     error: str | None
     log: Path | None
     notes: list = field(default_factory=list)
+    # Where the finished file was copied for the author, beside the `.tex`.
+    # `output` stays inside the cache because that is what the page can serve;
+    # this is what the author opens. None when the run failed or the copy did.
+    delivered: Path | None = None
 
     def as_frame(self, *, root: Path | None = None) -> dict:
         """The websocket frame the page reads. Plain JSON, no Paths."""
@@ -92,7 +100,7 @@ class Result:
         if self.output is not None and root is not None:
             try:
                 url = "/" + str(Path(self.output).resolve().relative_to(
-                    Path(root).resolve() / "build" / "manuscriptor"))
+                    paths.cache(root)))
             except ValueError:
                 url = None
         return {
@@ -101,6 +109,7 @@ class Result:
             "kind": self.kind,
             "ok": self.ok,
             "output": str(self.output) if self.output else None,
+            "delivered": str(self.delivered) if self.delivered else None,
             "url": url,
             "seconds": round(self.seconds, 1),
             "error": self.error,
@@ -117,17 +126,44 @@ class Result:
 
 
 def out_dir(manuscript_dir) -> Path:
-    """`<manuscript>/build/manuscriptor/compile`, created and out of git.
+    """`<manuscript>/.manuscriptor/cache/compile`, created and out of git.
 
-    The same directory the render already writes into, so one `.gitignore`
-    covers both and serving or compiling a paper leaves `git status` alone.
+    Under the same hidden directory the render writes into, so one `.gitignore`
+    covers both and serving or compiling a paper leaves `git status` alone. The
+    PDF does not stay here: `deliver` copies it back beside the `.tex` on a
+    successful run, because that one file is what the author actually wanted.
     """
-    root = Path(manuscript_dir).resolve()
-    build = root / "build" / "manuscriptor"
-    out = build / "compile"
+    paths.ensure(manuscript_dir)
+    out = paths.compile_dir(manuscript_dir)
     out.mkdir(parents=True, exist_ok=True)
-    build_mod.keep_out_of_git(build)
     return out
+
+
+def deliver(built: Path, manuscript_dir) -> Path | None:
+    """Copy a finished document out of the cache, beside the `.tex` it came from.
+
+    Everything else Manuscriptor writes is either regenerable or private, and
+    hiding it is the point. The PDF is neither: it is the thing the author was
+    compiling FOR, and a deliverable nobody can find is not delivered. So one
+    file comes back out, and the `.aux`, `.log`, `.bbl` and `.blg` that used to
+    litter the folder beside it stay behind.
+
+    ONLY ON A SUCCESSFUL RUN, and the caller enforces that by not calling this
+    otherwise. Copying on failure would replace a good PDF from this morning
+    with a broken one from a compile that died in pass 2, which is worse than
+    no PDF at all: the file is still there, still opens, and is quietly wrong.
+    """
+    built = Path(built)
+    if not built.is_file():
+        return None
+    target = Path(manuscript_dir).resolve() / built.name
+    try:
+        if target.resolve() == built.resolve():
+            return target
+        shutil.copy2(built, target)
+    except OSError:
+        return None
+    return target
 
 
 def mirror_tex_dirs(manuscript_dir, out: Path) -> list[Path]:
@@ -344,7 +380,7 @@ def _tex_env(manuscript_dir: Path, out: Path) -> dict:
 
 
 def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = None,
-                on_step=None, runner=None) -> Result:
+                on_step=None, runner=None, deliver_out: bool = True) -> Result:
     """Three passes around a bibtex, which is the author's documented recipe.
 
     Three because the first writes the `.aux` with the citation keys, bibtex
@@ -411,6 +447,7 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
         kind="pdf", ok=ok, output=pdf if ok else None,
         seconds=time.monotonic() - started, steps=steps, error=error,
         log=log if log.exists() else None, notes=notes,
+        delivered=deliver(pdf, root) if (ok and deliver_out) else None,
     )
 
 
@@ -431,6 +468,7 @@ def _read(path: Path) -> str:
 
 
 def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = None,
+                 deliver_out: bool = True,
                  on_step=None, runner=None) -> Result:
     """LaTeX to a Word file that opens, by way of the `pandoc-docx` skill.
 
@@ -577,7 +615,8 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
                       "the file was written but Word will not open it (textutil could not read it)",
                       None, notes)
 
-    return Result("docx", True, docx, time.monotonic() - started, steps, None, None, notes)
+    return Result("docx", True, docx, time.monotonic() - started, steps, None, None,
+                  notes, deliver(docx, root) if deliver_out else None)
 
 
 _GRAPHICS_RE = re.compile(r"(\\includegraphics\s*(?:\[[^\]]*\])?\s*\{)([^}]+)(\})")
@@ -708,7 +747,8 @@ def route(session):
 
                 fn = compile_pdf if action == "pdf" else compile_docx
                 result = await asyncio.to_thread(
-                    fn, session.root, main=session.doc, bib=session.bib, on_step=on_step
+                    fn, session.root, main=session.doc, bib=session.bib, on_step=on_step,
+                    deliver_out=not session.read_only
                 )
                 await session.broadcast(result.as_frame(root=session.root))
             except Exception as exc:  # a failed compile must not kill the server

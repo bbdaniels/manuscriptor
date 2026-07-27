@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from manuscriptor.source import blocks as blocks_mod
 from manuscriptor.source.blocks import Block, Include, block_id, rematch, segment
 from manuscriptor.source.flatten import flatten
 
@@ -539,3 +540,100 @@ def test_blocks_are_frozen(tmp_path):
     (block,) = seg(tmp_path, "Only paragraph.")
     with pytest.raises(Exception):
         block.id = "b-0000000000"  # type: ignore[misc]
+
+
+# ------------------------------------------------------- what a block is called
+
+
+def test_a_float_is_named_by_its_own_caption(tmp_path):
+    """The enclosing heading is not the name of an exhibit.
+
+    dsp-bias, 2026-07-27: `\\input{outputs/tab_results.tex}` sits under a
+    `\\paragraph{Socioeconomic status.}` fifty lines above it, so BOTH tables in
+    that file inherited that heading. The ticker names an entry by its section,
+    so an edit landing on the second table read "Socioeconomic status. edited"
+    -- word for word what the first table, open in the inspector and still
+    queued, was also called. The author read the two as one item.
+    """
+    blocks = seg(
+        tmp_path,
+        "\\paragraph{Socioeconomic status.}\nProse under the run-in heading.\n\n"
+        "\\input{outputs/tab_results}",
+        outputs__tab_results=(
+            "\\begin{table}[h!]\n\\caption{Case generation: demographic variation.\n"
+            "Cells report means.}\n\\label{tab:one}\n\\begin{tabular}{ll}\nA & B \\\\\n"
+            "\\end{tabular}\n\\end{table}\n\n"
+            "\\begin{table}[h!]\n\\caption{Demographic variation in conversations.}\n"
+            "\\begin{tabular}{ll}\nC & D \\\\\n\\end{tabular}\n\\end{table}\n"
+        ),
+    )
+    tables = [b for b in blocks if b.file.name == "tab_results.tex"]
+    assert len(tables) == 2, [b.source_text[:40] for b in tables]
+    assert [b.parent_heading for b in tables] == \
+        ["Socioeconomic status.", "Socioeconomic status."], "the heading is shared"
+    assert [blocks_mod.label(b) for b in tables] == [
+        "Case generation: demographic variation.",
+        "Demographic variation in conversations.",
+    ]
+
+
+def test_a_block_with_no_caption_falls_back_to_its_heading(tmp_path):
+    blocks = seg(tmp_path, "\\section{Methods}\nOrdinary prose.")
+    prose = next(b for b in blocks if b.kind == "paragraph")
+    assert prose.caption is None
+    assert blocks_mod.label(prose) == "Methods"
+
+
+def test_a_caption_is_read_to_its_own_closing_brace(tmp_path):
+    """Nested braces are the normal case: a caption carries `\\textbf{}` and math."""
+    (table,) = [b for b in seg(
+        tmp_path,
+        "\\begin{table}\n\\caption{Effects on \\textbf{women} ($N = 216$).}\n"
+        "\\begin{tabular}{l}\nA \\\\\n\\end{tabular}\n\\end{table}",
+    ) if b.kind != "heading"]
+    assert table.caption == "Effects on women (N = 216)."
+
+
+@pytest.mark.parametrize(
+    "body,want",
+    [
+        # The short form is the author's own name for the exhibit; prefer it.
+        ("\\caption[Short name]{A much longer explanatory caption.}", "Short name"),
+        ("\\caption*{Unnumbered but still named.}", "Unnumbered but still named."),
+        ("\\captionof{table}{Named through captionof.}", "Named through captionof."),
+        # A label inside the caption is machinery, not words.
+        ("\\caption{Named well.\\label{tab:x}}", "Named well."),
+        # Only the title sentence. The rest is the note under the table.
+        ("\\caption{The title sentence. Cells report means; stars are $p$-values.}",
+         "The title sentence."),
+        # An abbreviation is not the end of a sentence.
+        ("\\caption{Compared with Fig. 2 across arms.}", "Compared with Fig. 2 across arms."),
+        ("\\caption{Results for U.S. patients only.}", "Results for U.S. patients only."),
+        # Hard-wrapped, which every one of these manuscripts is.
+        ("\\caption{A caption broken\nacross three\nlines.}", "A caption broken across three lines."),
+        # Math keeps its content and loses its delimiters: a `$` on screen is
+        # LaTeX leaking into a label, and dropping the group loses the sample.
+        ("\\caption{Case characteristics ($N = 216$).}", "Case characteristics (N = 216)."),
+        ("\\caption{Stars are $p$-values, 90\\% of cases.}", "Stars are p-values, 90% of cases."),
+        # Grouping braces print nothing, and estonia-ecm's third table showed
+        # them: `\\caption{{ECM Impact:} On hospitalizations}`.
+        ("\\caption{{ECM Impact:} On hospitalizations and mortality.}",
+         "ECM Impact: On hospitalizations and mortality."),
+        # A citation is attribution, not a name, and cannot be rendered here.
+        # estonia-ecm's mediation flowchart, verbatim.
+        ("\\caption{Mediation analysis flowchart (based on \\citealt{rijnhart_mediation})}",
+         "Mediation analysis flowchart"),
+        ("\\caption{Replicating \\citep{cook2010} across arms.}", "Replicating across arms."),
+        # But not when a command is still holding one of them.
+        ("\\caption{Effects, \\textcolor{red}{flagged}.}", "Effects, \\textcolor{red}{flagged}."),
+        # An unpaired dollar must not eat the rest of the name.
+        ("\\caption{Costs in $ per visit.}", "Costs in $ per visit."),
+        ("\\captionsetup{width=.8\\textwidth}", None),
+    ],
+)
+def test_caption_shapes(tmp_path, body, want):
+    (table,) = [b for b in seg(
+        tmp_path,
+        "\\begin{table}\n" + body + "\n\\begin{tabular}{l}\nA \\\\\n\\end{tabular}\n\\end{table}",
+    ) if b.kind != "heading"]
+    assert table.caption == want

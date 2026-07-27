@@ -47,13 +47,21 @@ ALLOWED_TOOLS = (
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+# What an entry may be. `tool` is deliberately absent: a tool call is not
+# something the author needs to read, and a busy turn emits enough of them to
+# push the sentences that ARE out of a KEEP-length window. Enforced here rather
+# than at the two ends, so `summarize` not producing them and a file written by
+# an older build not showing them are the same rule and cannot drift apart.
+KINDS = ("thinking", "text", "result", "note")
+
+
 @dataclass
 class Entry:
     """One line of the live feed."""
 
     ts: str
     who: str          # "agent" | "teammate"
-    kind: str         # "thinking" | "text" | "tool" | "result" | "note"
+    kind: str         # one of KINDS
     text: str
 
     def as_dict(self) -> dict:
@@ -133,5 +141,8 @@ def read_feed(path: Path | str) -> dict:
         "state": str(data.get("state") or "idle"),
         "working": [str(w) for w in (data.get("working") or []) if isinstance(w, str)],
         "at": data.get("at") or "",
-        "entries": [e for e in entries if isinstance(e, dict)] if isinstance(entries, list) else [],
+        "entries": [
+            e for e in entries
+            if isinstance(e, dict) and e.get("kind") in KINDS
+        ] if isinstance(entries, list) else [],
     }
