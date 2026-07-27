@@ -380,6 +380,21 @@ def _tokenize(text: str, start: int, end: int) -> list[_Tok]:
             i = j
             continue
         if c == "\n":
+            # TeX discards a comment together with the end-of-line that
+            # terminates it, so a newline closing a comment cannot open a blank
+            # line and cannot break a paragraph. Treating it as an ordinary
+            # newline splits a paragraph wherever a line ends in a comment.
+            #
+            # The `\input{fragment}%` idiom depends on this. A generated value
+            # in its own file ends with `%` so that \input contributes no
+            # trailing space; when that \input sits at the end of a source line,
+            # the file's own newline and the source's newline meet, and reading
+            # them as a blank line puts a paragraph break in the middle of a
+            # sentence. Observed 2026-07-27 in dsp-bias, where every statistic
+            # reaches the manuscript through such a fragment.
+            if _is_commented(text, i):
+                i += 1
+                continue
             m = _BLANK_RE.match(text, i)
             if m is not None:
                 stop = min(m.end(), end)
