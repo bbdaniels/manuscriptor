@@ -175,6 +175,113 @@ def test_a_ready_session_says_so():
     assert got and got[0].kind == "note"
 
 
+def test_a_write_reports_what_it_actually_changed():
+    """The one exact `+N -M` available here, counted from the tool's own diff.
+
+    Not invented and not guessed at from the file afterwards: `structuredPatch`
+    is what the Edit returned, and the hunk lines carry their own signs.
+    """
+    got = sup.summarize({
+        "type": "user",
+        "tool_use_result": {
+            "filePath": "/Users/x/paper/main.tex",
+            "structuredPatch": [
+                {"oldStart": 662, "lines": [" kept", "-gone", "-gone too", "+new", " kept"]},
+                {"oldStart": 700, "lines": ["+added"]},
+            ],
+        },
+    })
+    assert len(got) == 1 and got[0].kind == "note", got
+    assert "main.tex" in got[0].text, "the author is told WHICH file moved"
+    assert "+2" in got[0].text and "−2" in got[0].text, got[0].text
+
+
+def test_a_write_that_changed_nothing_says_nothing():
+    """An empty patch is what a Write of identical content returns, and a line
+    reading `edited main.tex - +0 -0` is a line that costs a read and says
+    nothing."""
+    assert sup.summarize({"type": "user", "tool_use_result": {
+        "filePath": "main.tex", "structuredPatch": []}}) == []
+    assert sup.summarize({"type": "user", "tool_use_result": {"stdout": "ok"}}) == []
+
+
+# ------------------------------------------------------- whose work is this
+#
+# The link between a sentence and the request that caused it. Until it existed
+# the only work-item linkage anywhere was the envelope's `working` list, which
+# is current-state-only and rewritten, so the panel could say what was being
+# worked NOW and could never say what any past line had been about.
+
+
+def test_a_line_carries_the_comment_it_belongs_to():
+    a = sup.Attributor()
+    a.aim(("c-0042",))
+    got = sup.summarize(assistant({"type": "text", "text": "Tightening it."}),
+                        work=a.stamp(assistant({"type": "text", "text": "Tightening it."})))
+    assert got[0].work == ("c-0042",)
+
+
+def test_a_teammates_line_resolves_to_its_own_comment_out_of_three():
+    """The precise signal, and the reason three in flight is readable at all.
+
+    Every event a dispatched teammate emits carries the id of the `Agent` tool
+    call that started it, and that call names its comment in the prompt the
+    drain's skill wrote. So the dispatch is remembered and the teammate's lines
+    resolve to exactly one comment. Checked against a real stream: 5,811 of its
+    events carried a parent that was a known dispatch.
+    """
+    a = sup.Attributor()
+    a.aim(("c-0041", "c-0042", "c-0043"))
+    a.stamp(assistant({
+        "type": "tool_use", "name": "Agent", "id": "toolu_017Zi9",
+        "input": {"subagent_type": "coder", "description": "Fix fig3",
+                  "prompt": "You are draining ONE Manuscriptor comment.\n"
+                            "THE COMMENT (c-0042), verbatim:\n\"this figure is flipped\""},
+    }))
+    line = assistant({"type": "thinking", "thinking": "the ordering is reversed"})
+    line["parent_tool_use_id"] = "toolu_017Zi9"
+    assert a.stamp(line) == ("c-0042",), (
+        "a teammate's line landed on the wrong comment, or on all three: three "
+        "threads become one interleaved smear"
+    )
+
+
+def test_a_line_that_names_its_comment_is_taken_at_its_word():
+    a = sup.Attributor()
+    a.aim(("c-0041", "c-0042"))
+    said = assistant({"type": "text", "text": "Starting on c-0042 now."})
+    assert a.stamp(said) == ("c-0042",)
+
+
+def test_an_id_that_is_not_in_flight_is_not_a_link():
+    """A paragraph may quote an old id. A line about c-0007 four hours after
+    c-0007 was closed is a line about nothing."""
+    a = sup.Attributor()
+    a.aim(("c-0042",))
+    said = assistant({"type": "text", "text": "This is unrelated to c-0007."})
+    assert a.stamp(said) == ("c-0042",)
+
+
+def test_an_ambiguous_line_is_recorded_as_ambiguous_not_guessed():
+    """Three comments in flight and a line that names none of them.
+
+    The honest record is the set. Picking one -- the newest, say -- would put a
+    sentence under a request it may have nothing to do with, which is exactly
+    the invented link this ledger exists not to make.
+    """
+    a = sup.Attributor()
+    a.aim(("c-0041", "c-0042", "c-0043"))
+    got = a.stamp(assistant({"type": "text", "text": "Reading the analysis script."}))
+    assert got == ("c-0041", "c-0042", "c-0043"), got
+
+
+def test_a_line_belonging_to_no_request_says_so():
+    """Booting, restarting, idle chatter. It belongs to the session, and the
+    live feed is where the author reads it."""
+    a = sup.Attributor()
+    assert a.stamp({"type": "system", "subtype": "init"}) == ()
+
+
 # -------------------------------------------------------------------- the feed
 
 
@@ -209,6 +316,140 @@ def test_the_feed_write_is_atomic(tmp_path):
     feed.note("x" * 4000)
     assert json.loads(sup.progress_path(tmp_path).read_text(encoding="utf-8"))
     assert not list(tmp_path.glob("*.tmp")), "the temporary file must be gone"
+
+
+# ----------------------------------------------------------------- the history
+#
+# The feed above answers "what is happening now" and is rewritten. This answers
+# "what has it done" and is appended to, which is the only shape that survives
+# the writer.
+
+
+def test_the_history_survives_the_drain_restarting(tmp_path):
+    """The defect that made the panel a live feed and nothing else.
+
+    `Feed` is constructed with `entries=[]` and the supervisor writes `booting`
+    into it before anything else, so every restart of the drain -- roughly one
+    per twenty wakes -- erased the record of the session before it. A history
+    that a scheduled restart destroys is not a history.
+    """
+    from manuscriptor.server import feed as feed_mod
+
+    first = sup.Feed(path=sup.progress_path(tmp_path), every=0.0)
+    first.add([sup.Entry(sup.now(), "agent", "text", "Softened the claim.", ("c-0042",))],
+              force=True)
+
+    # The drain restarts: a new process, a new Feed, and the ring rewritten.
+    second = sup.Feed(path=sup.progress_path(tmp_path), every=0.0)
+    second.set(state="booting")
+
+    assert sup.read_feed(sup.progress_path(tmp_path))["entries"] == [], (
+        "the ring is the live state and is expected to be empty here"
+    )
+    kept = feed_mod.read_history(feed_mod.history_path(tmp_path))
+    assert [(e["text"], e["work"]) for e in kept] == [("Softened the claim.", ["c-0042"])]
+
+
+def test_the_history_keeps_what_the_ring_drops(tmp_path):
+    """The ring is coalesced and trimmed, which is right for a status and fatal
+    for a record: the eighty-first line of a busy turn, and every line that
+    arrives inside the write interval, would otherwise exist nowhere."""
+    from manuscriptor.server import feed as feed_mod
+
+    feed = sup.Feed(path=sup.progress_path(tmp_path), every=999.0)
+    for i in range(sup.KEEP + 40):
+        feed.add([sup.Entry(sup.now(), "agent", "thinking", f"step {i}", ("c-0001",))])
+
+    kept = feed_mod.read_history(feed_mod.history_path(tmp_path))
+    assert len(kept) == sup.KEEP + 40, "the ledger dropped lines the ring dropped"
+    assert kept[0]["text"] == "step 0"
+
+
+def test_the_history_is_bounded_and_keeps_one_generation(tmp_path):
+    """Append-only has no natural limit, so the limit is stated: the file rolls
+    at a size and exactly one previous generation is kept, which bounds the
+    drain's disk at twice that. The reader spans both, so a roll does not make
+    the panel go blank."""
+    from manuscriptor.server import feed as feed_mod
+
+    path = feed_mod.history_path(tmp_path)
+    ledger = feed_mod.Ledger(path=path, rotate_at=400)
+    for i in range(40):
+        ledger.append([sup.Entry(sup.now(), "agent", "text", f"line {i}", ("c-0001",))])
+
+    assert feed_mod.rolled_path(path).exists(), "nothing rolled, so nothing is bounded"
+    assert path.stat().st_size < 4000 and feed_mod.rolled_path(path).stat().st_size < 4000
+    got = [e["text"] for e in feed_mod.read_history(path)]
+    assert got[-1] == "line 39"
+    assert "line 0" not in got, "the oldest generation must actually age out"
+    assert len(got) > 1, "a roll must not make the history look empty"
+
+
+def test_a_history_line_written_by_an_older_build_is_read_by_the_same_rule(tmp_path):
+    """`feed.KINDS` is the single rule for what the panel shows. A `tool` line
+    written before that rule existed must not come back through the history."""
+    from manuscriptor.server import feed as feed_mod
+
+    path = feed_mod.history_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"ts": "2026-07-27T07:00:00+00:00", "who": "agent", "kind": "tool",
+                    "text": "Bash: manuscriptor reply", "work": ["c-1"]}) + "\n"
+        + "{not json\n"
+        + json.dumps({"ts": "2026-07-27T07:00:01+00:00", "who": "agent", "kind": "text",
+                      "text": "Rewriting the caption.", "work": ["c-1"]}) + "\n",
+        encoding="utf-8")
+    got = feed_mod.read_history(path)
+    assert [e["kind"] for e in got] == ["text"], "one corrupt line must not be fatal either"
+
+
+def test_handing_over_a_second_comment_does_not_retire_the_first(tmp_path):
+    """The envelope's `working` list, which the whole attribution rests on.
+
+    `hand_over` wrote its own `ids` straight into it, so handing a second
+    comment to a running session erased the first: the author watched the pin
+    move off a paragraph still being worked, and every line the session then
+    emitted would have been stamped with the newcomer alone.
+    """
+    from manuscriptor.server import chat, feed as feed_mod
+
+    log = paths.comments(tmp_path)
+
+    class Stub:
+        alive = True
+        silent_for = 0.0
+
+        def __init__(self):
+            self.in_flight = False
+            self.aimed = ()
+
+        def send(self, text):
+            self.in_flight = True
+            return True
+
+        def start(self): pass
+        def stop(self): pass
+        def aim(self, ids): self.aimed = tuple(ids)
+
+    d = sup.Drain(tmp_path, manuscriptor="ms")
+    d.session = Stub()
+    for i in (1, 2):
+        chat.append(log, {"id": f"c-000{i}", "kind": "comment", "block": "b-1",
+                          "body": "x", "author": "bb"})
+        d.step()
+
+    live = feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(tmp_path)))
+    assert live["working"] == ["c-0001", "c-0002"], live["working"]
+    assert d.session.aimed == ("c-0001", "c-0002"), (
+        "the stream reader was aimed at the newest comment alone, so every line "
+        "of the first one's work would have been stamped with the second"
+    )
+
+    # And it shrinks by itself when the agent closes one.
+    chat.append(log, {"id": "c-0001", "kind": "state", "state": "done"})
+    d.step()
+    live = feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(tmp_path)))
+    assert live["working"] == ["c-0002"], live["working"]
 
 
 # --------------------------------------------------------------- the invocation
@@ -329,12 +570,14 @@ def test_the_loop_hands_a_mid_turn_comment_to_the_running_session(tmp_path):
 
         def start(self): pass
         def stop(self): pass
+        def aim(self, ids): self.aimed = tuple(ids)
 
     d = sup.Drain(tmp_path, manuscriptor="ms", build_dir=tmp_path / "build")
     stub = Stub()
     d.session = stub
     handed = []
-    d.hand_over = lambda ids: (handed.append(tuple(ids)), stub.send(""), d._sent.update(ids))
+    d.hand_over = lambda ids, pending=(): (
+        handed.append(tuple(ids)), stub.send(""), d._sent.update(ids))
 
     for i in (1, 2, 3, 4, 5):
         chat.append(log, {"id": f"c-000{i}", "kind": "comment", "block": "b-1",
@@ -428,7 +671,11 @@ def test_the_live_push_watches_the_file_the_drain_writes(tmp_path, monkeypatch):
 
     def _record(path, on_change, **kw):
         watched.append(Path(path).resolve())
-        raise _Armed
+        # Both of the drain's files are watched by name, so the serve is let
+        # run until the second is armed and stopped there.
+        if len(watched) >= 2:
+            raise _Armed
+        return lambda: None
 
     monkeypatch.setattr(app_mod.web, "TCPSite", _NoSite)
     monkeypatch.setattr(watch_mod, "watch_tree", _no_tree)
@@ -437,10 +684,15 @@ def test_the_live_push_watches_the_file_the_drain_writes(tmp_path, monkeypatch):
     with pytest.raises(_Armed):
         app_mod.serve(tmp_path, port=0, open_window=False)
 
-    want = feed_mod.progress_path(paths.agent_dir(tmp_path)).resolve()
-    assert watched == [want], (
-        "the feed watcher is armed somewhere the drain never writes, so it "
-        "never fires and the panel never updates"
+    agent = paths.agent_dir(tmp_path)
+    assert watched == [
+        feed_mod.progress_path(agent).resolve(),
+        feed_mod.history_path(agent).resolve(),
+    ], (
+        "a watcher is armed somewhere the drain never writes, so it never fires "
+        "and the panel never updates. The history is watched BY ITS OWN NAME "
+        "because the ring is coalesced and the ledger is not: watching only the "
+        "feed leaves the last lines of a quiet turn unpushed"
     )
 
 

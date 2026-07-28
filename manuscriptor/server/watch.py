@@ -25,6 +25,8 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from manuscriptor.server import paths
+
 # Source suffixes drive a re-render; figure suffixes drive an asset refresh.
 # Figures are here because the agent answers a figure comment by editing the
 # producing script and regenerating the PDF, and a watcher that only knew
@@ -52,6 +54,17 @@ class _Handler(FileSystemEventHandler):
         if path.suffix not in WATCHED:
             return
         if any(part in IGNORED_DIRS for part in path.parts):
+            return
+        # OUR OWN OUTPUT IS NOT THE AUTHOR'S MANUSCRIPT. The hidden directory
+        # holds the drain's stream log and its history, both `.jsonl` and both
+        # appended to as fast as a session emits events. Every one of those
+        # appends classified as a source change and re-rendered the whole
+        # manuscript through pandoc, because `IGNORED_DIRS` still named the
+        # pre-2026-07-27 `build/` and nothing had told it where we moved.
+        # `comments.jsonl` is the deliberate exception: it is how the page
+        # learns the agent picked a comment up. The live feed and the ledger
+        # are watched BY NAME instead, in `cmd_serve`.
+        if paths.HOME in path.parts and path.name != paths.COMMENTS_NAME:
             return
         # An atomic splice writes a dotfile then renames; the rename is the event
         # that matters and the temp file must never trigger a render of its own.

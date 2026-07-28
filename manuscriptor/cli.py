@@ -330,6 +330,10 @@ def start_agent(manuscript_dir: Path, *, lock=None) -> tuple[subprocess.Popen, P
     print(f"         silence past {int(STALL_AFTER)}s mid-turn is treated as wedged "
           "and restarted")
     print(f"         feed {feed_mod.progress_path(log.parent)}")
+    # Named beside the feed, because they are read for opposite reasons: the
+    # feed is what it is doing and is rewritten, the history is what it has
+    # done and is appended to. The panel reads both.
+    print(f"         history {feed_mod.history_path(log.parent)}")
     print(f"         log {log}")
     return proc, log
 
@@ -830,6 +834,23 @@ def cmd_tidy(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Say what a clean compile would not have told you. Modifies nothing.
+
+    Exits 2 when a check could not run, and that outranks findings: a skipped
+    check is not a pass, and it is the failure that hides the others.
+    """
+    from manuscriptor.server import preflight
+
+    d = Path(args.manuscript).resolve()
+    if not d.is_dir():
+        sys.exit(f"not a directory: {d}")
+    planned = preflight.plan(d, args.main)
+    results = preflight.run(d, args.main)
+    print(preflight.report(d, planned, results))
+    return preflight.exit_code(planned, results)
+
+
 def cmd_clean(args: argparse.Namespace) -> int:
     """Remove the regenerable tier, and refuse to remove anything else.
 
@@ -1013,6 +1034,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Also remove the ones git ignores or has never seen. "
                              "Never removes a tracked file, and never a .tex.")
     p_tidy.set_defaults(func=cmd_tidy)
+
+    p_pre = sub.add_parser("preflight",
+                           help="Report what a clean compile would not have told you.")
+    p_pre.add_argument("manuscript", help="Manuscript directory to check")
+    p_pre.add_argument("--main", default=None,
+                       help="Check one document only (default: every document here)")
+    p_pre.set_defaults(func=cmd_preflight)
 
     p_clean = sub.add_parser("clean", help="Remove regenerable render output; optionally clear the shared cache.")
     p_clean.add_argument("manuscript",

@@ -188,6 +188,16 @@ def build(
         # nothing writes a feed there and an absent feed reads as idle -- so
         # every page opened on "idle" over a healthy feed on disk.
         "agent_feed": feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(manuscript_dir))),
+        # What it has DONE, threaded by the request that caused it. The live
+        # feed above is a ring the next drain restart overwrites; this is the
+        # append-only ledger beside it, joined to the comment log for the
+        # request, the paragraph and the outcome. In the blob and not only on
+        # the socket, so the history is there on a reload and after a restart of
+        # either process.
+        "history": history_view(
+            log, bl,
+            feed_mod.read_history(feed_mod.history_path(paths.agent_dir(manuscript_dir))),
+            root=manuscript_dir, doc=doc),
         "activity": [],
         "stats": {
             "files": len({b.file for b in bl}),
@@ -605,6 +615,106 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
             "when": rec.get("ts", ""),
         })
     out.reverse()
+    return out[:limit]
+
+
+# ------------------------------------------------------------- the history
+#
+# The queue is what is waiting and the ticker is what just happened. Neither is
+# a record: both are read off the current state of the log, and the sentences
+# the agent wrote while doing the work lived only in an 80-entry ring that the
+# next drain restart overwrote. So the author could watch it work and could
+# never afterwards read what it had done.
+#
+# This is that record, THREADED BY WORK ITEM: one row per comment, carrying the
+# request, the paragraph, the agent's own lines, and the outcome.
+#
+# It is a JOIN and deliberately not a second store. The ledger holds only the
+# lines and the comment id each belongs to; the request, the block, the state
+# and the reply are read from `comments.jsonl` through the same helpers the
+# queue and the ticker use. A file that carried its own copy of the outcome
+# would be a second answer to a question that already has one.
+#
+# It carries no knowledge of Claude either: the ledger is a file the drain
+# writes and the server only ever reads.
+
+HISTORY_LIMIT = 12
+
+
+def history_view(log: Path, blocks, records, *, anchored: dict | None = None,
+                 root=None, doc: str | None = None,
+                 limit: int = HISTORY_LIMIT) -> list[dict]:
+    """Agentic work, newest item first, each with the lines that produced it.
+
+    `records` are `feed.read_history` records. Every one of them is scoped by
+    the DOCUMENT of the comment it names: the ledger is per manuscript
+    DIRECTORY, because the drain session is, while this payload is per
+    document. A line about the appendix's comment must not appear under the
+    paper, so a record whose comment does not belong to `doc` is dropped, and a
+    record naming no comment at all is session chatter (booting, restarting)
+    which belongs to the live feed rather than to any work item.
+
+    An item appears once something has HAPPENED to it -- a line of its own or a
+    state past `queued`. A comment merely waiting is in the queue; putting it
+    here as well would make the history a second copy of the queue.
+    """
+    chats = {c.id: c for c in chat.read_chats(log, doc=doc)}
+    if not chats:
+        return []
+    present = {b.id for b in blocks}
+    where = _anchor_of(anchored if anchored is not None
+                       else reanchor_chats(chat.by_block(log, doc=doc), blocks,
+                                           tuple(chats.values())),
+                       present)
+    heads = {b.id: blocks_mod.label(b) for b in blocks}
+    wheres = _wheres(blocks, root)
+    starts = state_starts(log)
+
+    lines: dict[str, list[dict]] = {}
+    for rec in records or []:
+        ids = [w for w in (rec.get("work") or []) if w in chats]
+        if not ids:
+            continue
+        for cid in ids:
+            lines.setdefault(cid, []).append({
+                "who": rec.get("who") or "agent",
+                "kind": rec.get("kind") or "note",
+                "text": rec.get("text") or "",
+                "ts": rec.get("ts") or "",
+                # The line could not be told apart between the comments the
+                # session was carrying, so it is shown under each of them and
+                # SAID to be shared. See `supervisor.Attributor`.
+                "shared": len(ids) > 1,
+            })
+
+    replies: dict[str, str] = {}
+    for rec in chat.read_records(log):
+        if rec.get("kind") == "reply" and rec.get("body") and rec.get("id") in chats:
+            replies[rec["id"]] = _one_line(rec["body"])
+
+    out: list[dict] = []
+    for cid, c in chats.items():
+        mine = lines.get(cid, [])
+        if not mine and c.state == "queued":
+            continue
+        block = where.get(cid)
+        since = starts.get(cid) or c.ts
+        out.append({
+            "id": cid,
+            "asked": asked_of(c.body),
+            "body": _one_line(c.body),
+            "block": block,
+            "section": heads.get(block) if block else None,
+            "where": wheres.get(block) if block else None,
+            "state": c.state,
+            "since": since,
+            # When this item last moved, which is what it is ordered and aged
+            # by. A `done` recorded after the last line is the newer fact.
+            "at": max([since] + [l["ts"] for l in mine if l["ts"]]),
+            "reply": replies.get(cid),
+            "lines": mine,
+        })
+    out.sort(key=lambda item: item["at"], reverse=True)
     return out[:limit]
 
 

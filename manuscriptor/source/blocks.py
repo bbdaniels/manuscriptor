@@ -41,7 +41,7 @@ from pathlib import Path
 # of split that rots quietly and then bites mid-revision.
 from manuscriptor.source.flatten import (
     _INCLUDE_RE,
-    _is_commented,
+    is_commented,
     _resolve,
     FlatSource,
 )
@@ -933,7 +933,7 @@ def _root_file(flat: FlatSource, texts: dict[Path, str]) -> Path:
     for f in order:
         text = texts[f]
         for m in _INCLUDE_RE.finditer(text):
-            if _is_commented(text, m.start()):
+            if is_commented(text, m.start()):
                 continue
             hit = _resolve(m.group(2).strip(), including=f, root=flat.root)
             if hit is not None:

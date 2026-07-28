@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -80,23 +81,30 @@ ALLOWED_TOOLS = (
 )
 
 
-def summarize(event: dict) -> list[Entry]:
+def summarize(event: dict, *, work: tuple[str, ...] = ()) -> list[Entry]:
     """A stream event as feed entries. Pure, because this is the part worth testing.
 
     Everything the author would want to see, and nothing they would not: a tool's
     name and a short argument rather than its whole input, a result's first line
     rather than a file. Teammate entries are marked as such, because "which of
     them is doing this" is the first question a stalled figure raises.
+
+    `work` is which comment ids this event belongs to, decided by `Attributor`
+    and passed in rather than worked out here: attribution is stateful (it
+    remembers which teammate was dispatched for which comment) and this function
+    is worth keeping pure.
     """
     kind = event.get("type")
     if kind == "system":
         sub = event.get("subtype")
         if sub == "init":
-            return [Entry(now(), "agent", "note", "session ready")]
+            return [Entry(now(), "agent", "note", "session ready", work)]
         return []
     if kind == "result":
         got = event.get("subtype") or "done"
-        return [Entry(now(), "agent", "result", f"turn finished ({got})")]
+        return [Entry(now(), "agent", "result", f"turn finished ({got})", work)]
+    if kind == "user":
+        return _edits(event, work=work)
 
     message = event.get("message") or {}
     if kind != "assistant" or not isinstance(message.get("content"), list):
@@ -110,11 +118,11 @@ def summarize(event: dict) -> list[Entry]:
         if what == "thinking":
             text = " ".join((part.get("thinking") or "").split())
             if text:
-                out.append(Entry(now(), who, "thinking", text[:400]))
+                out.append(Entry(now(), who, "thinking", text[:400], work))
         elif what == "text":
             text = " ".join((part.get("text") or "").split())
             if text:
-                out.append(Entry(now(), who, "text", text[:400]))
+                out.append(Entry(now(), who, "text", text[:400], work))
         elif what == "tool_use":
             # A tool call is not something the author needs to read. `Bash:
             # manuscriptor reply /paper c-0007 "Fixed at the root in..."` says
@@ -129,8 +137,51 @@ def summarize(event: dict) -> list[Entry]:
             if (part.get("name") or "") == "Agent":
                 arg = _tool_argument(part.get("input") or {})
                 out.append(Entry(now(), who, "note",
-                                 "dispatched a teammate" + (f": {arg}" if arg else "")))
+                                 "dispatched a teammate" + (f": {arg}" if arg else ""),
+                                 work))
     return out
+
+def _edits(event: dict, *, work: tuple[str, ...] = ()) -> list[Entry]:
+    """What a write actually changed, when the stream says so.
+
+    An `Edit` or a `Write` comes back with a `structuredPatch`: the file, and
+    the hunks, whose lines carry their own `+` and `-`. That is a REAL `+N -M`,
+    counted from the diff the tool itself produced, and it is the only exact one
+    available here.
+
+    IT IS ONLY AVAILABLE FOR THE SESSION'S OWN WRITES. `--forward-subagent-text`
+    forwards a teammate's text and thinking and nothing else, so a teammate's
+    edits produce no such event: in dsp-bias's 11,741-line stream, 83 dispatched
+    teammates left 5 structured patches, all of them from the top-level session.
+    The drain skill puts one teammate on each comment, so most work items will
+    have no line counts and MUST NOT be given invented ones -- what is true for
+    those is the outcome, the reply, and the paragraph, which the server reads
+    from the comment log.
+
+    A `note`, deliberately, rather than a new kind: `feed.KINDS` is the single
+    rule for what the panel shows, and "edited main.tex - +6 -4" is a line the
+    author reads in the same place as the rest of the narrative.
+    """
+    result = event.get("tool_use_result")
+    if not isinstance(result, dict):
+        return []
+    hunks = result.get("structuredPatch")
+    if not isinstance(hunks, list) or not hunks:
+        return []
+    added = removed = 0
+    for hunk in hunks:
+        for line in (hunk or {}).get("lines") or []:
+            if not isinstance(line, str) or not line:
+                continue
+            if line[0] == "+":
+                added += 1
+            elif line[0] == "-":
+                removed += 1
+    if not (added or removed):
+        return []
+    name = Path(str(result.get("filePath") or "")).name or "a file"
+    who = "teammate" if event.get("parent_tool_use_id") else "agent"
+    return [Entry(now(), who, "note", f"edited {name} · +{added} −{removed}", work)]
 
 def _tool_argument(data: dict) -> str:
     """The one field of a tool call worth showing."""
@@ -139,6 +190,103 @@ def _tool_argument(data: dict) -> str:
         if isinstance(value, str) and value.strip():
             return " ".join(value.split())[:160]
     return ""
+
+
+# ============================================================ whose work is this
+#
+# A comment id, on every line the author reads. Until this existed the only link
+# between a sentence and the request that caused it was the envelope's `working`
+# list, which is current-state-only and rewritten, so the panel could say what
+# was being worked NOW and could never say what any past line had been about.
+
+CHAT_ID = re.compile(r"\bc-\d{4}\b")
+
+# How many dispatched teammates to remember. A session dispatches on the order
+# of one per comment and is restarted every few hours; this is a ceiling on a
+# dictionary that would otherwise grow for as long as the process lives.
+REMEMBER_DISPATCHES = 512
+
+
+def named_ids(event: dict, among: tuple[str, ...]) -> tuple[str, ...]:
+    """The comment ids this event names, restricted to the ones in flight.
+
+    The drain's own prompts put the id in the text -- `Work these comments now:
+    c-0042`, and the skill's teammate prompt quotes `THE COMMENT (c-0042)`
+    verbatim -- so an event usually says what it is about. Restricted to what is
+    actually in flight because a paragraph may quote an old id, and a line about
+    c-0007 four hours after c-0007 was closed is a line about nothing.
+    """
+    if not among:
+        return ()
+    live = set(among)
+    seen: list[str] = []
+    for hit in CHAT_ID.findall(json.dumps(event, ensure_ascii=False, default=str)):
+        if hit in live and hit not in seen:
+            seen.append(hit)
+    return tuple(seen)
+
+
+class Attributor:
+    """Which work item a stream event belongs to. Stateful, on purpose.
+
+    THE PRECISE SIGNAL IS `parent_tool_use_id`. A dispatched teammate's every
+    event carries the id of the `Agent` tool call that started it, and that call
+    names its comment in the prompt it was given. So the dispatch is remembered
+    and every line the teammate then emits resolves to exactly one comment,
+    which is what makes three comments in flight readable as three threads
+    rather than as one interleaved smear. Checked against a real 11,741-line
+    stream: 5,811 of its events carried a parent that was a known dispatch, and
+    `isSidechain` -- which the teammate check also looks for -- never appeared
+    once.
+
+    WHEN THERE IS NO SUCH SIGNAL, the rules in order:
+
+    * the event names exactly one in-flight comment -> that one;
+    * it names several -> those several;
+    * it names none and one comment is in flight -> that one;
+    * it names none and several are in flight -> ALL OF THEM. The line genuinely
+      cannot be told apart, and the honest record of "the session said this
+      while carrying these three" is the set. The panel shows such a line under
+      each of them, marked as shared. Picking one would be inventing the link
+      the whole ledger exists to make trustworthy;
+    * nothing is in flight -> none. Booting, restarting, idle chatter: it
+      belongs to the session and to no request, and the live feed is where the
+      author reads it.
+    """
+
+    def __init__(self) -> None:
+        self._by_dispatch: dict[str, tuple[str, ...]] = {}
+        self._working: tuple[str, ...] = ()
+
+    def aim(self, ids) -> None:
+        """The comments the drain currently has in flight."""
+        self._working = tuple(ids)
+
+    def stamp(self, event: dict) -> tuple[str, ...]:
+        """The work this event belongs to, learning from it as it goes."""
+        parent = event.get("parent_tool_use_id")
+        if parent and parent in self._by_dispatch:
+            got = self._by_dispatch[parent]
+        else:
+            named = named_ids(event, self._working)
+            got = named or self._working
+        self._learn(event, got)
+        return got
+
+    def _learn(self, event: dict, fallback: tuple[str, ...]) -> None:
+        message = event.get("message") or {}
+        if event.get("type") != "assistant" or not isinstance(message.get("content"), list):
+            return
+        for part in message["content"]:
+            if part.get("type") != "tool_use" or (part.get("name") or "") != "Agent":
+                continue
+            tool_id = part.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            named = named_ids({"input": part.get("input") or {}}, self._working)
+            self._by_dispatch[tool_id] = named or fallback
+            while len(self._by_dispatch) > REMEMBER_DISPATCHES:
+                self._by_dispatch.pop(next(iter(self._by_dispatch)))
 
 
 # ============================================================== what to do next
@@ -230,6 +378,14 @@ class Session:
         self._in_flight = 0
         self._reader: threading.Thread | None = None
         self._lock = threading.Lock()
+        # Per session, because what it remembers is this session's dispatches.
+        # A restart is a new process with new tool call ids, and carrying the
+        # old map across would attribute nothing and could mis-attribute.
+        self.attribution = Attributor()
+
+    def aim(self, ids) -> None:
+        """Tell the stream reader which comments are in flight."""
+        self.attribution.aim(ids)
 
     # -------------------------------------------------------------- the process
 
@@ -347,7 +503,7 @@ class Session:
                 continue
             if self.log is not None:
                 self._append_log(line)
-            entries = summarize(event)
+            entries = summarize(event, work=self.attribution.stamp(event))
             if entries:
                 self.feed.add(entries)
             if event.get("type") == "result":
@@ -422,6 +578,7 @@ class Drain:
         self.session: Session | None = None
         self.restarts = 0
         self._sent: set[str] = set()
+        self._working: tuple[str, ...] = ()
 
     # ------------------------------------------------------------------ pending
 
@@ -443,7 +600,7 @@ class Drain:
         self.session.send(BOOT.format(root=self.root))
         self.feed.set(state="booting")
 
-    def hand_over(self, ids: tuple[str, ...]) -> None:
+    def hand_over(self, ids: tuple[str, ...], pending: tuple[str, ...] = ()) -> None:
         from manuscriptor.server import drain as drain_mod
 
         # Marked working BEFORE the message goes out, because the author is
@@ -453,21 +610,47 @@ class Drain:
                 drain_mod.mark(self.root, cid, "working")
             except Exception:
                 pass
-        self.feed.set(state="working", working=ids)
-        self.feed.note("picked up " + ", ".join(ids))
+        self._sent.update(ids)
+        # Aimed BEFORE the note, so "picked up c-0042" is itself stamped with
+        # the work it announces rather than with whatever came before it.
+        self.aim(pending or ids)
+        self.feed.set(state="working")
+        self.feed.note("picked up " + ", ".join(ids), work=tuple(ids))
         assert self.session is not None
         self.session.send(WORK.format(ids=", ".join(ids), ms=self.manuscriptor, root=self.root))
-        self._sent.update(ids)
+
+    def aim(self, pending: tuple[str, ...]) -> None:
+        """Point the feed and the attribution at what is REALLY in flight.
+
+        Everything handed over that has not yet reached a terminal state -- not
+        the latest batch. `hand_over` used to write its own `ids` straight into
+        the envelope, so handing a second comment to a running session erased
+        the first from `working`: the author watched the pin move off a
+        paragraph still being worked, and every line the session then emitted
+        would have been stamped with the newcomer alone. The set shrinks by
+        itself, because a comment the agent marks `done` leaves `pending`.
+        """
+        live = tuple(c for c in pending if c in self._sent)
+        if live != self._working:
+            self._working = live
+            self.feed.set(working=live)
+        if self.session is not None:
+            self.session.aim(live)
 
     def restart(self, why: str) -> None:
         self.restarts += 1
-        self.feed.note(f"restarting the session: {why}")
+        # Stamped with what was in flight: "the session was restarted while
+        # working this" is part of that work item's history, and reading it
+        # under the item is how the author learns why an answer arrived twice.
+        self.feed.note(f"restarting the session: {why}", work=self._working)
         if self.session is not None:
             self.session.stop()
         self.session = self.new_session()
         self.session.start()
         self.boot()
         self._sent.clear()
+        self._working = ()
+        self.feed.set(working=())
 
     def new_session(self) -> Session:
         return Session(
@@ -485,14 +668,20 @@ class Drain:
         a filter anywhere else would let a capped session look empty)."""
         s = self.session
         assert s is not None
-        d = decide(pending=self.pending_ids(), in_flight=s.in_flight,
+        pending = self.pending_ids()
+        d = decide(pending=pending, in_flight=s.in_flight,
                    silent_for=s.silent_for, stall_after=self.stall_after,
                    alive=s.alive, sent=frozenset(self._sent),
                    max_in_flight=self.max_in_flight)
         if d.do == "restart":
             self.restart(d.why)
         elif d.do == "send":
-            self.hand_over(d.ids)
+            self.hand_over(d.ids, pending)
+        else:
+            # Every pass, not only on a send: this is what retires a comment
+            # from `working` when the agent marks it done, and the pending list
+            # was read a line ago anyway.
+            self.aim(pending)
         return d
 
     def run(self, stop: threading.Event | None = None) -> None:

@@ -978,6 +978,83 @@ def test_the_feed_reverses_arrival_rather_than_sorting_its_timestamps():
     assert node_call("feedNewestFirst", None) == []
 
 
+# ----------------------------------------------------- the history, as a row
+#
+# The live feed answers "what is it doing"; this answers "what has it done",
+# threaded by the request that caused the work.
+
+HIST = [{
+    "id": "c-0042", "asked": "tighten this claim", "body": "tighten this claim",
+    "block": "b-3f2a", "section": "Methods ¶3", "where": "main.tex:212",
+    "state": "done", "since": "2026-07-28T10:00:00+00:00",
+    "at": "2026-07-28T10:04:00+00:00", "reply": "Softened it.",
+    "lines": [
+        {"who": "agent", "kind": "note", "text": "read analysis/03_extract.py",
+         "ts": "2026-07-28T10:01:00+00:00", "shared": False},
+        {"who": "teammate", "kind": "text", "text": "the negation prefix was never checked here",
+         "ts": "2026-07-28T10:02:00+00:00", "shared": False},
+    ],
+}]
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_history_row_says_what_was_asked_where_it_landed_and_how_it_ended():
+    html = node_call("historyHTML", HIST, {})
+    assert "c-0042" in html
+    assert "tighten this claim" in html, "the request is what he is looking for"
+    assert "Methods ¶3" in html, "and where it landed"
+    assert "done" in html and "✓" in html, "and how it ended"
+    assert "the negation prefix was never checked here" in html, "and what it said"
+    assert "teammate" in html, "which of them said it"
+    assert "Softened it." in html, "the reply is the answer when there was no edit"
+    assert 'data-act="hist:goto:b-3f2a"' in html, "a row is a way to get to the paragraph"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_row_with_no_block_left_is_still_a_row():
+    """A comment whose paragraph is gone still has a history. Naming a block
+    the page no longer has would be a dead control."""
+    gone = [dict(HIST[0], block=None, section=None, where=None)]
+    html = node_call("historyHTML", gone, {})
+    assert "c-0042" in html and "hist:goto" not in html
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_shared_line_is_marked_as_shared():
+    """The session was carrying several comments and this line could not be
+    told apart between them. It is shown under each and SAID to be shared."""
+    shared = [dict(HIST[0], lines=[dict(HIST[0]["lines"][0], shared=True)])]
+    html = node_call("historyHTML", shared, {})
+    assert "shared" in html and "several comments" in html
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_the_newest_row_opens_and_the_rest_are_folded():
+    """It is a history, so it is read folded -- except the one the author is
+    most likely to want, which is the work that just happened."""
+    two = [HIST[0], dict(HIST[0], id="c-0041")]
+    html = node_call("historyHTML", two, {})
+    first, second = html.split('data-hist="c-0041"')
+    assert " open>" in first, "the newest work must not have to be hunted for"
+    assert " open>" not in second
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_a_row_the_author_opened_stays_open_through_a_redraw():
+    """A line arriving in another row must not fold the one he is reading."""
+    two = [HIST[0], dict(HIST[0], id="c-0041")]
+    html = node_call("historyHTML", two, {"c-0042": False, "c-0041": True})
+    first, second = html.split('data-hist="c-0041"')
+    assert " open>" not in first, "he closed this one"
+    assert " open>" in second, "and opened this one"
+
+
+@pytest.mark.skipif(not NODE, reason="node not installed")
+def test_an_empty_history_says_what_will_appear_there():
+    html = node_call("historyHTML", [], {})
+    assert "Nothing worked yet" in html and "restart" in html
+
+
 @pytest.mark.skipif(not NODE, reason="node not installed")
 @pytest.mark.parametrize(
     "block,want",

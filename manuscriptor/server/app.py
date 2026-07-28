@@ -73,6 +73,10 @@ class Session:
         # The queue as it was last pushed, reduced to its identity so a repaint
         # is triggered by work moving and not by a second passing.
         self.seen_queue: list[tuple] = []
+        # The threaded history as last pushed. Compared whole rather than by an
+        # identity tuple: a work item changes by GAINING A LINE, which no
+        # summary of its ids and states can see.
+        self.seen_history: list[dict] | None = None
         # What the clients have been told about the state derived from the build
         # rather than from any one block: the evidence verdicts, and the header
         # counts. Seeded below from the first build, because a page is BORN
@@ -92,6 +96,10 @@ class Session:
         self.notices: list[str] = []
         self.rebuild()
         self.seen_derived = self._derived()
+        # A page is BORN holding the history, the same way it is born holding
+        # the counts: pushing it again on the first watcher event would repaint
+        # something already correct.
+        self.seen_history = self.blob.get("history")
 
     def _default_current(self, main: str | None) -> tree_mod.Document | None:
         """Which document to open on. `None` means "no document was discovered".
@@ -337,6 +345,47 @@ class Session:
                 return
         await self.broadcast({"type": "assets", "v": chat.now()})
 
+    @property
+    def history_file(self) -> Path:
+        """The drain's append-only ledger, which this session reads and never
+        writes. Beside `feed_file` and derived the same way, so a document
+        switch moves both together."""
+        from manuscriptor.server import feed as feed_mod
+
+        return feed_mod.history_path(paths.agent_dir(self.root))
+
+    def _history(self) -> list[dict]:
+        """The threaded history for the document being served.
+
+        Both halves of the join are re-read here: the ledger, because the drain
+        appends to it as it works, and the comment log, because that is where
+        the outcome is. Scoped by `doc` -- the ledger is per directory since the
+        drain session is, and this payload is per document.
+        """
+        from manuscriptor.server import feed as feed_mod
+
+        if self.build is None:
+            return []
+        return build_mod.history_view(
+            self.log, self.build.blocks, feed_mod.read_history(self.history_file),
+            root=self.root, doc=self.doc)
+
+    async def push_history(self) -> None:
+        """Tell the clients what the agent has done, when it has changed.
+
+        Called from BOTH watchers, because the row is a join of two files that
+        move independently: the drain appends a line to the ledger, and the
+        outcome that closes the row is a state record in the comment log.
+        """
+        if self.build is None:
+            return
+        fresh = self._history()
+        self.build.blob["history"] = fresh
+        if fresh == self.seen_history:
+            return
+        self.seen_history = fresh
+        await self.broadcast({"type": "history", "history": fresh})
+
     async def on_feed_change(self) -> None:
         """Push what the drain is doing. The file is written by the drain; this
         only reads it, which is the whole of the server's relationship with
@@ -347,10 +396,14 @@ class Session:
         if self.build is None:
             return
         fresh = feed_mod.read_feed(self.feed_file)
-        if fresh == self.build.blob.get("agent_feed"):
-            return
-        self.build.blob["agent_feed"] = fresh
-        await self.broadcast({"type": "feed", "feed": fresh})
+        if fresh != self.build.blob.get("agent_feed"):
+            self.build.blob["agent_feed"] = fresh
+            await self.broadcast({"type": "feed", "feed": fresh})
+        # After the live frame and unconditionally: the ledger is appended to on
+        # every entry while the ring is COALESCED, so the two files move at
+        # different moments and an unchanged envelope does not mean an unchanged
+        # history. `push_history` is what decides whether anything goes out.
+        await self.push_history()
 
     async def on_log_change(self) -> None:
         """Tell the page what the agent did.
@@ -441,6 +494,11 @@ class Session:
                 doc=self.doc
             )
         self.seen_chats = current
+        # The outcome half of a history row lives in this log, so a `done`
+        # appended here is what turns a row from working into finished. Without
+        # this the row would carry the agent's lines and then sit on `working`
+        # until something else happened to make the feed move.
+        await self.push_history()
 
     async def on_edit(self, block_id: str, source: str) -> dict:
         """Splice one block back to disk. The watcher handles the redraw.
@@ -1202,6 +1260,14 @@ def serve(
         stop_feed = watch_file(
             session.feed_file,
             lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop))
+        # And the ledger by its own name. The two files move at different
+        # moments -- the ring is coalesced to at most one write every 0.4s while
+        # every entry is appended to the ledger at once -- so watching only the
+        # feed would leave the last lines of a quiet turn unpushed until
+        # something else happened to shift the envelope.
+        stop_history = watch_file(
+            session.history_file,
+            lambda: asyncio.run_coroutine_threadsafe(session.push_history(), loop))
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "
@@ -1220,6 +1286,7 @@ def serve(
         finally:
             stop()
             stop_feed()
+            stop_history()
             await runner.cleanup()
 
     try:

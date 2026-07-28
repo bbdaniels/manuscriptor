@@ -1,13 +1,29 @@
-"""The live agent feed, as a file.
+"""The live agent feed, as a file. And beside it, the history.
 
-The drain writes it and the server reads it, which is the whole of their
-relationship. It lives here rather than beside the session that produces it so
-that the server can read it without importing anything that knows what Claude
-is: `server/supervisor.py` spawns a model, and nothing in the server may.
+The drain writes both and the server reads them, which is the whole of their
+relationship. They live here rather than beside the session that produces them
+so that the server can read them without importing anything that knows what
+Claude is: `server/supervisor.py` spawns a model, and nothing in the server may.
 
-Rewritten rather than appended, because it holds what is happening NOW and has
-exactly one writer. The durable record of what happened is `comments.jsonl`,
-which is append-only for the opposite reason: two processes write that one.
+TWO FILES, because there are two questions and they have opposite shapes.
+
+`agent-progress.json` answers "what is happening NOW". It is rewritten rather
+than appended, it holds a short ring, and it has exactly one writer.
+
+`agent-history.jsonl` answers "what has it done". It is APPEND ONLY, like
+`comments.jsonl` and for a related reason: it must survive the writer. The ring
+does not. `Feed` is constructed with `entries=[]` and `Supervisor.run` writes
+`booting` into it before anything else, so every drain restart -- roughly one
+per twenty wakes -- erased the whole record of the session before it. The
+complete stream was always on disk in `agent-stream.jsonl` and nothing has ever
+read it back: it is 31MB of tool calls and permission events on a real
+manuscript, which is a debugging artifact and not a history.
+
+So the entries the author would actually read are appended here as they are
+made, each STAMPED WITH THE COMMENT IT BELONGS TO, and the server threads them
+by work item against `comments.jsonl`. Nothing about the outcome is copied into
+this file: the outcome is a state record in the comment log, and one fact with
+two homes is one fact that will disagree with itself.
 """
 from __future__ import annotations
 
@@ -20,29 +36,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 PROGRESS_NAME = "agent-progress.json"
+HISTORY_NAME = "agent-history.jsonl"
 
 # How many feed entries to keep. The live feed answers "what is it doing", which
-# is a recent question; the durable record of what happened is the comment log.
+# is a recent question; what happened is the history beside it.
 KEEP = 80
 
-# Seconds of silence, mid-turn, before the session is treated as wedged. Long
-# enough for a slow model call or a big file read, short enough that an author
-# waiting on a figure is not left guessing for a quarter of an hour.
-STALL_AFTER = 150.0
-
-# The tools this work legitimately needs. Named rather than bypassed: a print
-# session cannot ask for permission, so anything it might reach for and cannot
-# have becomes a hang, and a blanket bypass on the author's own repository is a
-# different kind of bad afternoon.
-ALLOWED_TOOLS = (
-    "Read", "Glob", "Grep", "Edit", "Write", "NotebookEdit", "TodoWrite",
-    "Agent", "Skill", "WebFetch", "WebSearch",
-    "Bash(Rscript:*)", "Bash(R:*)", "Bash(python3:*)", "Bash(python:*)",
-    "Bash(latexmk:*)", "Bash(pdflatex:*)", "Bash(xelatex:*)", "Bash(bibtex:*)",
-    "Bash(stata-mp:*)", "Bash(stata:*)",
-    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
-    "Bash(ls:*)", "Bash(cat:*)", "Bash(head:*)", "Bash(tail:*)", "Bash(wc:*)",
-)
+# HOW THE HISTORY IS BOUNDED, deliberately, because an append-only file on a
+# manuscript drained for months has no other limit.
+#
+# The writer rolls the file at `ROTATE_AT` bytes and keeps exactly ONE previous
+# generation, so the ledger costs at most twice that on disk and the oldest
+# work ages out rather than accumulating. The reader takes the newest
+# `READ_BACK` records across both generations, so a panel read is bounded
+# whatever the file did. Two megabytes is several days of heavy draining: an
+# entry is clipped to 400 characters, and dsp-bias's busiest recorded run --
+# 71 turns, 83 dispatched teammates -- would have written about a fifth of it.
+ROTATE_AT = 2_000_000
+READ_BACK = 4000
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -57,15 +68,28 @@ KINDS = ("thinking", "text", "result", "note")
 
 @dataclass
 class Entry:
-    """One line of the live feed."""
+    """One line of the live feed, and one line of the history.
+
+    `work` is the comment ids this line belongs to. It is the whole of the link
+    between a sentence and the request that caused it: until it existed the only
+    work-item linkage anywhere was the envelope's `working` list, which is
+    current-state-only and rewritten, so a line read a minute later belonged to
+    nothing. Empty means the line belongs to the session rather than to any
+    request -- booting, restarting, idle chatter -- and MORE THAN ONE means the
+    session was carrying several requests at once and this line could not be
+    told apart between them. Both are recorded as what they are; neither is
+    guessed into a single id.
+    """
 
     ts: str
     who: str          # "agent" | "teammate"
     kind: str         # one of KINDS
     text: str
+    work: tuple[str, ...] = ()
 
     def as_dict(self) -> dict:
-        return {"ts": self.ts, "who": self.who, "kind": self.kind, "text": self.text}
+        return {"ts": self.ts, "who": self.who, "kind": self.kind, "text": self.text,
+                "work": list(self.work)}
 
 def progress_path(agent_dir: Path | str) -> Path:
     """The feed file, given the directory that holds it: `paths.agent_dir`.
@@ -75,6 +99,94 @@ def progress_path(agent_dir: Path | str) -> Path:
     passed `build/manuscriptor`. Neither is written, and neither failed loudly.
     """
     return Path(agent_dir) / PROGRESS_NAME
+
+def history_path(agent_dir: Path | str) -> Path:
+    """The append-only ledger, given the directory that holds it.
+
+    Beside the live feed in `paths.agent_dir`, which is durable and private:
+    NOT under `cache/`, the one tier `manuscriptor clean` may remove. A history
+    a routine cleanup deletes is not a history.
+    """
+    return Path(agent_dir) / HISTORY_NAME
+
+def rolled_path(path: Path | str) -> Path:
+    """The one previous generation of a rolled ledger."""
+    p = Path(path)
+    return p.with_name(p.name + ".1")
+
+@dataclass
+class Ledger:
+    """The history, as a file. One record per line, appended, never rewritten.
+
+    Same discipline as `comments.jsonl` and for the same reason: a state change
+    is a new record. Nothing here is ever edited, so no reader can be handed
+    half of a rewrite, and a crash mid-write costs the last line rather than the
+    file. A malformed line is skipped on read, never fatal.
+    """
+
+    path: Path
+    rotate_at: int = ROTATE_AT
+
+    def append(self, entries: list[Entry]) -> None:
+        if not entries:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._roll_if_full()
+            with open(self.path, "a", encoding="utf-8") as fh:
+                for e in entries:
+                    fh.write(json.dumps(e.as_dict(), ensure_ascii=False) + "\n")
+        except OSError:
+            pass          # a history that cannot be written must not stop the work
+
+    def _roll_if_full(self) -> None:
+        """Start a new file once this one is big, keeping one generation.
+
+        `os.replace` rather than a copy: it is atomic, so a reader either sees
+        the old file or the new one and never a half-copied one, and it costs
+        nothing on a file of this size.
+        """
+        try:
+            if self.path.stat().st_size < self.rotate_at:
+                return
+        except OSError:
+            return
+        try:
+            os.replace(self.path, rolled_path(self.path))
+        except OSError:
+            pass
+
+def read_history(path: Path | str, *, limit: int = READ_BACK) -> list[dict]:
+    """The newest `limit` history records, oldest first, across both generations.
+
+    Oldest first because a work item's lines read as a narrative -- what it
+    looked at, what it concluded, what it changed. The panel puts the ITEMS
+    newest first; the sentences inside one item run forwards.
+    """
+    out: list[dict] = []
+    for p in (rolled_path(path), Path(path)):
+        try:
+            text = Path(p).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict) or rec.get("kind") not in KINDS:
+                continue
+            out.append({
+                "ts": str(rec.get("ts") or ""),
+                "who": "teammate" if rec.get("who") == "teammate" else "agent",
+                "kind": str(rec["kind"]),
+                "text": str(rec.get("text") or ""),
+                "work": [str(w) for w in (rec.get("work") or []) if isinstance(w, str)],
+            })
+    return out[-limit:] if limit else out
 
 @dataclass
 class Feed:
@@ -92,11 +204,25 @@ class Feed:
     working: tuple[str, ...] = ()
     entries: list[Entry] = field(default_factory=list)
     every: float = 0.4
+    # The history beside the ring. DERIVED FROM `path` rather than passed in,
+    # so it cannot be forgotten: a Feed built without one would look and behave
+    # exactly like this one and quietly keep no record at all.
+    history: "Ledger | None" = None
     _last_write: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
+    def __post_init__(self) -> None:
+        if self.history is None:
+            self.history = Ledger(history_path(Path(self.path).parent))
+
     def add(self, entries: list[Entry], *, force: bool = False) -> None:
         with self._lock:
+            # The ledger FIRST, and unconditionally. The ring is coalesced and
+            # trimmed, which is right for a status and fatal for a record: an
+            # entry that arrived inside the write interval, or the eighty-first
+            # of a busy turn, would exist nowhere.
+            if self.history is not None:
+                self.history.append(entries)
             self.entries.extend(entries)
             del self.entries[:-KEEP]
             due = force or (time.monotonic() - self._last_write) >= self.every
@@ -111,8 +237,8 @@ class Feed:
                 self.working = working
             self._write_locked()
 
-    def note(self, text: str) -> None:
-        self.add([Entry(now(), "agent", "note", text)], force=True)
+    def note(self, text: str, *, work: tuple[str, ...] = ()) -> None:
+        self.add([Entry(now(), "agent", "note", text, tuple(work))], force=True)
 
     def flush(self) -> None:
         with self._lock:

@@ -496,6 +496,48 @@ def test_the_log_beside_a_figure_is_not_treated_as_log_only():
     assert kind == "assets" and assets is True
 
 
+def test_the_tree_watcher_ignores_the_drains_own_logs(tmp_path):
+    """Our own output is not the author's manuscript.
+
+    `.manuscriptor/agent/` holds two `.jsonl` files the drain appends to as it
+    works: the raw stream (a line per event, thousands per session) and the
+    history. Both are `.jsonl`, neither is named `comments.jsonl`, and the tree
+    watcher takes every `.jsonl` under the served directory -- so each one of
+    those appends classified as SOURCE and re-rendered the whole manuscript
+    through pandoc. The module already holds the rule ("never redraw because of
+    our own output"); its list of directories still named the pre-2026-07-27
+    `build/` and had never been told where we moved.
+
+    The comment log is the deliberate exception: it lives in the same hidden
+    directory and IS how the page learns the agent picked something up.
+    """
+    from manuscriptor.server import watch as watch_mod
+
+    seen: list[set[Path]] = []
+    # A debounce long enough that nothing fires while the test is looking:
+    # `_fire` empties `pending`, so a zero debounce would clear the evidence.
+    handler = watch_mod._Handler(seen.append, 30.0)
+
+    class E:
+        is_directory = False
+
+        def __init__(self, p):
+            self.src_path = str(p)
+
+    agent = paths.agent_dir(tmp_path)
+    handler.on_any_event(E(agent / "agent-stream.jsonl"))
+    handler.on_any_event(E(agent / "agent-history.jsonl"))
+    assert handler.pending == set(), (
+        "the drain's own logs must never reach the classifier: they are "
+        f"neither source nor the comment log, and these arrived as {handler.pending}"
+    )
+
+    handler.on_any_event(E(paths.comments(tmp_path)))
+    assert handler.pending == {paths.comments(tmp_path)}, (
+        "the comment log is the one file in there the page must hear about"
+    )
+
+
 # ------------------------------------------- saving the same block repeatedly
 
 

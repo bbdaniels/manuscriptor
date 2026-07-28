@@ -592,3 +592,108 @@ def test_the_surviving_editor_still_saves_what_is_typed_into_it(tmp_path):
     ], f"the surviving editor stopped saving: {edits!r}"
     assert edits[-1]["block"] == out["trail"][-1]["block"], \
         "it saved under an id the build no longer has"
+
+
+# ------------------------------------------------------------- the history card
+#
+# The panel had one card and it answered one question: what is the agent doing
+# NOW. The record of what it had done lived in an 80-entry ring that the drain's
+# next restart -- roughly one every twenty wakes -- rewrote from empty. So the
+# author could watch it work and could never afterwards read what it had done.
+
+
+def drained(session, tmp_path: Path, lines, *, then=None) -> list[dict]:
+    """The drain works a comment, and the server broadcasts what it makes of it.
+
+    The lines go through `Feed`, which is what the drain writes with, and the
+    frames come out of `Session.broadcast`. Nothing here types a frame.
+    """
+    from manuscriptor.server import feed as feed_mod
+
+    feed = feed_mod.Feed(path=feed_mod.progress_path(paths.agent_dir(tmp_path)), every=0.0)
+
+    async def go():
+        with pagedriver.record(session) as sent:
+            await session.on_log_change()
+            drain.mark(tmp_path, "c-0001", "working")
+            await session.on_log_change()
+            feed.add([feed_mod.Entry(feed_mod.now(), who, kind, text, ("c-0001",))
+                      for who, kind, text in lines], force=True)
+            await session.on_feed_change()
+            if then:
+                then()
+                await session.on_log_change()
+        return sent
+    return asyncio.run(go())
+
+
+def test_the_page_learns_what_the_agent_did_without_a_reload(tmp_path):
+    """The whole live path for the history: ledger -> server -> socket -> DOM."""
+    session, page = commented(tmp_path)
+    frames = drained(session, tmp_path, [
+        ("agent", "note", "read analysis/03_extract.py"),
+        ("teammate", "text", "the negation prefix was never checked here"),
+        ("agent", "note", "edited main.tex · +6 −4"),
+    ], then=lambda: drain.mark(tmp_path, "c-0001", "done"))
+
+    assert [f["type"] for f in frames if f["type"] == "history"], \
+        "the server never told the page anything about the work it did"
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path)
+
+    rows = {r["id"]: r for r in out["history"]}
+    assert "c-0001" in rows, f"no row for the comment that was worked: {out['history']!r}"
+    row = rows["c-0001"]
+    assert "Soften it" in row["summary"], "the row must say what was ASKED"
+    assert "done" in row["summary"], "and how it ended"
+    assert row["lines"] == [
+        "read analysis/03_extract.py",
+        "the negation prefix was never checked here",
+        "edited main.tex · +6 −4",
+    ], row["lines"]
+
+
+def test_the_live_history_row_matches_the_one_the_seed_would_have_drawn(tmp_path):
+    """The two paths must agree, because the author cannot tell which he is
+    looking at: a reload turns one into the other. This is the shape of every
+    live-path bug this file exists for."""
+    session, page = commented(tmp_path)
+    frames = drained(session, tmp_path, [("agent", "text", "Softening the claim.")])
+    live = pagedriver.drive(page, frames, tmp_path=tmp_path)
+
+    reloaded = pagedriver.drive(pagedriver.page(session), [], tmp_path=tmp_path)
+    assert [r["id"] for r in live["history"]] == [r["id"] for r in reloaded["history"]]
+    assert [r["lines"] for r in live["history"]] == [r["lines"] for r in reloaded["history"]], (
+        "the pushed row and the reloaded row disagree"
+    )
+
+
+def test_the_history_survives_a_restart_of_the_server(tmp_path):
+    """A new `Session` over the same directory: the page it serves must open on
+    the work that was done before it existed."""
+    session, _ = commented(tmp_path)
+    drained(session, tmp_path, [("agent", "text", "Softening the claim.")])
+
+    fresh = app.Session(tmp_path)
+    out = pagedriver.drive(pagedriver.page(fresh), [], tmp_path=tmp_path)
+    rows = {r["id"]: r for r in out["history"]}
+    assert rows["c-0001"]["lines"] == ["Softening the claim."], out["history"]
+
+
+def test_a_row_the_author_opened_survives_the_next_line_arriving(tmp_path):
+    """The card is swapped whole on every frame. A `<details>` folds itself when
+    its markup is replaced, so the row he is reading would close under him every
+    time the agent said anything."""
+    session, page = commented(tmp_path)
+    first = drained(session, tmp_path, [("agent", "text", "Reading the script.")])
+    more = drained(session, tmp_path, [("agent", "text", "Now rewriting it.")])
+
+    out = pagedriver.drive(page, first + more, tmp_path=tmp_path, steps=[
+        "frames:%d" % len(first), "fold:c-0001", "frames",
+    ])
+    assert out["history"], "no row to fold in the first place"
+    assert out["history"][0]["open"] is False, (
+        "a line arriving in the row opened it back up under him"
+    )
+    assert any("Now rewriting it." in l for l in out["history"][0]["lines"]), (
+        "and the line that arrived while it was folded never reached it"
+    )

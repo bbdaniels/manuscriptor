@@ -134,8 +134,26 @@ function fire(el, type) {
 
 /* One thing the author does. Kept to a vocabulary rather than to arbitrary
  * script, so a test states an action and cannot quietly reach past the page. */
+/* How many of `frames` have been delivered. A test that has to interleave the
+ * author with the server -- he folds a row, then another line arrives -- needs
+ * to say WHERE in the stream he acted, and `frames:<n>` is that. It still
+ * cannot invent a frame: it only chooses how many of the server's own to hand
+ * over next. */
+let delivered = 0;
+
 function step(V, name) {
-  if (name === 'frames') { frames.forEach((f) => { V.handle(f); }); return; }
+  if (name === 'frames') {
+    frames.slice(delivered).forEach((f) => { V.handle(f); });
+    delivered = frames.length;
+    return;
+  }
+  if (name.startsWith('frames:')) {
+    const n = Number(name.slice('frames:'.length));
+    if (!(n >= 0)) throw new Error('frames:<n> wants a count, got ' + name);
+    frames.slice(delivered, delivered + n).forEach((f) => { V.handle(f); });
+    delivered = Math.min(frames.length, delivered + n);
+    return;
+  }
 
   if (name.startsWith('select:')) {
     const id = name.slice('select:'.length);
@@ -155,6 +173,24 @@ function step(V, name) {
     const btn = document.querySelector('[data-act="' + name.slice('act:'.length) + '"]');
     if (!btn) throw new Error('no control for ' + name);
     btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    return;
+  }
+  /* Fold or unfold a history row, the way the author does. jsdom implements
+   * `<details>` toggling on a click of the summary, so this is the real
+   * gesture and not a set of `.open`. */
+  if (name.startsWith('fold:')) {
+    const row = document.querySelector('details[data-hist="' + name.slice('fold:'.length) + '"]');
+    if (!row) throw new Error('no history row ' + name);
+    const sum = row.querySelector('summary');
+    sum.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    if (row.open) row.open = false;      // jsdom does not always toggle on click
+    return;
+  }
+  if (name.startsWith('unfold:')) {
+    const row = document.querySelector('details[data-hist="' + name.slice('unfold:'.length) + '"]');
+    if (!row) throw new Error('no history row ' + name);
+    row.querySelector('summary').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    if (!row.open) row.open = true;
     return;
   }
   if (name === 'focus') { const el = editorNow(); if (el) el.focus(); return; }
@@ -234,6 +270,21 @@ function report(V, trail) {
     };
   });
 
+  /* The history as the AUTHOR reads it: the rows in the panel, whether each is
+   * open, and the lines inside it. Read off the DOM rather than off state, for
+   * the same reason as the ticker -- a field that reaches `S.ms.history` and
+   * never reaches a row has fixed nothing. */
+  const history = Array.from(document.querySelectorAll('#ibody details[data-hist]')).map((row) => {
+    const sum = row.querySelector('summary');
+    return {
+      id: row.getAttribute('data-hist'),
+      open: row.open,
+      summary: sum ? sum.textContent : '',
+      title: attr(sum, 'title'),
+      lines: Array.from(row.querySelectorAll('.fe span')).map((s) => s.textContent),
+    };
+  });
+
   const cites = Array.from(document.querySelectorAll('#doc-inner .citation[data-cites]')).map((c) => ({
     keys: c.getAttribute('data-cites'),
     cls: c.className,
@@ -261,6 +312,7 @@ function report(V, trail) {
     ticker: state.ticker,
     queue: state.queue,
     tickerLines,
+    history,
     meta: text('#toolbar-meta'),
     agentTitle: attr(document.querySelector('#agent-status'), 'title'),
     docHtml: document.querySelector('#doc-inner').innerHTML,

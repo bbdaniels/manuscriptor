@@ -67,6 +67,195 @@ def test_stata_and_python_producers_count_too(tmp_path):
     assert a.resolve() in found and b.resolve() in found
 
 
+# --------------------------------- reading a .tex is not producing it
+
+# dsp-bias's `paper/make_word_submission.py`, reduced to the four lines that
+# matter. It READS main.tex and WRITES main_anonymous.tex, and the first cut of
+# `scan` claimed both, because it looked for the filename and not for what was
+# being done to it.
+BLINDER = '''\
+import os
+PAPER = os.path.dirname(__file__)
+
+
+def main():
+    src = os.path.join(PAPER, "main.tex")
+    anon_tex = os.path.join(PAPER, "main_anonymous.tex")
+    anon = anonymize(open(src).read())
+    if leaked:
+        sys.exit("unterminated \\\\author{} block in main.tex")
+    open(anon_tex, "w").write(anon)
+'''
+
+
+def test_a_script_that_only_reads_the_manuscript_does_not_own_it(tmp_path):
+    """The bug. A Word converter reads main.tex; that is not authorship.
+
+    Claiming it marks every block in the manuscript generated, which is the
+    "74% uneditable" failure the invariants name, and it is invisible only for
+    as long as the root file has a special case rescuing it."""
+    w(tmp_path, "paper/make_word_submission.py", BLINDER)
+    main = w(tmp_path, "paper/main.tex", PROSE)
+    assert main.resolve() not in producers.scan(tmp_path / "paper")
+
+
+def test_a_script_that_writes_through_a_variable_still_owns_the_output(tmp_path):
+    """The other half, and why the fix cannot just be "ignore top-level .tex".
+
+    `main_anonymous.tex` is a literal bound to a name and written three lines
+    later. It IS generated -- editing it loses the edit at the next run -- so
+    the write context has to be found through the binding, not only on the line
+    the filename appears on."""
+    s = w(tmp_path, "paper/make_word_submission.py", BLINDER)
+    anon = w(tmp_path, "paper/main_anonymous.tex", PROSE)
+    assert producers.scan(tmp_path / "paper").get(anon.resolve()) == s.resolve()
+
+
+def test_a_filename_inside_a_message_is_not_a_producer_match(tmp_path):
+    """`sys.exit("...block in main.tex")` names the file in prose, not in code."""
+    w(tmp_path, "code/check.py", 'sys.exit("no author block in main.tex")\n')
+    main = w(tmp_path, "latex/main.tex", PROSE)
+    assert main.resolve() not in producers.scan(tmp_path / "latex")
+
+
+def test_a_progress_line_announcing_a_path_does_not_claim_it(tmp_path):
+    """The hard version of the same rule: the message sits inside a statement
+    that really does write, and really does end in a real basename. Only the
+    space in front of it says it is prose."""
+    w(tmp_path, "R/99_log.R",
+      'cat("wrote tables/tableA1.tex", file = logfile, append = TRUE)\n')
+    t = w(tmp_path, "latex/tables/tableA1.tex", TABLE)
+    assert t.resolve() not in producers.scan(tmp_path / "latex")
+
+
+def test_a_write_verb_that_is_only_in_a_comment_writes_nothing(tmp_path):
+    """The literal is live code; the only verb beside it is commented out."""
+    w(tmp_path, "R/20_attrition.R",
+      'out_path <- file.path(d, "tab_x.tex")  # writeLines() happens in 21_export.R\n')
+    t = w(tmp_path, "manuscript/exhibits/tab_x.tex", TABLE)
+    assert t.resolve() not in producers.scan(tmp_path / "manuscript")
+
+
+def test_r_reading_a_section_is_not_r_writing_it(tmp_path):
+    w(tmp_path, "code/lint.R", 'txt <- readLines("intro.tex")\ncheck(txt)\n')
+    intro = w(tmp_path, "latex/sections/intro.tex", PROSE)
+    assert intro.resolve() not in producers.scan(tmp_path / "latex")
+
+
+def test_r_writelines_owns_its_output(tmp_path):
+    s = w(tmp_path, "code/mk.R", 'out <- "t_main.tex"\nwriteLines(rows, out)\n')
+    t = w(tmp_path, "latex/tables/t_main.tex", TABLE)
+    assert producers.scan(tmp_path / "latex").get(t.resolve()) == s.resolve()
+
+
+def test_stata_reading_is_not_stata_writing(tmp_path):
+    w(tmp_path, "do/lint.do", 'file open h using "appendix.tex", read\n')
+    a = w(tmp_path, "latex/appendix.tex", PROSE)
+    assert a.resolve() not in producers.scan(tmp_path / "latex")
+
+
+def test_stata_using_clauses_still_own_their_outputs(tmp_path):
+    s = w(tmp_path, "do/build.do",
+          'esttab using "tabA.tex", replace\n'
+          'file open h using "tabB.tex", write replace\n'
+          'export delimited using "tabC.tex", replace\n')
+    for name in ("tabA.tex", "tabB.tex", "tabC.tex"):
+        w(tmp_path, f"latex/tables/{name}", TABLE)
+    found = producers.scan(tmp_path / "latex")
+    for name in ("tabA.tex", "tabB.tex", "tabC.tex"):
+        t = (tmp_path / "latex" / "tables" / name).resolve()
+        assert found.get(t) == s.resolve(), name
+
+
+def test_a_scripts_own_wrapper_around_a_write_is_still_a_write(tmp_path):
+    """qutub-india's `20_attrition.R` names thirteen exhibits through a helper
+    it defines itself, and beside no built-in verb at all."""
+    s = w(tmp_path, "R/20_attrition.R",
+          'exp_frag <- function(fname, value) {\n'
+          '  write_frag(value, file.path(exh_dir, fname))\n'
+          '}\n'
+          'exp_frag("attr_n_base.tex", as.character(B_C + B_T))\n')
+    t = w(tmp_path, "manuscript/exhibits/attr_n_base.tex", "1204")
+    assert producers.scan(tmp_path / "manuscript").get(t.resolve()) == s.resolve()
+
+
+def test_a_helper_that_only_reads_does_not_lend_its_callers_a_write(tmp_path):
+    """The same hop must not run in reverse: `20_attrition.R` also reads two
+    fragments another script owns, to check they still agree."""
+    # The helper must NOT be named `read...`, or the call site reads as a read
+    # on its own and the hop is never asked the question.
+    w(tmp_path, "R/20_attrition.R",
+      'frag_value <- function(path) {\n'
+      '  as.numeric(readLines(path)[1])\n'
+      '}\n'
+      'v <- frag_value(file.path(exh_dir, "robust_ipw_b3.tex"))\n')
+    t = w(tmp_path, "manuscript/exhibits/robust_ipw_b3.tex", "0.031")
+    assert t.resolve() not in producers.scan(tmp_path / "manuscript")
+
+
+def test_a_fragment_named_only_in_a_comment_has_no_producer(tmp_path):
+    # Two shapes, and they are defended separately. A commented-out write is a
+    # statement that carries no verb once the comment is blanked; a note beside
+    # a LIVE write sits in a statement whose verb is real, so only the offset of
+    # the literal itself distinguishes the two names.
+    w(tmp_path, "R/09_frags.R",
+      '# writeLines(hi, file.path(exh_dir, "correct_b3_ci_hi.tex"))  # superseded\n'
+      'writeLines(lo, file.path(exh_dir, "correct_b3_ci_lo.tex"))  # was "b3_old.tex"\n')
+    hi = w(tmp_path, "manuscript/exhibits/correct_b3_ci_hi.tex", "0.21")
+    old = w(tmp_path, "manuscript/exhibits/b3_old.tex", "0.07")
+    lo = w(tmp_path, "manuscript/exhibits/correct_b3_ci_lo.tex", "0.08")
+    found = producers.scan(tmp_path / "manuscript")
+    assert hi.resolve() not in found, "a commented-out write writes nothing"
+    assert old.resolve() not in found, "a note beside a live write writes nothing"
+    assert lo.resolve() in found
+
+
+def test_writes_inside_a_block_are_all_found_not_just_the_last(tmp_path):
+    """Counting braces as if they were parentheses swallowed an entire R
+    `if/else` into one statement, and eleven of qutub-india's twelve fragments
+    in that block stopped being claimed."""
+    # The block has to contain a read as well as writes, which is the shape
+    # qutub-india has: merged into one statement it reads as `copy(src, dst)`
+    # and only the LAST name in it survives.
+    s = w(tmp_path, "R/09_frags.R",
+          'if (file.exists(src)) {\n'
+          '  base <- readLines(src)\n'
+          '  writeLines(a, file.path(d, "frag_a.tex"))\n'
+          '  writeLines(b, file.path(d, "frag_b.tex"))\n'
+          '} else {\n'
+          '  writeLines(c, file.path(d, "frag_c.tex"))\n'
+          '}\n')
+    for n in ("frag_a.tex", "frag_b.tex", "frag_c.tex"):
+        w(tmp_path, f"manuscript/exhibits/{n}", "0.5")
+    found = producers.scan(tmp_path / "manuscript")
+    for n in ("frag_a.tex", "frag_b.tex", "frag_c.tex"):
+        assert found.get((tmp_path / "manuscript/exhibits" / n).resolve()) == s.resolve(), n
+
+
+def test_a_stata_command_continued_over_lines_still_writes(tmp_path):
+    """estonia-qbs writes three of its seven exhibits with the filename on a
+    different physical line from the `esttab` that writes it."""
+    s = w(tmp_path, "do/analysis.do",
+          'esttab reg1 reg2 ///\n'
+          '  using "${exhibits}/T5-shrinkage.tex" , replace ///\n'
+          '  booktabs\n')
+    t = w(tmp_path, "manuscript/exhibits/T5-shrinkage.tex", TABLE)
+    assert producers.scan(tmp_path / "manuscript").get(t.resolve()) == s.resolve()
+
+
+def test_the_read_only_manuscript_stays_editable_end_to_end(tmp_path):
+    """The symptom, not just the map: prose a converter reads must stay editable
+    without needing to be the root file."""
+    w(tmp_path, "paper/make_word_submission.py", BLINDER)
+    root = w(tmp_path, "paper/supplement.tex", "\\documentclass{article}")
+    main = w(tmp_path, "paper/main.tex", PROSE)
+
+    out = producers.apply((FakeBlock(main),), producers.scan(tmp_path / "paper"),
+                          root_file=root)
+    assert out[0].editable is True
+    assert out[0].kind != "generated"
+
+
 # ------------------------- the content test, for producers we cannot find
 
 
@@ -119,6 +308,25 @@ def test_apply_frees_prose_and_locks_output(tmp_path):
     assert out[1].editable is True, "a hand-written appendix must be editable"
     assert out[2].editable is False, "a generated table must not be"
     assert out[2].kind == "generated"
+
+
+def test_the_root_file_is_exempt_from_the_content_guess_only(tmp_path):
+    """A root that is a preamble and a column of `\\input` lines has no
+    sentences in it, and `looks_generated` would call that a fragment. The
+    exemption stops there: a producer that really writes the served file still
+    refuses it, which is dsp-bias's `main_anonymous.tex`."""
+    thin = w(tmp_path, "paper/thin.tex",
+             "\\documentclass{article}\n\\begin{document}\n\\input{s1}\n\\end{document}")
+    assert producers.looks_generated(thin) is True, "the guess alone would refuse it"
+    out = producers.apply((FakeBlock(thin),), {}, root_file=thin)
+    assert out[0].editable is True
+
+    w(tmp_path, "paper/make_word_submission.py", BLINDER)
+    anon = w(tmp_path, "paper/main_anonymous.tex", PROSE)
+    out = producers.apply((FakeBlock(anon),), producers.scan(tmp_path / "paper"),
+                          root_file=anon)
+    assert out[0].editable is False, "being served does not make a generated file editable"
+    assert out[0].kind == "generated"
 
 
 def test_apply_never_re_enables_a_block_the_segmenter_refused(tmp_path):

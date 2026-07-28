@@ -224,6 +224,91 @@
     return (entries || []).slice().reverse();
   }
 
+  /* WHAT IT HAS DONE, which is a different question from what it is doing.
+     The live feed above is a ring the drain's next restart overwrites; this
+     reads the append-only ledger beside it, threaded by the request that
+     caused the work. One row per comment: what was asked, where it landed,
+     what the agent said while doing it, and how it ended.
+
+     The server does the join and the ordering. This decides only how a row
+     reads, and it is exported so that decision can be tested without a page. */
+  var HISTORY_MARK = { done: '✓', orphaned: '✗', working: '·', review: '·', queued: '·' };
+
+  function historyMark(state) {
+    return HISTORY_MARK[String(state || '')] || '·';
+  }
+
+  /* The one-line summary of a row, as the author reads it collapsed. Named
+     rather than inlined because the title attribute wants the same words and
+     two spellings of one sentence is how the ticker came to say one thing on
+     load and another after a frame. */
+  function historyTitle(item) {
+    if (!item) return '';
+    var bits = [item.id];
+    if (item.asked) bits.push('“' + item.asked + '”');
+    if (item.section || item.where) bits.push(item.section || item.where);
+    bits.push(historyMark(item.state) + ' ' + (item.state || ''));
+    if (item.reply) bits.push('— ' + item.reply);
+    return bits.join(' · ');
+  }
+
+  /* One collapsible row per work item, newest first (the server orders them).
+     A `<details>` rather than a hand-rolled toggle: it opens with a click or
+     with the keyboard, it is announced as a disclosure, and it survives the
+     panel being swapped out under it because the open ones are read back and
+     re-applied. `open` names the rows to open, so a redraw does not fold the
+     row the author is reading.
+
+     A line the session could not tell apart between several comments in flight
+     is shown under EACH of them and marked as shared, which is what it is. See
+     `supervisor.Attributor`: picking one would be inventing the link. */
+  function historyHTML(items, open) {
+    items = items || [];
+    if (!items.length) {
+      return '<p class="empty">Nothing worked yet. When the agent picks a comment up, ' +
+        'what it read, what it concluded and what it changed are kept here — ' +
+        'through a restart, and through a reload.</p>';
+    }
+    open = open || {};
+    return items.map(function (it, i) {
+      var shut = open[it.id] === false || (open[it.id] === undefined && i > 0);
+      var lines = (it.lines || []).map(function (l) {
+        var who = l.who === 'teammate' ? 'teammate' : 'agent';
+        return '<div class="fe ' + esc(l.kind) + ' ' + who + (l.shared ? ' shared' : '') + '"' +
+          (l.shared ? ' title="the session was carrying several comments at once, ' +
+            'so this line could not be told apart between them"' : '') +
+          '><b>' + who + '</b> <span>' + esc(l.text) + '</span>' +
+          '<time>' + esc(ago(l.ts)) + '</time></div>';
+      }).join('');
+      if (!lines) {
+        lines = '<div class="fe note agent"><b>agent</b><span>No lines were recorded for this one.</span>' +
+          '<time></time></div>';
+      }
+      var reply = it.reply
+        ? '<div class="fe text agent hireply"><b>reply</b> <span>' + esc(it.reply) +
+          '</span><time></time></div>'
+        : '';
+      var place = it.section || it.where;
+      var where = place
+        ? (it.block
+            ? '<button class="tkgo" type="button" data-act="hist:goto:' + esc(it.block) + '">' +
+              esc(place) + '</button>'
+            : '<span class="tklabel">' + esc(place) + '</span>')
+        : '';
+      return '<details class="hi is-' + esc(it.state) + '" data-hist="' + esc(it.id) + '"' +
+        (shut ? '' : ' open') + '>' +
+        '<summary title="' + esc(historyTitle(it)) + '">' +
+        '<code>' + esc(it.id) + '</code>' +
+        '<span class="hiasked">' + esc(it.asked || '') + '</span>' +
+        where +
+        '<span class="histate">' + esc(historyMark(it.state)) + ' ' + esc(it.state) + '</span>' +
+        '<time>' + esc(ago(it.at)) + '</time>' +
+        '</summary>' +
+        '<div class="feed-live hilines">' + lines + reply + '</div>' +
+        '</details>';
+    }).join('');
+  }
+
   function hslToHex(h, s, l) {
     h = ((h % 360) + 360) % 360;
     var c = (1 - Math.abs(2 * l - 1)) * s,
@@ -432,6 +517,9 @@
     newestFirst: newestFirst,
     blockName: blockName,
     feedNewestFirst: feedNewestFirst,
+    historyMark: historyMark,
+    historyTitle: historyTitle,
+    historyHTML: historyHTML,
     queueSummary: queueSummary,
     tickerText: tickerText,
     tickerTitle: tickerTitle,
@@ -462,6 +550,7 @@
     blockState: {},         // block id -> queued|working|done|locked
     queue: [],              // the agent's standing work, oldest first
     ticker: [],             // what actually happened, newest first
+    histOpen: {},           // history row id -> open, so a redraw keeps his place
     tickerKey: '',          // so a refresh ages the entries without re-animating
     caret: null,            // {id, start, end, scrollTop}
     extView: null,          // an extension's panel, when one is open
@@ -754,12 +843,26 @@
         scroll: active.scrollTop
       };
     }
+    rememberHistoryOpen();
     return {
       rail: railEl ? railEl.scrollTop : 0,
       doc: docEl ? docEl.scrollTop : 0,
       insp: ibodyEl ? ibodyEl.scrollTop : 0,
       field: field
     };
+  }
+
+  /* Which history rows are open, read off the DOM into state. Every path that
+     rebuilds the panel goes through here or through `renderAgentHistory`, so a
+     row the author opened cannot be folded by a redraw he did not ask for --
+     which is what a `<details>` does by default the moment its markup is
+     replaced. */
+  function rememberHistoryOpen() {
+    if (!ibodyEl) return;
+    var rows = ibodyEl.querySelectorAll('details[data-hist]');
+    for (var i = 0; i < rows.length; i++) {
+      S.histOpen[rows[i].getAttribute('data-hist')] = rows[i].open;
+    }
   }
 
   // `keepDoc` false means the caller is deliberately navigating, so the
@@ -1358,6 +1461,38 @@
     if (back) back.scrollTop = at;
   }
 
+  /* THE HISTORY, under the live feed. The two answer different questions and
+     the card above answers only the first: what it is doing NOW, from a ring
+     that the drain's next restart -- one every twenty wakes or so -- rewrites
+     from empty. This is what it has done, kept in the append-only ledger and
+     threaded by the request that caused it, so it survives that restart, a
+     server restart, and a reload. */
+  function agentHistory() {
+    var items = S.ms.history || [];
+    var head = items.length
+      ? items.length + ' item' + (items.length === 1 ? '' : 's')
+      : '';
+    return '<div data-role="agenthistory">' +
+      card('What it has done', head, historyHTML(items, S.histOpen)) +
+      '</div>';
+  }
+
+  /* Swapped on its own for the same reason the feed card is: the composer sits
+     above both, and rebuilding the panel on every frame would take the
+     author's caret and draft with it. Which rows are open is the author's
+     place in this card, the way scrollTop is in the feed's, so it is read off
+     the DOM before the swap and written back after -- a row cannot fold itself
+     because a line arrived in another one. */
+  function renderAgentHistory() {
+    if (S.sel || !ibodyEl) return;
+    var slot = ibodyEl.querySelector('[data-role="agenthistory"]');
+    if (!slot) return;
+    rememberHistoryOpen();
+    var next = agentHistory();
+    if (slot.outerHTML === next) return;
+    slot.outerHTML = next;
+  }
+
   function renderHome() {
     if (S.sel) return;
     var ui = captureUI();
@@ -1376,6 +1511,7 @@
       'a citation to see its evidence, or a violet number to see the code that produced it. ' +
       'A note typed above becomes a comment on the whole manuscript, worked by the same queue.</p>');
     body += agentFeed();
+    body += agentHistory();
     if (msgs.length) {
       body += card('Earlier', msgs.length + ' message' + (msgs.length === 1 ? '' : 's'),
         chatMsgs(msgs));
@@ -2265,6 +2401,14 @@
         if (!S.sel) renderHome();
         break;
       }
+      case 'history': {
+        /* The ledger grew, or an outcome landed in the comment log. The card
+           is swapped by itself rather than through `renderHome`, which would
+           take the composer's caret and the author's open rows with it. */
+        S.ms.history = msg.history || [];
+        renderAgentHistory();
+        break;
+      }
       case 'saved': {
         var sid = normId(msg.block);
         var b = S.blocks[sid];
@@ -2467,6 +2611,8 @@
     // Here rather than in `setAgent`, so the 15-second tick ages the card's own
     // timestamps too and does not leave it claiming work started "just now".
     renderAgentFeed();
+    // The history ages the same way: "✓ done 4m" is only true for a minute.
+    renderAgentHistory();
   }
 
   function tickerKey(items) {
@@ -2651,20 +2797,31 @@
     renderHome();
   }
 
+  /* Open a paragraph and scroll to it. One implementation, because the feed
+     card and the history card both offer the jump and two copies of it would
+     be two answers to "what does selecting a block from the panel do". */
+  function gotoBlock(block) {
+    var gid = block ? normId(block) : null;
+    if (!gid || !S.blocks[gid]) return;
+    select('block', gid, gid, null, { keepDoc: false });
+    requestAnimationFrame(function () {
+      var el = blockEl(gid);
+      if (el) el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+    });
+  }
+
   function doAct(act) {
     if (act === 'rail:toggle') { toggleRail(); return; }
     if (act === 'feed:goto') {
       /* The feed names the comment being worked; the comment names the block. */
       var w = ((S.ms.agent_feed || {}).working || [])[0];
       var hit = w && S.queue.filter(function (e) { return e && e.id === w; })[0];
-      var gid = hit && hit.block ? normId(hit.block) : null;
-      if (gid && S.blocks[gid]) {
-        select('block', gid, gid, null, { keepDoc: false });
-        requestAnimationFrame(function () {
-          var el = blockEl(gid);
-          if (el) el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
-        });
-      }
+      gotoBlock(hit && hit.block);
+      return;
+    }
+    if (act.indexOf('hist:goto:') === 0) {
+      // A history row names its block outright, so no lookup is needed.
+      gotoBlock(act.slice('hist:goto:'.length));
       return;
     }
     if (act === 'evidence:run') { runEvidence(); return; }

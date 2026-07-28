@@ -64,6 +64,8 @@ def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) ->
     goes wrong under a live cursor. The vocabulary is::
 
         select:<block id>   click that paragraph in the manuscript
+        fold:<comment id>   collapse that history row
+        unfold:<comment id> open that history row
         tab:<n>             click the nth tab of the panel
         act:<name>          click the control carrying that data-act
         focus / blur        the source editor gains or loses focus
@@ -72,7 +74,9 @@ def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) ->
         bleed:<text>        an input event on the source editor while the
                             author's focus is somewhere else, which is how
                             Blink delivers an undo pressed in another box
-        frames              the server's frames arrive
+        frames              every frame not yet delivered arrives
+        frames:<n>          only the next n of them do, so a test can put the
+                            author's own action in the middle of the stream
 
     The report gains a ``trail``: after every step, whether the source editor
     is still the SAME ELEMENT it was, what block it names, and what it holds.
