@@ -346,3 +346,119 @@ def test_the_loop_hands_a_mid_turn_comment_to_the_running_session(tmp_path):
     assert handed[1] == ("c-0002",), "a comment arriving mid-turn waited"
     assert handed[2] == ("c-0003",), handed
     assert len(handed) == 3, f"the cap of {d.max_in_flight} did not hold: {handed}"
+
+
+# ------------------------------------------------- the seam: writer and readers
+#
+# The drain writes the feed and the server reads it, and that is the whole of
+# their relationship. So the one thing that can break it is the two ends naming
+# different files -- which is exactly what happened. The supervisor wrote
+# `.manuscriptor/agent/agent-progress.json`; `build()` read the cache directory,
+# which nothing writes, and `serve` watched `build/manuscriptor/`, the pre
+# 2026-07-27 layout, which is frozen. Both readers failed silently, because an
+# absent feed reads as idle and a file that never changes never fires a watcher.
+# The panel was empty for every author with a healthy feed on disk.
+
+DOC = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+The treatment raised screening rates substantially across all three cohorts.
+
+We read this as evidence that the contract, and not the payment, drove it.
+\end{document}
+"""
+
+
+def _paper_with_a_running_agent(tmp_path):
+    """A manuscript whose drain has written a feed, the way the drain writes it."""
+    from manuscriptor.server import feed as feed_mod
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    paths.ensure(tmp_path)
+    feed = sup.Feed(path=feed_mod.progress_path(paths.agent_dir(tmp_path)), every=0.0)
+    feed.set(state="working", working=("c-0001",))
+    feed.add([sup.Entry(sup.now(), "agent", "text", "Softening the claim.")], force=True)
+    return tmp_path
+
+
+def test_the_page_opens_on_the_feed_the_drain_actually_wrote(tmp_path):
+    """The initial payload, which is all a page loading mid-run has to go on."""
+    from manuscriptor.server import build as build_mod
+
+    _paper_with_a_running_agent(tmp_path)
+    got = build_mod.build(tmp_path).blob["agent_feed"]
+
+    assert got["state"] == "working", "a page loading mid-run opened on `idle`"
+    assert got["working"] == ["c-0001"]
+    assert [e["text"] for e in got["entries"]] == ["Softening the claim."]
+
+
+def test_the_live_push_watches_the_file_the_drain_writes(tmp_path, monkeypatch):
+    """`serve` arms its feed watcher where the supervisor writes, or never fires.
+
+    Driven through `serve` rather than asserted against a constant, because the
+    bug was in `serve` and a constant would have agreed with it. The socket and
+    the tree watcher are stubbed out: the assertion is about which path is
+    handed to `watch_file`, and binding a port proves nothing about that.
+    """
+    import types
+    from pathlib import Path
+
+    from manuscriptor.server import app as app_mod
+    from manuscriptor.server import feed as feed_mod
+    from manuscriptor.server import watch as watch_mod
+
+    _paper_with_a_running_agent(tmp_path)
+
+    watched: list[Path] = []
+
+    class _Armed(Exception):
+        """Raised once the watcher is armed; there is nothing further to serve."""
+
+    class _NoSite:
+        def __init__(self, *a, **kw):
+            sock = types.SimpleNamespace(getsockname=lambda: ("127.0.0.1", 9999))
+            self._server = types.SimpleNamespace(sockets=[sock])
+
+        async def start(self):
+            pass
+
+    def _no_tree(root, on_change, **kw):
+        return lambda: None
+
+    def _record(path, on_change, **kw):
+        watched.append(Path(path).resolve())
+        raise _Armed
+
+    monkeypatch.setattr(app_mod.web, "TCPSite", _NoSite)
+    monkeypatch.setattr(watch_mod, "watch_tree", _no_tree)
+    monkeypatch.setattr(watch_mod, "watch_file", _record)
+
+    with pytest.raises(_Armed):
+        app_mod.serve(tmp_path, port=0, open_window=False)
+
+    want = feed_mod.progress_path(paths.agent_dir(tmp_path)).resolve()
+    assert watched == [want], (
+        "the feed watcher is armed somewhere the drain never writes, so it "
+        "never fires and the panel never updates"
+    )
+
+
+def test_the_page_opens_on_the_drafts_the_editor_actually_saved(tmp_path):
+    """The same divergence, two lines above it in the same payload.
+
+    `Session.drafts_file` writes `.manuscriptor/drafts.json`; `build()` read
+    `cache/drafts.json`, which nothing writes. A page opening after a crash was
+    offered nothing, which is the one failure the store exists to prevent.
+    """
+    from manuscriptor.server import build as build_mod
+    from manuscriptor.server import drafts as drafts_mod
+
+    (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
+    b = build_mod.build(tmp_path)
+    bid = next(x.id for x in b.blocks if x.kind == "paragraph")
+    drafts_mod.put(paths.drafts(tmp_path), doc="main.tex", block=bid,
+                   text="A paragraph the author never saved.")
+
+    held = build_mod.build(tmp_path).blob["drafts"]
+    assert held == {bid: "A paragraph the author never saved."}, held

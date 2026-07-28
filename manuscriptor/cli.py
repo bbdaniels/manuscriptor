@@ -985,7 +985,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Citation-evidence viewer (the absorbed cite-evidence pipeline; read-only against Zotero).",
     )
     p_ev.add_argument("manuscript", help="Path to manuscript directory containing the .tex and .bib")
-    p_ev.add_argument("--output", "-o", help="Output directory (default: <manuscript>/build/manuscriptor)")
+    # Deliberately not a spelled-out path: this help text said
+    # `<manuscript>/build/manuscriptor` for months after the layout moved, and
+    # naming the layout in a string is how it goes stale again.
+    p_ev.add_argument("--output", "-o",
+                      help="Output directory (default: Manuscriptor's cache for this manuscript)")
     p_ev.add_argument("--main", help="Main .tex filename (default: auto-detect main.tex or first *.tex)")
     p_ev.add_argument("--bib", help="Bibliography filename (default: first *.bib)")
     p_ev.add_argument("--model", default="sonnet", help="Model alias for evidence extraction (default: sonnet)")

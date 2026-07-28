@@ -284,15 +284,46 @@ def test_a_ticker_line_leads_with_the_request_and_hovers_the_place():
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
-def test_an_entry_with_no_request_still_names_its_block():
-    """A `patch` has no comment behind it, and a state record written before
-    the field existed has none either. Both must keep rendering."""
+def test_a_patch_has_no_request_and_names_its_block_instead():
+    """A `patch` is the ONE entry with nothing behind it that could be quoted.
+
+    It reports an edit landing on the page, which no author asked for in words,
+    so naming the place is the whole of what it can say.
+
+    This test used to make the same claim about a `state` entry, and that was
+    wrong in a way that mattered. A state entry answers a comment, a comment
+    always has a body, and both paths that build one derive `asked` from it --
+    so a state entry with no request is not a thing the server can produce. By
+    asserting on one, this pinned the fallback branch as though it were the
+    normal shape of a live line, and the live frames were arriving in exactly
+    that shape for months with nothing to say otherwise. What the server does
+    produce is now held in `tests/test_live_frames.py`, against the frame it
+    actually sends, and the seed side is held below.
+
+    The fallback itself stays in `tickerText`: a line that renders as a bare
+    " · done" tells the author nothing at all, and a defensive lead is cheap.
+    It is not, however, a description of any entry the server writes.
+    """
     assert node_call("tickerText", {"kind": "patch", "section": "Data", "n": 2}) \
         == "Data · edited, 2 blocks"
-    assert node_call("tickerText", {"kind": "state", "state": "done",
-                                    "section": "Results"}) == "Results · done"
-    assert node_call("tickerTitle", {"kind": "state", "state": "done",
-                                     "section": "Results"}) == "Results"
+    assert node_call("tickerTitle", {"kind": "patch", "section": "Data", "n": 2}) == "Data"
+
+
+def test_a_state_entry_always_says_what_was_asked(tmp_path):
+    """The seed half of the guard above: `ticker_view` never omits `asked`.
+
+    A comment carries a body, so there is no state record whose request cannot
+    be recovered. If this ever fails, the ticker has an entry that will render
+    through the defensive fallback -- and the author will read a line about his
+    paragraph where he should be reading one about his request.
+    """
+    d, _, b = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    drain.mark(d, "c-0001", "done")
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
+    assert t, "the fixture marked a comment worked and finished"
+    for e in t:
+        assert e["asked"], f"a state entry with no request: {e!r}"
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")

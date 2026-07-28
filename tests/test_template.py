@@ -535,7 +535,9 @@ def test_the_open_editor_reads_its_block_id_from_the_dom():
     """A captured id is what went stale: the panel is deliberately not rebuilt
     while its editor has focus, so nothing re-ran the closure that held it."""
     js = VIEWER.read_text(encoding="utf-8")
-    body = js[js.index("function wireInspector"):js.index("function rememberCaret")]
+    # The editor is built and wired in one place, `makeEditor`, because it is
+    # built ONCE -- a rebuilt editor is an editor with no undo history.
+    body = js[js.index("function makeEditor"):js.index("function activeEditor")]
     assert "var cur = function () { return src.getAttribute('data-block'); }" in body, (
         "the editor must resolve its block id from the element, not capture it"
     )

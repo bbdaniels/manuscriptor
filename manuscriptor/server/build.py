@@ -64,6 +64,32 @@ def find_bib(manuscript_dir: Path, bib: str | None = None) -> Path | None:
     return found[0] if found else None
 
 
+def source_blocks(manuscript_dir: Path, main_tex: Path, *,
+                  flat=None, produced=None) -> tuple:
+    """The manuscript's blocks as the files on disk have them RIGHT NOW.
+
+    The first quarter of `build`, lifted out because a write needs it and a
+    render does not. Everything else `build` does -- pandoc, the labels, the
+    citation manifest, the chats -- is about drawing the page, and a save that
+    had to wait for all of it would be paying a second of rendering to find out
+    where a paragraph starts.
+
+    One function, though, and not a second copy of those four lines. Whether a
+    block is machine generated is decided by `producers.apply` and by nothing
+    else, and a caller that segmented without it would hand `splice` a
+    hand-editable version of a table written by an R script.
+
+    `flat` and `produced` are the flattened source and the producer scan when
+    the caller already has them; `build` has both, because it renders from the
+    same buffer these blocks are cut from and reports the producers on the page.
+    """
+    if flat is None:
+        flat = flatten(main_tex)
+    if produced is None:
+        produced = producers.scan(manuscript_dir)
+    return producers.apply(blocks_mod.segment(flat), produced, root_file=main_tex)
+
+
 def build(
     manuscript_dir: Path,
     *,
@@ -80,8 +106,7 @@ def build(
 
     flat = flatten(main_tex)
     produced = producers.scan(manuscript_dir)
-    bl = blocks_mod.segment(flat)
-    bl = producers.apply(bl, produced, root_file=main_tex)
+    bl = source_blocks(manuscript_dir, main_tex, flat=flat, produced=produced)
 
     aux = main_tex.with_suffix(".aux")
     labels = refs.load_labels(aux) if aux.exists() else {}
@@ -145,12 +170,24 @@ def build(
         # opens after a crash, a relaunch, or a server that died mid-paragraph
         # is offered the draft instead of the author being told it is "on disk"
         # somewhere only a debugger can reach.
-        "drafts": drafts.for_doc(drafts.path_for(out), doc),
+        # `paths.drafts`, NOT `out`: unsaved text is durable and lives beside
+        # the log, while `out` is the regenerable cache. Reading it from `out`
+        # meant this key was always empty, because nothing has ever written a
+        # `drafts.json` there -- the editor saves through `Session.drafts_file`,
+        # which is `paths.drafts`. A page opening after a crash was offered
+        # nothing, which is the one failure the store exists to prevent.
+        "drafts": drafts.for_doc(paths.drafts(manuscript_dir), doc),
         # What the drain is doing right now, as it does it. The drain writes
         # this file and the server only reads it, so the server still knows
         # nothing about Claude. Absent means no agent has ever run, which
         # renders as an idle feed rather than as an error.
-        "agent_feed": feed_mod.read_feed(feed_mod.progress_path(out)),
+        #
+        # `paths.agent_dir`, NOT `out`. The feed is durable and private, so it
+        # sits with the drain's other logs and not in the cache `clean` may
+        # take. Read from `out` this was always the idle envelope, because
+        # nothing writes a feed there and an absent feed reads as idle -- so
+        # every page opened on "idle" over a healthy feed on disk.
+        "agent_feed": feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(manuscript_dir))),
         "activity": [],
         "stats": {
             "files": len({b.file for b in bl}),
@@ -459,6 +496,19 @@ def todos_view(log: Path, *, doc: str | None = None) -> list[dict]:
 TICKER_LIMIT = 8
 
 
+def asked_of(body: str | None) -> str:
+    """What was asked, short enough to lead a status line.
+
+    Here rather than at each call because two paths report the same event and
+    the author cannot tell which one he is looking at: `ticker_view` seeds the
+    ticker when a page opens, and the `state` frame feeds it while he watches.
+    A reload swaps one for the other, so a second clip -- in the other module,
+    or in the client's JavaScript -- would show him the same request written two
+    different ways depending on when he last refreshed.
+    """
+    return blocks_mod.clip(body, words=12, chars=64)
+
+
 def queue_view(log: Path, blocks, *, anchored: dict | None = None, root=None,
                now=None, doc: str | None = None) -> list[dict]:
     """Every chat still awaiting work, oldest first.
@@ -527,7 +577,7 @@ def ticker_view(log: Path, blocks, *, limit: int = TICKER_LIMIT,
     # reports work; the block is where that work is happening rather than what
     # it is. Without this, two requests on one paragraph are the same line
     # printed twice, which is the state the author found it in.
-    asked = {c.id: blocks_mod.clip(c.body, words=12, chars=64) for c in chats}
+    asked = {c.id: asked_of(c.body) for c in chats}
     # State records carry no doc of their own; they belong to whatever comment
     # they answer, so the in-scope chat ids are the filter.
     in_scope = {c.id for c in chats} if doc is not None else None

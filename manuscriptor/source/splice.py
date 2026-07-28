@@ -6,9 +6,13 @@ The only genuine conflict is both writing the same block at once, which is one
 lock on one block.
 
 Two guards are load bearing. The write is atomic, so a crash mid-write cannot
-truncate a manuscript. And the bytes at the target range must still hash to the
-block's id, because a stale splice would silently overwrite whatever had already
-replaced them.
+truncate a manuscript. And the target range must still hold the WHOLE of the
+block -- its bytes and the boundaries its cut fell on -- because a stale splice
+would otherwise overwrite whatever had already replaced them. Hashing the bytes
+alone does not do that: an id says what a block's bytes are and not where it
+ends, so a paragraph that has since GROWN still contains the old block's text,
+still hashes back to the old id, and a splice over it leaves the growth standing
+behind the new text.
 
 Line numbers are not trusted to find the range. A block's id is content derived
 precisely so that an edit above it does not move it, and splice honours that: it
@@ -190,20 +194,48 @@ def _across_processes(path: Path):
 def _locate(text: str, block) -> int | None:
     """Find the block's current byte offset, or None if it is gone.
 
-    Candidates are exact occurrences of the block's source text; each is
-    confirmed by re-deriving the id from the bytes found, so nothing is ever
-    written to a range that does not hash back to the block. When a manuscript
-    genuinely repeats a paragraph, the candidate nearest the recorded line wins.
+    Candidates are exact occurrences of the block's source text, each confirmed
+    to be a WHOLE block and not part of one. When a manuscript genuinely repeats
+    a paragraph, the candidate nearest the recorded line wins.
+
+    Re-deriving the id from the bytes found is kept, and it does catch a block
+    record whose id and text disagree. It is NOT a staleness check and never
+    was: those bytes are the block's own source text and its id is the hash of
+    that text, so for anything `segment` produced the comparison is `x == x`. It
+    read as the module's central safeguard and could not fail.
+
+    An id says what a block's bytes ARE. It cannot say where the block ENDS, and
+    that is the fact staleness destroys. A save that appends to a paragraph
+    leaves the previous version of it in the file as a PREFIX of the new one, so
+    the stale text is still found, still hashes back, and the splice writes over
+    the prefix and leaves the rest of the paragraph standing behind the new
+    text. That is how ordinary typing put `... ALPHA. BETA BETA.` into a
+    manuscript on 2026-07-28.
+
+    So the block carries the boundaries of its own cut (`src_before`,
+    `src_after`) and they are what is checked here. Neither is content of any
+    block: they are the separator that ended this one, so rewriting the
+    paragraph above or below leaves them alone and a block still splices after
+    its neighbours move -- which the content-derived id exists to guarantee.
     """
     src = block.source_text
     if not src:
         return None
     want = base_id(block.id)
+    # A block from somewhere other than `segment` records no boundaries, and an
+    # unknown boundary is not a failed one.
+    before = getattr(block, "src_before", None)
+    after = getattr(block, "src_after", None)
 
     hits: list[int] = []
     at = text.find(src)
     while at >= 0:
-        if block_id(text[at : at + len(src)]) == want:
+        end = at + len(src)
+        pre = text[at - 1] if at > 0 else ""
+        post = text[end] if end < len(text) else ""
+        if ((before is None or pre == before)
+                and (after is None or post == after)
+                and block_id(text[at:end]) == want):
             hits.append(at)
         at = text.find(src, at + 1)
     if not hits:

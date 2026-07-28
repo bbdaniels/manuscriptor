@@ -494,3 +494,104 @@ def test_the_comment_log_alone_is_neither():
 def test_the_log_beside_a_figure_is_not_treated_as_log_only():
     kind, assets = app.classify([Path("comments.jsonl"), Path("outputs/f.pdf")])
     assert kind == "assets" and assets is True
+
+
+# ------------------------------------------- saving the same block repeatedly
+
+
+def test_consecutive_saves_to_one_block_land_exactly(tmp_path):
+    """Ordinary typing: pause, save, type, pause, save, over and over.
+
+    The page holds ONE id and sends it with every save; the server only learns
+    the file moved when the tree watcher tells it, and the watcher is a
+    filesystem notification, not a promise. Between the splice and the rebuild
+    the build is a snapshot of a file that has already changed underneath it, so
+    the block handed to splice describes bytes the manuscript no longer has.
+    Splicing that range wrote the new text over the block's old EXTENT and left
+    the rest of the paragraph standing behind it: `... ALPHA. BETA` saved onto
+    `... ALPHA. BETA.` produced `... ALPHA. BETA BETA.` on 2026-07-28.
+
+    No rebuild here at all, which is the deterministic form of the race. Well
+    past three, because two saves happened to be clean and the third was not.
+    """
+    import asyncio
+
+    from manuscriptor.server.app import Session
+
+    manuscript(tmp_path)
+    s = Session(tmp_path)
+    bid = next(b.id for b in s.build.blocks
+               if b.editable and b.source_text.startswith("Second paragraph"))
+    base = s.build.by_id[bid].source_text
+
+    texts = [base + f" Revision {i}." for i in range(1, 4)]
+    texts += [texts[-1][:-1], texts[-1][:-4], texts[-1][:-9], texts[-1] + " Back."]
+
+    for i, text in enumerate(texts, 1):
+        reply = asyncio.run(s.on_edit(bid, text))
+        assert reply["type"] == "saved", f"save {i} was refused: {reply}"
+        on_disk = [ln for ln in (tmp_path / "main.tex").read_text(encoding="utf-8").split("\n")
+                   if ln.startswith("Second paragraph")]
+        assert on_disk == [text], f"save {i} wrote {on_disk!r}, wanted {[text]!r}"
+
+
+def test_a_save_after_someone_else_rewrote_the_block_is_refused(tmp_path):
+    """The other side of the same coin. When the block the page names has been
+    rewritten by ANOTHER writer since the page last heard, the save must not
+    silently overwrite that writer's work."""
+    import asyncio
+
+    from manuscriptor.server.app import Session
+
+    manuscript(tmp_path)
+    s = Session(tmp_path)
+    bid = next(b.id for b in s.build.blocks
+               if b.editable and b.source_text.startswith("Second paragraph"))
+    base = s.build.by_id[bid].source_text
+
+    src = (tmp_path / "main.tex").read_text(encoding="utf-8")
+    (tmp_path / "main.tex").write_text(
+        src.replace(base, "A paragraph with nothing whatever in common with what was here."),
+        encoding="utf-8")
+    after = (tmp_path / "main.tex").read_text(encoding="utf-8")
+
+    reply = asyncio.run(s.on_edit(bid, base + " Mine."))
+    assert reply["type"] == "held", reply
+    assert (tmp_path / "main.tex").read_text(encoding="utf-8") == after
+
+
+def test_a_save_never_lands_in_another_file_that_repeats_the_paragraph(tmp_path):
+    """Duplicate ids are numbered in document order, so editing one RENUMBERS
+    the rest: the fifth copy becomes `-4` the moment the fourth stops being a
+    copy. Resolving a save on the id alone therefore follows the name onto a
+    different paragraph in a different file. estonia-ecm repeats the same two
+    `\\newcolumntype` lines at the head of six appendix tables, which is exactly
+    that shape."""
+    import asyncio
+
+    from manuscriptor.server.app import Session
+
+    stanza = "A stanza repeated verbatim at the head of every appendix fragment.\n"
+    for name in ("one.tex", "two.tex", "three.tex"):
+        (tmp_path / name).write_text(stanza, encoding="utf-8")
+    (tmp_path / "main.tex").write_text(
+        "\\documentclass{article}\n\\begin{document}\n"
+        "\\input{one}\n\n\\input{two}\n\n\\input{three}\n"
+        "\\end{document}\n", encoding="utf-8")
+
+    s = Session(tmp_path)
+    copies = [b for b in s.build.blocks if b.source_text.strip() == stanza.strip()]
+    assert len(copies) == 3, [b.id for b in copies]
+    target = copies[1]
+
+    reply = asyncio.run(s.on_edit(target.id, stanza.strip() + " Edited."))
+    assert reply["type"] == "saved", reply
+    assert (tmp_path / "two.tex").read_text(encoding="utf-8").strip().endswith("Edited.")
+    for other in ("one.tex", "three.tex"):
+        assert (tmp_path / other).read_text(encoding="utf-8") == stanza, other
+
+    # And again, with the page still naming the id it was given. The renumber
+    # happened at the first save; a second must not follow the name elsewhere.
+    reply = asyncio.run(s.on_edit(target.id, stanza.strip() + " Edited twice."))
+    assert (tmp_path / "one.tex").read_text(encoding="utf-8") == stanza
+    assert (tmp_path / "three.tex").read_text(encoding="utf-8") == stanza

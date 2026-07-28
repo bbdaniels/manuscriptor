@@ -111,11 +111,17 @@ def block_until_log_grows(log: Path, *, from_offset: int, poll: float = 0.5) -> 
 def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 200):
     """Watch ONE file, wherever it lives. Returns a function that stops it.
 
-    The tree watcher ignores `build`, and rightly: it holds the rasterized
-    figures this pipeline writes, so watching it would redraw on its own output
-    forever. But the drain's live feed lives there too, because it is generated
-    and must not make `git status` grow, and the page needs it as it changes. One
-    file, watched by name, is the narrow exception rather than a hole in the rule.
+    The tree watcher skips generated output, and rightly: it holds the
+    rasterized figures this pipeline writes, so watching it would redraw on its
+    own output forever. But the drain's live feed is generated too, because it
+    must not make `git status` grow, and the page needs it as it changes. One
+    file, watched by name, is the narrow exception rather than a hole in the
+    rule.
+
+    Ask `server/paths.py` for the path. This docstring used to say the feed
+    lived under `build/`, and the caller that believed it watched a file the
+    drain had stopped writing months earlier -- which fires no events, so the
+    panel simply never moved and nothing reported an error.
     """
     path = Path(path).resolve()
 

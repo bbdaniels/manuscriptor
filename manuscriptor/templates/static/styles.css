@@ -616,6 +616,20 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    Cards keep their height; the panel scrolls. */
 .insp-body > * { flex: 0 0 auto; }
 
+/* The panel is drawn in two halves so the source editor can outlive the
+   redraw: the cards go into `ipanel`, the editor is its sibling, and a
+   <textarea> that is never rebuilt is a <textarea> that keeps its undo
+   history. `ipanel` therefore has to carry the column the cards used to be
+   direct children of, and to take up no room at all when the tab on screen is
+   the editor and nothing else. */
+.insp-body > [data-role="ipanel"] { display: flex; flex-direction: column; gap: .9rem; min-height: 0; }
+.insp-body > [data-role="ipanel"] > * { flex: 0 0 auto; }
+.insp-body > [data-role="ipanel"]:empty { display: none; }
+/* The editor is HIDDEN rather than removed when another tab is open, which is
+   what carries its history across the switch. Stated rather than left to the
+   user agent, because it is load-bearing. */
+.insp-body > .card[hidden] { display: none; }
+
 /* ==========================================================================
    NARROW WINDOWS — every width override lives here, last in the file
    ==========================================================================

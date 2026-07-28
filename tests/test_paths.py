@@ -46,18 +46,68 @@ def test_only_paths_names_the_home_directory():
     )
 
 
+def _squash(body: str) -> str:
+    """Strip everything that merely DECORATES a path literal.
+
+    The first version of this guard was `re.compile(r'"build"\\s*/\\s*"manuscriptor"')`
+    -- double quotes only. `app.py` spelled the same path with single quotes, so
+    the guard passed for months over the one surviving offender, and the drain's
+    live feed was watched at a path nothing had written since 2026-07-27. A guard
+    that a change of quote character defeats is a guard that proves nothing.
+
+    So: drop quote characters and their string prefixes, `Path(`/`joinpath(`, the
+    closing parens, and all whitespace. Every way Python can spell the two
+    segments -- `"build" / "manuscriptor"`, `'build' / 'manuscriptor'`,
+    `f"build" / "manuscriptor"`, `Path("build") / "manuscriptor"`,
+    `"build/manuscriptor"`, `joinpath("build", "manuscriptor")` -- collapses to
+    one of two strings.
+    """
+    # The string-prefix branch needs the boundary: without it the trailing `r`
+    # of `manuscriptor"` reads as an `r"` prefix and the guard eats the very
+    # word it is looking for.
+    return re.sub(
+        r"""(?<![A-Za-z0-9_])[rbufRBUF]{1,2}['"]|['"]|Path\(|joinpath\(|\)|\s+""",
+        "", body)
+
+
+LEGACY_SPELLINGS = ("build/manuscriptor", "build,manuscriptor")
+
+
 def test_nobody_still_spells_the_old_build_directory():
-    """The literal the whole refactor existed to remove."""
-    pattern = re.compile(r'"build"\s*/\s*"manuscriptor"')
+    """The literal the whole refactor existed to remove, in any quoting."""
     offenders = []
     for path in _sources():
-        body = _strip_comments(path.read_text(encoding="utf-8"))
-        if pattern.search(body):
+        body = _squash(_strip_comments(path.read_text(encoding="utf-8")))
+        if any(s in body for s in LEGACY_SPELLINGS):
             offenders.append(path.relative_to(SRC.parent))
     assert offenders == [], (
         "build/manuscriptor is still spelled outside server/paths.py: "
         f"{[str(p) for p in offenders]}"
     )
+
+
+@pytest.mark.parametrize("spelling", [
+    'root / "build" / "manuscriptor"',
+    "root / 'build' / 'manuscriptor'",
+    'root / f"build" / "manuscriptor"',
+    'Path("build") / "manuscriptor"',
+    'root / "build/manuscriptor"',
+    'root.joinpath("build", "manuscriptor")',
+    'root  /  "build"  /  "manuscriptor"',
+])
+def test_the_guard_is_not_defeated_by_how_the_path_is_quoted(spelling):
+    """Watch the guard catch each form, so it can never again pass on a typo."""
+    assert any(s in _squash(spelling) for s in LEGACY_SPELLINGS), spelling
+
+
+@pytest.mark.parametrize("innocent", [
+    'IGNORED_DIRS = {".git", "build", "__pycache__"}',
+    '_inside(parent, root / "build") or name.startswith(".")',
+    'SKIP = (".git", ".build", "build", "dist", "output")',
+    'out = root / "manuscriptor"',
+])
+def test_the_guard_does_not_trip_on_an_unrelated_build_directory(innocent):
+    assert not any(s in _squash(innocent) for s in LEGACY_SPELLINGS), innocent
 
 
 # ------------------------------------------------------------------- the tiers

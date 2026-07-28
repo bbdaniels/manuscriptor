@@ -67,8 +67,14 @@ class Entry:
     def as_dict(self) -> dict:
         return {"ts": self.ts, "who": self.who, "kind": self.kind, "text": self.text}
 
-def progress_path(build_dir: Path | str) -> Path:
-    return Path(build_dir) / PROGRESS_NAME
+def progress_path(agent_dir: Path | str) -> Path:
+    """The feed file, given the directory that holds it: `paths.agent_dir`.
+
+    The parameter was called `build_dir` from the old layout, and both readers
+    duly handed it a build directory: `build()` passed the cache, `serve`
+    passed `build/manuscriptor`. Neither is written, and neither failed loudly.
+    """
+    return Path(agent_dir) / PROGRESS_NAME
 
 @dataclass
 class Feed:
