@@ -384,3 +384,70 @@ def test_concurrent_splices_from_separate_processes_all_land(tmp_path):
     text = main.read_text(encoding="utf-8")
     landed = [i for i in range(6) if f"PROC{i}" in text]
     assert len(landed) == 6, f"only {len(landed)} of 6 survived: {landed}"
+
+
+# ---------------------------------------------------- a block that has grown
+
+
+def test_a_block_that_grew_since_it_was_cut_refuses_instead_of_duplicating(tmp_path):
+    """The staleness guard's whole job, and the one shape it never caught.
+
+    A block's id says what its bytes ARE, not where it ends. So when a previous
+    save APPENDED to the paragraph, the stale block's source text is still in
+    the file -- as a prefix of the paragraph it became -- and hashing the bytes
+    found there hashes them back to the stale id, because they are the very
+    bytes that produced it. The check could not fail. Splicing over that prefix
+    left the appended tail sitting behind the new text, which is how ordinary
+    typing wrote `... ALPHA. BETA BETA.` into a manuscript on 2026-07-28.
+    """
+    main = manuscript(tmp_path)
+    stale = blocks_of(main)[1]
+
+    # An earlier save already extended the paragraph on disk.
+    main.write_text(
+        main.read_text(encoding="utf-8").replace(
+            "Second paragraph of the manuscript.",
+            "Second paragraph of the manuscript. ALPHA."),
+        encoding="utf-8")
+    grown = main.read_text(encoding="utf-8")
+
+    with pytest.raises(StaleBlock):
+        splice(stale, "Second paragraph of the manuscript. ALPHA", root=tmp_path)
+    assert main.read_text(encoding="utf-8") == grown, "a refused splice writes nothing"
+
+
+def test_a_block_that_gained_a_prefix_since_it_was_cut_also_refuses(tmp_path):
+    """The same hole from the other end: text PREPENDED to the paragraph leaves
+    the stale source text in the file as a suffix, and the id hashes back just
+    as happily."""
+    main = manuscript(tmp_path)
+    stale = blocks_of(main)[1]
+
+    main.write_text(
+        main.read_text(encoding="utf-8").replace(
+            "Second paragraph of the manuscript.",
+            "Newly typed opening. Second paragraph of the manuscript."),
+        encoding="utf-8")
+    grown = main.read_text(encoding="utf-8")
+
+    with pytest.raises(StaleBlock):
+        splice(stale, "Second paragraph, rewritten.", root=tmp_path)
+    assert main.read_text(encoding="utf-8") == grown
+
+
+def test_a_fresh_block_still_splices_after_its_neighbours_are_rewritten(tmp_path):
+    """The guard must not turn into a refusal of the ordinary case. Blocks 0 and
+    2 are rewritten, block 1 is not re-cut, and its splice must still land: a
+    block's identity survives edits above and below it, which is the entire
+    point of deriving it from content."""
+    main = manuscript(tmp_path)
+    blocks = blocks_of(main)
+    target = blocks[1]
+
+    splice(blocks[0], "First paragraph, rewritten at length and then some.", root=tmp_path)
+    splice(blocks[2], "Third paragraph, also rewritten, and rather longer.", root=tmp_path)
+
+    splice(target, "Second paragraph, rewritten.", root=tmp_path)
+    text = main.read_text(encoding="utf-8")
+    assert "Second paragraph, rewritten." in text
+    assert "Second paragraph of the manuscript." not in text

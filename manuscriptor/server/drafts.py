@@ -37,13 +37,11 @@ from pathlib import Path
 FILENAME = "drafts.json"
 
 
-def path_for(build_dir: Path | str) -> Path:
-    """Where the store lives, given the directory that holds it.
-
-    Prefer `paths.drafts(manuscript_dir)`, which knows the layout. This stays
-    for callers that already have the containing directory in hand.
-    """
-    return Path(build_dir) / FILENAME
+# There was a `path_for(build_dir)` here, kept "for callers that already have
+# the containing directory in hand". Its one caller handed it the CACHE
+# directory, so `build()` read a `drafts.json` nobody writes and the payload's
+# drafts were always empty. A second answer to "where does the store live" is
+# what let the two ends disagree. `paths.drafts(manuscript_dir)` is the answer.
 
 
 def _now() -> str:

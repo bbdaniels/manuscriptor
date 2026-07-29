@@ -224,6 +224,91 @@
     return (entries || []).slice().reverse();
   }
 
+  /* WHAT IT HAS DONE, which is a different question from what it is doing.
+     The live feed above is a ring the drain's next restart overwrites; this
+     reads the append-only ledger beside it, threaded by the request that
+     caused the work. One row per comment: what was asked, where it landed,
+     what the agent said while doing it, and how it ended.
+
+     The server does the join and the ordering. This decides only how a row
+     reads, and it is exported so that decision can be tested without a page. */
+  var HISTORY_MARK = { done: '✓', orphaned: '✗', working: '·', review: '·', queued: '·' };
+
+  function historyMark(state) {
+    return HISTORY_MARK[String(state || '')] || '·';
+  }
+
+  /* The one-line summary of a row, as the author reads it collapsed. Named
+     rather than inlined because the title attribute wants the same words and
+     two spellings of one sentence is how the ticker came to say one thing on
+     load and another after a frame. */
+  function historyTitle(item) {
+    if (!item) return '';
+    var bits = [item.id];
+    if (item.asked) bits.push('“' + item.asked + '”');
+    if (item.section || item.where) bits.push(item.section || item.where);
+    bits.push(historyMark(item.state) + ' ' + (item.state || ''));
+    if (item.reply) bits.push('— ' + item.reply);
+    return bits.join(' · ');
+  }
+
+  /* One collapsible row per work item, newest first (the server orders them).
+     A `<details>` rather than a hand-rolled toggle: it opens with a click or
+     with the keyboard, it is announced as a disclosure, and it survives the
+     panel being swapped out under it because the open ones are read back and
+     re-applied. `open` names the rows to open, so a redraw does not fold the
+     row the author is reading.
+
+     A line the session could not tell apart between several comments in flight
+     is shown under EACH of them and marked as shared, which is what it is. See
+     `supervisor.Attributor`: picking one would be inventing the link. */
+  function historyHTML(items, open) {
+    items = items || [];
+    if (!items.length) {
+      return '<p class="empty">Nothing worked yet. When the agent picks a comment up, ' +
+        'what it read, what it concluded and what it changed are kept here — ' +
+        'through a restart, and through a reload.</p>';
+    }
+    open = open || {};
+    return items.map(function (it, i) {
+      var shut = open[it.id] === false || (open[it.id] === undefined && i > 0);
+      var lines = (it.lines || []).map(function (l) {
+        var who = l.who === 'teammate' ? 'teammate' : 'agent';
+        return '<div class="fe ' + esc(l.kind) + ' ' + who + (l.shared ? ' shared' : '') + '"' +
+          (l.shared ? ' title="the session was carrying several comments at once, ' +
+            'so this line could not be told apart between them"' : '') +
+          '><b>' + who + '</b> <span>' + esc(l.text) + '</span>' +
+          '<time>' + esc(ago(l.ts)) + '</time></div>';
+      }).join('');
+      if (!lines) {
+        lines = '<div class="fe note agent"><b>agent</b><span>No lines were recorded for this one.</span>' +
+          '<time></time></div>';
+      }
+      var reply = it.reply
+        ? '<div class="fe text agent hireply"><b>reply</b> <span>' + esc(it.reply) +
+          '</span><time></time></div>'
+        : '';
+      var place = it.section || it.where;
+      var where = place
+        ? (it.block
+            ? '<button class="tkgo" type="button" data-act="hist:goto:' + esc(it.block) + '">' +
+              esc(place) + '</button>'
+            : '<span class="tklabel">' + esc(place) + '</span>')
+        : '';
+      return '<details class="hi is-' + esc(it.state) + '" data-hist="' + esc(it.id) + '"' +
+        (shut ? '' : ' open') + '>' +
+        '<summary title="' + esc(historyTitle(it)) + '">' +
+        '<code>' + esc(it.id) + '</code>' +
+        '<span class="hiasked">' + esc(it.asked || '') + '</span>' +
+        where +
+        '<span class="histate">' + esc(historyMark(it.state)) + ' ' + esc(it.state) + '</span>' +
+        '<time>' + esc(ago(it.at)) + '</time>' +
+        '</summary>' +
+        '<div class="feed-live hilines">' + lines + reply + '</div>' +
+        '</details>';
+    }).join('');
+  }
+
   function hslToHex(h, s, l) {
     h = ((h % 360) + 360) % 360;
     var c = (1 - Math.abs(2 * l - 1)) * s,
@@ -299,8 +384,12 @@
     } else {
       what = TICKER_WORDS[e.state] || String(e.state || '');
     }
-    // A `patch` has no comment behind it, and a state record whose comment
-    // predates this field has none either, so both keep naming the block.
+    // A `patch` reports an edit landing, which nobody asked for in words, so
+    // it names the place instead. A `state` answers a comment and ALWAYS has a
+    // request behind it -- the server clips one onto every state frame and onto
+    // every seeded entry -- so a state entry reaching the fallback means the
+    // request was dropped in transit, which is what happened for months. The
+    // fallback stays because a bare " · done" would tell the author nothing.
     var lead = e.asked ? '“' + e.asked + '”' : tickerWhere(e);
     return lead + ' · ' + what;
   }
@@ -428,6 +517,9 @@
     newestFirst: newestFirst,
     blockName: blockName,
     feedNewestFirst: feedNewestFirst,
+    historyMark: historyMark,
+    historyTitle: historyTitle,
+    historyHTML: historyHTML,
     queueSummary: queueSummary,
     tickerText: tickerText,
     tickerTitle: tickerTitle,
@@ -458,6 +550,7 @@
     blockState: {},         // block id -> queued|working|done|locked
     queue: [],              // the agent's standing work, oldest first
     ticker: [],             // what actually happened, newest first
+    histOpen: {},           // history row id -> open, so a redraw keeps his place
     tickerKey: '',          // so a refresh ages the entries without re-animating
     caret: null,            // {id, start, end, scrollTop}
     extView: null,          // an extension's panel, when one is open
@@ -473,6 +566,11 @@
   var appEl, railEl, docEl, inspEl, docInner, ibodyEl, tabsEl,
       eyebrowEl, ititleEl, isubEl, jumpBtn, backBtn, headSaveEl, liveEl, liveTextEl, metaEl,
       outlineEl, pathEl, hueWheel, agentEl, tickerEl;
+
+  /* The panel's three permanent children. Everything the inspector draws goes
+     into `ipanelEl`, so the source editor can be a SIBLING of the rebuild
+     rather than a casualty of it -- see `ensurePanel`. */
+  var bannersEl, srchostEl, ipanelEl, srcInEl, inclEl;
 
   var anchorEl = null, io = null, warnedBareId = false;
   var railSync = false;   // one syncRailButton per frame while a window resizes
@@ -745,12 +843,26 @@
         scroll: active.scrollTop
       };
     }
+    rememberHistoryOpen();
     return {
       rail: railEl ? railEl.scrollTop : 0,
       doc: docEl ? docEl.scrollTop : 0,
       insp: ibodyEl ? ibodyEl.scrollTop : 0,
       field: field
     };
+  }
+
+  /* Which history rows are open, read off the DOM into state. Every path that
+     rebuilds the panel goes through here or through `renderAgentHistory`, so a
+     row the author opened cannot be folded by a redraw he did not ask for --
+     which is what a `<details>` does by default the moment its markup is
+     replaced. */
+  function rememberHistoryOpen() {
+    if (!ibodyEl) return;
+    var rows = ibodyEl.querySelectorAll('details[data-hist]');
+    for (var i = 0; i < rows.length; i++) {
+      S.histOpen[rows[i].getAttribute('data-hist')] = rows[i].open;
+    }
   }
 
   // `keepDoc` false means the caller is deliberately navigating, so the
@@ -890,7 +1002,10 @@
       tabsEl.appendChild(b);
     });
 
-    ibodyEl.innerHTML = '<div data-role="banners"></div>' + view.tabs[S.tab].body;
+    var tab = view.tabs[S.tab];
+    ensurePanel();
+    ipanelEl.innerHTML = tab.body;
+    mountEditor(tab.editor || null);
     // Measured against the panel's siblings, so it has to run once more after
     // layout settles or a long block sizes itself against a half-built card.
     requestAnimationFrame(autosizeAll);
@@ -916,6 +1031,154 @@
     box.innerHTML = html;
   }
 
+  // ------------------------------------------------------- the source editor
+  //
+  // A <textarea> carries its own undo history, and that history belongs to the
+  // ELEMENT. Destroy the element and Cmd+Z has nothing left to walk back. The
+  // panel used to be drawn with one `ibodyEl.innerHTML = ...`, so every blur,
+  // every tab switch, every reselection and every deferred patch built a brand
+  // new textarea and threw the author's typing history away with the old one.
+  // Undo therefore worked only inside one uninterrupted burst and looked
+  // broken everywhere else.
+  //
+  // Measured in Chrome 151 on 2026-07-28, because the design turns on which of
+  // these actually costs the history:
+  //
+  //   blur, then focus again ............ history KEPT
+  //   the element is replaced ........... history LOST   <- the bug
+  //   the element is MOVED to a new
+  //     parent .......................... history LOST   <- so no slot-and-mount
+  //   hidden with `hidden`, then shown .. history KEPT
+  //   `.value` assigned from script ..... history TRUNCATED at the assignment
+  //
+  // So the editor is built once and never moved: the rebuild writes into
+  // `ipanelEl`, which is its sibling. The last line is the reason an agent's
+  // write is not undoable, which is the scope that was asked for.
+
+  var INSBARS =
+    '<div class="insbars">' +
+    '<div class="insbar"><span>At cursor</span>' +
+    '<button class="ins" type="button" data-open="insert:cite">Citation</button>' +
+    '<button class="ins" type="button" data-open="insert:value">Number</button>' +
+    '<button class="ins" type="button" data-act="ins:footnote">Footnote</button>' +
+    '</div>' +
+    '<div class="insbar"><span>After this ¶</span>' +
+    '<button class="ins" type="button" data-open="insert:exhibit">Exhibit</button>' +
+    '<button class="ins" type="button" data-open="insert:paragraph">New paragraph</button>' +
+    '</div></div>';
+
+  /* The panel's permanent shape, built once: the banners, the editor's card,
+     and the container everything else is redrawn into. */
+  function ensurePanel() {
+    if (ipanelEl && ipanelEl.parentNode === ibodyEl) return;
+    ibodyEl.innerHTML = '';
+
+    bannersEl = document.createElement('div');
+    bannersEl.setAttribute('data-role', 'banners');
+    ibodyEl.appendChild(bannersEl);
+
+    var holder = document.createElement('div');
+    holder.innerHTML = card('', 'editable', INSBARS + '<div data-role="inclnote"></div>', true);
+    srchostEl = holder.firstChild;
+    srchostEl.setAttribute('data-role', 'srchost');
+    srchostEl.hidden = true;
+    srcInEl = srchostEl.querySelector('.in');
+    inclEl = srchostEl.querySelector('[data-role="inclnote"]');
+    ibodyEl.appendChild(srchostEl);
+
+    ipanelEl = document.createElement('div');
+    ipanelEl.setAttribute('data-role', 'ipanel');
+    ibodyEl.appendChild(ipanelEl);
+  }
+
+  /* The editor for the block the source tab is showing, or none at all.
+     `spec` is what `sourceTab` decided; a null one means the panel is showing
+     something that is not an editable block's source. */
+  function mountEditor(spec) {
+    ensurePanel();
+    if (!spec) { srchostEl.hidden = true; return; }
+
+    var el = srcInEl.querySelector('textarea[data-role="src"]');
+    var fresh = false;
+    /* A different block is a different undo history, and Blink's undo stack is
+       per FRAME rather than per element: with two editors in the document at
+       once, a second Cmd+Z pressed in one of them walks back the OTHER one
+       (measured, same session). One editor at a time, replaced outright when
+       the block changes, is what keeps per-block meaning per-block -- the old
+       element leaves the document and its steps go invalid with it. */
+    if (!el || el.getAttribute('data-block') !== spec.id) {
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+      el = makeEditor(spec.id);
+      srcInEl.insertBefore(el, srcInEl.firstChild);
+      fresh = true;
+    }
+    /* Only when it really moved. Assigning `.value` truncates the undo history
+       at the assignment, so doing it on every render would undo the repair. */
+    if (el.value !== spec.text) el.value = spec.text;
+    inclEl.innerHTML = spec.includes || '';
+    srchostEl.hidden = false;
+
+    // Open showing the whole paragraph, not a porthole to drag open.
+    autosize(el);
+    if (fresh && S.caret && S.caret.id === spec.id) {
+      try { el.setSelectionRange(S.caret.start, S.caret.end); } catch (e) { /* ignore */ }
+      el.scrollTop = S.caret.scrollTop;
+    }
+  }
+
+  function makeEditor(id) {
+    var src = document.createElement('textarea');
+    src.className = 'src';
+    src.spellcheck = false;
+    src.setAttribute('data-role', 'src');
+    src.setAttribute('data-block', id);
+
+    /* Read the id off the element on every use, never capture it.
+       Ids are content-derived, so the FIRST save renames this very block, and
+       the element outlives every rename, so a captured id goes stale exactly
+       during a burst of continuous typing. Every keystroke after that
+       addressed a block the build no longer had: the drafts were written under
+       a dead key and the saves silently did nothing. `applyRenames` keeps
+       `data-block` current, so asking the element is asking the live build. */
+    var cur = function () { return src.getAttribute('data-block'); };
+
+    src.addEventListener('input', function () {
+      /* Undo is frame-wide. Pressing it in the chat composer fires a
+         `historyUndo` input event on THIS box even while it is hidden behind
+         another tab (measured, Chrome 151). Only what the author does in the
+         box he is actually in may reach the manuscript. */
+      if (document.activeElement !== src) return;
+      var live = cur();
+      autosize(src);
+      setDraft(live, src.value);
+      rememberCaret(live, src);
+      S.save[live] = { state: 'typing' };
+      renderBanners();
+      renderSaveBox(live);   // or the line still claims there is nothing unsaved
+      scheduleSave(live);
+    });
+    src.addEventListener('keyup', function () { rememberCaret(cur(), src); });
+    src.addEventListener('click', function () { rememberCaret(cur(), src); });
+    src.addEventListener('focus', function () { S.focusedBlock = cur(); });
+    src.addEventListener('blur', function () {
+      var live = cur();
+      S.focusedBlock = null;
+      rememberCaret(live, src);
+      if (S.saveTimer) { clearTimeout(S.saveTimer); S.saveTimer = null; }
+      trySave(live);
+      flushDeferred(live);
+    });
+    return src;
+  }
+
+  /* The editor, only when it is the one on screen. A hidden editor is still in
+     the document -- that is what keeps its history -- so anything that acts on
+     "the editor" has to ask whether it is showing. */
+  function activeEditor() {
+    if (!srchostEl || srchostEl.hidden) return null;
+    return srcInEl.querySelector('textarea[data-role="src"]');
+  }
+
   // ------------------------------------------------------------------- views
 
   function fileLine(b) {
@@ -935,13 +1198,15 @@
     var chat = S.chats[id] || [];
     var values = b.values || [];
     var cites = b.cites || [];
+    var source = sourceTab(id, b);
+    source.name = 'Source';
     return {
       eyebrow: b.kind === 'paragraph' ? 'Paragraph' : (b.kind || 'Block'),
       chip: b.editable === false ? ['c', 'generated'] : null,
       title: titleFor(b),
       sub: fileLine(b) + (values.length ? ' · ' + values.length + ' computed value' + (values.length === 1 ? '' : 's') + ' inside' : ''),
       tabs: [
-        { name: 'Source', body: sourceTab(id, b) },
+        source,
         { name: 'Chat', n: chat.length || 0, body: chatTab(id, chat) },
         { name: 'References', n: values.length + cites.length || 0, body: refsTab(id, b) }
       ].concat(EXT.map(function (e) {
@@ -957,13 +1222,17 @@
     return blockName(b) || 'Manuscript';
   }
 
+  /* What the Source tab shows: markup to be redrawn, and -- when the block is
+     one the author may edit -- the editor it should be showing. The editor is
+     described rather than emitted, because emitting it would mean building a
+     new textarea on every render, which is the bug this all exists to fix. */
   function sourceTab(id, b) {
     var state = S.blockState[id];
 
     if (state === 'locked') {
-      return card('', 'locked while working',
+      return { body: card('', 'locked while working',
         '<div class="locked"><span>◔</span><div><b>Locked.</b> This block is being edited right now. ' +
-        'It unlocks when the change lands, and you will see the diff.</div></div>');
+        'It unlocks when the change lands, and you will see the diff.</div></div>') };
     }
 
     /* Never hand-edit a generated block. Editing it would hardcode a result
@@ -971,15 +1240,14 @@
     if (b.editable === false) {
       var producers = (b.values || []).map(function (v) { return v.producer; }).filter(Boolean);
       var who = producers.length ? producers.join(', ') : 'the script that writes ' + (b.file || 'this file');
-      return card('This block is generated', fileLine(b),
+      return { body: card('This block is generated', fileLine(b),
         '<div class="locked"><span>⊘</span><div><b>Not editable here.</b> This file is written by <b>' +
         esc(who) + '</b>. Editing it would hardcode a result into the manuscript. ' +
         'Change the script and it will rebuild.</div></div>' +
         '<div class="row" style="margin-top:.6rem"><button class="btn" data-act="ask:rerun">Ask for a re-run</button></div>') +
-        card('Read-only source', '', '<textarea class="src" readonly data-role="ro">' + esc(b.source || '') + '</textarea>', true);
+        card('Read-only source', '', '<textarea class="src" readonly data-role="ro">' + esc(b.source || '') + '</textarea>', true) };
     }
 
-    var text = sourceOf(id);
     var includes = b.includes || [];
     var incl = includes.length
       ? '<p class="meta" style="padding:.5rem .7rem .6rem">You are holding the unflattened source, so ' +
@@ -987,19 +1255,7 @@
         ' survive' + (includes.length === 1 ? 's' : '') + ' your edit. The values shown in the page are read from those files.</p>'
       : '';
 
-    return card('', 'editable',
-      '<textarea class="src" spellcheck="false" data-role="src" data-block="' + esc(id) + '">' + esc(text) + '</textarea>' +
-      '<div class="insbars">' +
-      '<div class="insbar"><span>At cursor</span>' +
-      '<button class="ins" type="button" data-open="insert:cite">Citation</button>' +
-      '<button class="ins" type="button" data-open="insert:value">Number</button>' +
-      '<button class="ins" type="button" data-act="ins:footnote">Footnote</button>' +
-      '</div>' +
-      '<div class="insbar"><span>After this ¶</span>' +
-      '<button class="ins" type="button" data-open="insert:exhibit">Exhibit</button>' +
-      '<button class="ins" type="button" data-open="insert:paragraph">New paragraph</button>' +
-      '</div></div>' + incl, true) +
-      '';
+    return { body: '', editor: { id: id, text: sourceOf(id), includes: incl } };
   }
 
   // The editor should open showing the whole paragraph rather than a 7rem
@@ -1021,8 +1277,13 @@
     el.style.height = Math.max(96, Math.min(el.scrollHeight + 2, Math.max(160, room))) + 'px';
   }
 
+  /* The editor on screen, which is the live one when a block is open and the
+     read-only copy when a generated block is. The hidden editor is skipped:
+     it has no layout to measure against, and sizing it would only write a
+     height it will not be wearing when it comes back. */
   function autosizeAll() {
-    var el = document.querySelector('.insp-body textarea.src');
+    var el = activeEditor();
+    if (!el && ipanelEl) el = ipanelEl.querySelector('textarea.src');
     if (el) autosize(el);
   }
 
@@ -1200,6 +1461,38 @@
     if (back) back.scrollTop = at;
   }
 
+  /* THE HISTORY, under the live feed. The two answer different questions and
+     the card above answers only the first: what it is doing NOW, from a ring
+     that the drain's next restart -- one every twenty wakes or so -- rewrites
+     from empty. This is what it has done, kept in the append-only ledger and
+     threaded by the request that caused it, so it survives that restart, a
+     server restart, and a reload. */
+  function agentHistory() {
+    var items = S.ms.history || [];
+    var head = items.length
+      ? items.length + ' item' + (items.length === 1 ? '' : 's')
+      : '';
+    return '<div data-role="agenthistory">' +
+      card('What it has done', head, historyHTML(items, S.histOpen)) +
+      '</div>';
+  }
+
+  /* Swapped on its own for the same reason the feed card is: the composer sits
+     above both, and rebuilding the panel on every frame would take the
+     author's caret and draft with it. Which rows are open is the author's
+     place in this card, the way scrollTop is in the feed's, so it is read off
+     the DOM before the swap and written back after -- a row cannot fold itself
+     because a line arrived in another one. */
+  function renderAgentHistory() {
+    if (S.sel || !ibodyEl) return;
+    var slot = ibodyEl.querySelector('[data-role="agenthistory"]');
+    if (!slot) return;
+    rememberHistoryOpen();
+    var next = agentHistory();
+    if (slot.outerHTML === next) return;
+    slot.outerHTML = next;
+  }
+
   function renderHome() {
     if (S.sel) return;
     var ui = captureUI();
@@ -1218,11 +1511,14 @@
       'a citation to see its evidence, or a violet number to see the code that produced it. ' +
       'A note typed above becomes a comment on the whole manuscript, worked by the same queue.</p>');
     body += agentFeed();
+    body += agentHistory();
     if (msgs.length) {
       body += card('Earlier', msgs.length + ' message' + (msgs.length === 1 ? '' : 's'),
         chatMsgs(msgs));
     }
-    ibodyEl.innerHTML = '<div data-role="banners"></div>' + body;
+    ensurePanel();
+    ipanelEl.innerHTML = body;
+    mountEditor(null);
     wireInspector();
     restoreUI(ui, true);
   }
@@ -1599,51 +1895,10 @@
 
   // ------------------------------------------------------- editing and saving
 
+  /* Only what the rebuild rebuilt. The source editor is wired once, in
+     `makeEditor`, because it is built once: re-wiring it here would mean it had
+     been replaced, and a replaced editor is an editor with no undo history. */
   function wireInspector() {
-    var src = ibodyEl.querySelector('textarea.src[data-role="src"]');
-    if (src) {
-      /* Read the id off the element on every use, never capture it.
-         Ids are content-derived, so the FIRST save renames this very block, and
-         the panel is deliberately not rebuilt while its editor has focus
-         (behaviour 3), so a captured id goes stale exactly during a burst of
-         continuous typing. Every keystroke after that addressed a block the
-         build no longer had: the drafts were written under a dead key and the
-         saves silently did nothing. `applyRenames` keeps `data-block` current,
-         so asking the element is asking the live build. */
-      var cur = function () { return src.getAttribute('data-block'); };
-      var id = cur();
-
-      // Open showing the whole paragraph, not a porthole to drag open.
-      autosize(src);
-
-      if (S.caret && S.caret.id === id) {
-        try { src.setSelectionRange(S.caret.start, S.caret.end); } catch (e) { /* ignore */ }
-        src.scrollTop = S.caret.scrollTop;
-      }
-
-      src.addEventListener('input', function () {
-        var live = cur();
-        autosize(src);
-        setDraft(live, src.value);
-        rememberCaret(live, src);
-        S.save[live] = { state: 'typing' };
-        renderBanners();
-        renderSaveBox(live);   // or the line still claims there is nothing unsaved
-        scheduleSave(live);
-      });
-      src.addEventListener('keyup', function () { rememberCaret(cur(), src); });
-      src.addEventListener('click', function () { rememberCaret(cur(), src); });
-      src.addEventListener('focus', function () { S.focusedBlock = cur(); });
-      src.addEventListener('blur', function () {
-        var live = cur();
-        S.focusedBlock = null;
-        rememberCaret(live, src);
-        if (S.saveTimer) { clearTimeout(S.saveTimer); S.saveTimer = null; }
-        trySave(live);
-        flushDeferred(live);
-      });
-    }
-
     var boxes = ibodyEl.querySelectorAll('.composer textarea[data-role]');
     for (var i = 0; i < boxes.length; i++) {
       (function (box) {
@@ -1746,7 +2001,10 @@
   }
 
   function insertAtCursor(snippet, back) {
-    var src = ibodyEl.querySelector('textarea.src[data-role="src"]');
+    /* The editor that is SHOWING. It survives a tab switch now, so asking the
+       panel for a textarea would find one belonging to a block whose source
+       the author is not looking at. */
+    var src = activeEditor();
     if (!src) return;
     var id = src.getAttribute('data-block');
     // A textarea that has never been focused reports selectionStart 0, which is
@@ -2038,8 +2296,18 @@
         // ticker with the author's own three comments and pushed the agent's
         // work off the end of it. The ticker is for what MOVED.
         if (msg.state !== 'queued') {
+          /* `id` and `asked` come off the frame and are not re-derived here.
+             The line leads with the REQUEST, and the request was already
+             clipped server-side by the same function that clips the seed; a
+             second shortener in this file would be a second answer to one
+             question, differing by a word or an ellipsis depending on which
+             half of the ticker the author happened to be reading. `id` is what
+             tells two requests on one paragraph apart, in the margin label and
+             in `tickerKey` both -- dropping it here left that dedup inert for
+             every entry that arrived live. */
           pushTicker({
             kind: 'state', state: msg.state, block: id,
+            id: msg.id, asked: msg.asked,
             section: sectionOf(id), when: msg.at || new Date().toISOString()
           });
         }
@@ -2097,11 +2365,21 @@
         break;
       }
       case 'cites': {
-        // The evidence pass finished and the server re-read its records:
-        // recolour every underline in place, no reload.
+        // The verdicts moved -- the evidence pass finished, or an ordinary
+        // rebuild re-read its records. Recolour every underline in place, no
+        // reload.
         S.ms.cites = msg.cites || {};
         hydrateSpans(docInner);
         if (S.sel && S.sel.kind === 'cite') renderInspector();
+        break;
+      }
+      case 'stats': {
+        /* The counts in the header are derived from the whole build and belong
+           to no block, so no patch can carry them. Nothing sent them at all and
+           the header read whatever the page was born with: a manuscript that
+           gained a citation still said "1 citations" until it was reloaded. */
+        S.ms.stats = msg.stats || {};
+        updateMeta();
         break;
       }
       case 'evidence': {
@@ -2121,6 +2399,14 @@
         S.ms.agent_feed = msg.feed || {};
         setAgent(msg.feed);
         if (!S.sel) renderHome();
+        break;
+      }
+      case 'history': {
+        /* The ledger grew, or an outcome landed in the comment log. The card
+           is swapped by itself rather than through `renderHome`, which would
+           take the composer's caret and the author's open rows with it. */
+        S.ms.history = msg.history || [];
+        renderAgentHistory();
         break;
       }
       case 'saved': {
@@ -2325,6 +2611,8 @@
     // Here rather than in `setAgent`, so the 15-second tick ages the card's own
     // timestamps too and does not leave it claiming work started "just now".
     renderAgentFeed();
+    // The history ages the same way: "✓ done 4m" is only true for a minute.
+    renderAgentHistory();
   }
 
   function tickerKey(items) {
@@ -2509,20 +2797,31 @@
     renderHome();
   }
 
+  /* Open a paragraph and scroll to it. One implementation, because the feed
+     card and the history card both offer the jump and two copies of it would
+     be two answers to "what does selecting a block from the panel do". */
+  function gotoBlock(block) {
+    var gid = block ? normId(block) : null;
+    if (!gid || !S.blocks[gid]) return;
+    select('block', gid, gid, null, { keepDoc: false });
+    requestAnimationFrame(function () {
+      var el = blockEl(gid);
+      if (el) el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
+    });
+  }
+
   function doAct(act) {
     if (act === 'rail:toggle') { toggleRail(); return; }
     if (act === 'feed:goto') {
       /* The feed names the comment being worked; the comment names the block. */
       var w = ((S.ms.agent_feed || {}).working || [])[0];
       var hit = w && S.queue.filter(function (e) { return e && e.id === w; })[0];
-      var gid = hit && hit.block ? normId(hit.block) : null;
-      if (gid && S.blocks[gid]) {
-        select('block', gid, gid, null, { keepDoc: false });
-        requestAnimationFrame(function () {
-          var el = blockEl(gid);
-          if (el) el.scrollIntoView({ behavior: reduceMotion() ? 'auto' : 'smooth', block: 'start' });
-        });
-      }
+      gotoBlock(hit && hit.block);
+      return;
+    }
+    if (act.indexOf('hist:goto:') === 0) {
+      // A history row names its block outright, so no lookup is needed.
+      gotoBlock(act.slice('hist:goto:'.length));
       return;
     }
     if (act === 'evidence:run') { runEvidence(); return; }
@@ -2589,6 +2888,22 @@
 
   function onKeydown(e) {
     var t = e.target;
+
+    /* Ctrl+Z, for the plain browser tab. Cmd+Z is left strictly alone: the
+       browser and the Mac app's Edit menu (whose key equivalent IS Cmd+Z) both
+       already reach the textarea's own history, and a second handler on it
+       would undo twice. Ctrl+Z reaches nothing on macOS -- measured, Chrome
+       151 -- so binding it takes nothing away and gives the same key on every
+       platform. `preventDefault` first, or a Linux browser would run its own
+       undo as well as this one. Nothing else in the page binds Z. */
+    if (e.ctrlKey && !e.metaKey && !e.altKey && String(e.key).toLowerCase() === 'z') {
+      if (t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT')) {
+        e.preventDefault();
+        try { document.execCommand(e.shiftKey ? 'redo' : 'undo'); } catch (err) { /* no editor */ }
+        return;
+      }
+    }
+
     if ((e.key === 'Enter' || e.key === ' ') && t && t.matches &&
         t.matches('.blk, .exhibit, .cite, .val, [data-goto]')) {
       e.preventDefault();

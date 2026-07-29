@@ -51,6 +51,8 @@ for reading and screenshots, and nothing else.
 
 Watch every guard fail before trusting it. A test that has never failed proves nothing, and a skipped test is not a pass. The tests that matter most: flatten resolves nested includes with exact offsets; block ids survive an edit above them; sentinels round-trip through pandoc into the correct position; a splice to block N changes only block N's bytes; a comment on block 40 still resolves after block 3 is rewritten.
 
+**A test may not write a websocket frame.** For a long time none did, and the whole live push path was untested while the boot path was asserted everywhere -- so the server rebuilt correctly and the open page stayed wrong, in four places at once, under a suite that passed. `tests/pagedriver.py` loads the page the server renders, runs the real `viewer.js` in it, and hands it frames the server built (`_diff`, or whatever `broadcast` was handed); assert on what the page holds afterwards. It needs node and jsdom -- run `npm install` in `tests/js` -- and `tests/test_live_frames.py` SKIPS without them, so check that it ran.
+
 ## Verifying rendered output
 
 Arc is effectively always running, and launching a second instance is prohibited. Probe `curl -s 127.0.0.1:9222/json/version` and connect to the live session via the chrome-devtools MCP. Point a tab at the running server rather than at a file, and call `resize_page` to 1440x900 before screenshotting, since retina defaults exceed the 2000px image limit.

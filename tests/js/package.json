@@ -1,0 +1,8 @@
+{
+  "name": "manuscriptor-page-driver",
+  "private": true,
+  "description": "jsdom, so a test can load the server's own page, run the real viewer.js in it, and hand it the server's own websocket frames. Test-only; the product ships no node dependency.",
+  "devDependencies": {
+    "jsdom": "^27.0.0"
+  }
+}

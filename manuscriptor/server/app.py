@@ -73,6 +73,16 @@ class Session:
         # The queue as it was last pushed, reduced to its identity so a repaint
         # is triggered by work moving and not by a second passing.
         self.seen_queue: list[tuple] = []
+        # The threaded history as last pushed. Compared whole rather than by an
+        # identity tuple: a work item changes by GAINING A LINE, which no
+        # summary of its ids and states can see.
+        self.seen_history: list[dict] | None = None
+        # What the clients have been told about the state derived from the build
+        # rather than from any one block: the evidence verdicts, and the header
+        # counts. Seeded below from the first build, because a page is BORN
+        # holding these -- pushing them again on the first change would be a
+        # repaint of something already correct.
+        self.seen_derived: dict[str, dict] = {}
         # Every editable document in the tree, and the one we open on. An
         # explicit --main names a file in the served directory itself; otherwise
         # the first discovered document is the default, so opening a top-level
@@ -85,6 +95,11 @@ class Session:
         self._migrated: set[Path] = set()
         self.notices: list[str] = []
         self.rebuild()
+        self.seen_derived = self._derived()
+        # A page is BORN holding the history, the same way it is born holding
+        # the counts: pushing it again on the first watcher event would repaint
+        # something already correct.
+        self.seen_history = self.blob.get("history")
 
     def _default_current(self, main: str | None) -> tree_mod.Document | None:
         """Which document to open on. `None` means "no document was discovered".
@@ -137,6 +152,22 @@ class Session:
         in the hidden directory and outside the cache the `clean` command may
         remove: no rebuild can reconstruct a paragraph the author never saved."""
         return paths.drafts(self.root)
+
+    @property
+    def feed_file(self) -> Path:
+        """The drain's live feed, which this session reads and never writes.
+
+        A property beside `log` and `drafts_file` rather than a path built at
+        each use, because it was built at each use and the two uses disagreed:
+        `on_feed_change` read `paths.agent_dir`, and `serve` armed its watcher
+        on `build/manuscriptor`, the pre-2026-07-27 layout. The frozen file
+        never fired, so the handler that had the right path was never called
+        and the panel never moved. It also follows a document switch, which a
+        path captured once at serve time cannot do.
+        """
+        from manuscriptor.server import feed as feed_mod
+
+        return feed_mod.progress_path(paths.agent_dir(self.root))
 
     @property
     def current_ref(self) -> str:
@@ -237,6 +268,29 @@ class Session:
         for ws in dead:
             self.clients.discard(ws)
 
+    # The state a page holds that belongs to no block, and therefore to no patch.
+    # Both are recomputed on EVERY rebuild and neither was ever pushed by one:
+    # `cites` went out only when the evidence pass finished, `stats` went out
+    # never. So a tab was right at the moment it opened and frozen from then on
+    # -- the header still said "1 citations" over a manuscript with two, and an
+    # underline kept the colour it was born with whatever the records said. One
+    # place decides when they move, so the evidence route and the watcher cannot
+    # come to disagree about it.
+    DERIVED = ("cites", "stats")
+
+    def _derived(self) -> dict[str, dict]:
+        if self.build is None:
+            return {}
+        return {k: self.blob.get(k) or {} for k in self.DERIVED}
+
+    async def push_derived(self) -> None:
+        """Tell the clients about derived state that moved, and only that."""
+        for kind, value in self._derived().items():
+            if self.seen_derived.get(kind) == value:
+                continue
+            self.seen_derived[kind] = value
+            await self.broadcast({"type": kind, kind: value})
+
     async def on_change(self, *, refresh_assets: bool = False) -> None:
         """A .tex file changed on disk. Re-render and push only what moved.
 
@@ -263,6 +317,11 @@ class Session:
                 drafts_mod.rekey(self.drafts_file, patch["renamed"])
         if patch:
             await self.broadcast(patch)
+        # After the patch and not with it: the counts and the verdicts move
+        # whether or not any block did, which is the whole point of them being
+        # their own frame. A `.bib` fixed on its own patches nothing and still
+        # changes what the header says.
+        await self.push_derived()
         if refresh_assets:
             # The src path is stable, so the version query is the only thing that
             # can force the browser past the copy it already has.
@@ -286,6 +345,47 @@ class Session:
                 return
         await self.broadcast({"type": "assets", "v": chat.now()})
 
+    @property
+    def history_file(self) -> Path:
+        """The drain's append-only ledger, which this session reads and never
+        writes. Beside `feed_file` and derived the same way, so a document
+        switch moves both together."""
+        from manuscriptor.server import feed as feed_mod
+
+        return feed_mod.history_path(paths.agent_dir(self.root))
+
+    def _history(self) -> list[dict]:
+        """The threaded history for the document being served.
+
+        Both halves of the join are re-read here: the ledger, because the drain
+        appends to it as it works, and the comment log, because that is where
+        the outcome is. Scoped by `doc` -- the ledger is per directory since the
+        drain session is, and this payload is per document.
+        """
+        from manuscriptor.server import feed as feed_mod
+
+        if self.build is None:
+            return []
+        return build_mod.history_view(
+            self.log, self.build.blocks, feed_mod.read_history(self.history_file),
+            root=self.root, doc=self.doc)
+
+    async def push_history(self) -> None:
+        """Tell the clients what the agent has done, when it has changed.
+
+        Called from BOTH watchers, because the row is a join of two files that
+        move independently: the drain appends a line to the ledger, and the
+        outcome that closes the row is a state record in the comment log.
+        """
+        if self.build is None:
+            return
+        fresh = self._history()
+        self.build.blob["history"] = fresh
+        if fresh == self.seen_history:
+            return
+        self.seen_history = fresh
+        await self.broadcast({"type": "history", "history": fresh})
+
     async def on_feed_change(self) -> None:
         """Push what the drain is doing. The file is written by the drain; this
         only reads it, which is the whole of the server's relationship with
@@ -295,11 +395,15 @@ class Session:
 
         if self.build is None:
             return
-        fresh = feed_mod.read_feed(feed_mod.progress_path(paths.agent_dir(self.root)))
-        if fresh == self.build.blob.get("agent_feed"):
-            return
-        self.build.blob["agent_feed"] = fresh
-        await self.broadcast({"type": "feed", "feed": fresh})
+        fresh = feed_mod.read_feed(self.feed_file)
+        if fresh != self.build.blob.get("agent_feed"):
+            self.build.blob["agent_feed"] = fresh
+            await self.broadcast({"type": "feed", "feed": fresh})
+        # After the live frame and unconditionally: the ledger is appended to on
+        # every entry while the ring is COALESCED, so the two files move at
+        # different moments and an unchanged envelope does not mean an unchanged
+        # history. `push_history` is what decides whether anything goes out.
+        await self.push_history()
 
     async def on_log_change(self) -> None:
         """Tell the page what the agent did.
@@ -351,6 +455,15 @@ class Session:
                     # keyed only by block cannot say WHICH chat moved.
                     "type": "state", "block": msg["block"], "state": msg["state"],
                     "id": cid,
+                    # WHAT WAS ASKED, because that is what the ticker line is
+                    # about. Without it the line falls back to naming the block,
+                    # and a block is named by its own first words, so the author
+                    # watched his paragraph quote itself instead of telling him
+                    # which of his two requests had been picked up. The seed
+                    # (`ticker_view`) has always carried this; the live frame
+                    # never did, so the line changed under him on every reload.
+                    # Clipped by the server through the one clip both paths use.
+                    "asked": build_mod.asked_of(msg.get("body")) or None,
                     # The ticker reports what happened, so it ages each entry by
                     # the log's own time rather than by the client's clock at the
                     # moment the frame happened to arrive.
@@ -381,15 +494,54 @@ class Session:
                 doc=self.doc
             )
         self.seen_chats = current
+        # The outcome half of a history row lives in this log, so a `done`
+        # appended here is what turns a row from working into finished. Without
+        # this the row would carry the agent's lines and then sit on `working`
+        # until something else happened to make the feed move.
+        await self.push_history()
 
     async def on_edit(self, block_id: str, source: str) -> dict:
-        """Splice one block back to disk. The watcher handles the redraw."""
+        """Splice one block back to disk. The watcher handles the redraw.
+
+        THE BLOCK IS RE-CUT FROM THE FILE BEFORE IT IS WRITTEN, never taken
+        from the build as it stands. A build is a snapshot, and the only thing
+        that advances it is the tree watcher -- a filesystem notification, which
+        arrives late, arrives after a rebuild that takes a second on a real
+        manuscript, and sometimes does not arrive at all. Between the splice and
+        the rebuild the build describes a file that has already moved, and the
+        page keeps sending the id it last heard, so the SECOND save of a run
+        hands `splice` a byte range that is one save out of date.
+
+        That is what wrote `... ALPHA. BETA BETA.` into a manuscript during
+        ordinary typing on 2026-07-28: the block still existed, its text was
+        still in the file as a prefix of the paragraph it had become, and the
+        splice landed on the prefix. `splice` now refuses that -- but refusing
+        the author's own keystrokes every other save is not a fix, so the range
+        is derived from the file itself and the refusal is left to mean what it
+        says, that somebody ELSE rewrote the paragraph.
+
+        Ids are content-derived, so re-cutting renames the block the page is
+        naming. `rematch` is what carries the page's id onto the block it has
+        become; comparing ids across two cuts any other way is the bug this
+        codebase has already shipped once.
+
+        `cli.py` has always rebuilt immediately before splicing a stored draft.
+        The server was the one writer working from a snapshot.
+        """
         if self.read_only:
             return {"type": "held", "block": block_id,
                     "reason": "This manuscript is open read-only, so nothing here can write to it."}
         block = self.build.by_id.get(block_id)
         if block is None:
             return {"type": "held", "block": block_id, "reason": "unknown block"}
+        try:
+            block = await asyncio.to_thread(self._current_block, block)
+        except Exception as exc:                    # a manuscript mid-edit
+            return {"type": "held", "block": block_id, "reason": str(exc)[:400]}
+        if block is None:
+            return {"type": "held", "block": block_id,
+                    "reason": "this paragraph is no longer in the manuscript, so there is "
+                              "nothing to write it over"}
         try:
             await asyncio.to_thread(
                 splice_mod.splice, block, source, root=self.root, holder=HOLDER
@@ -403,6 +555,47 @@ class Session:
         # It is on disk in the manuscript now, so the draft has done its job.
         self.forget_draft(block_id)
         return {"type": "saved", "block": block_id, "at": chat.now()}
+
+    def _current_block(self, block):
+        """`block` as the files on disk have it now, or None if it is gone.
+
+        Blocks only, not a build: a save needs to know where a paragraph starts
+        and ends, and paying pandoc for that would put a second of rendering in
+        front of every keystroke pause. The rebuild that redraws the page still
+        happens, once, when the watcher reports the write.
+
+        NOTHING IS ACCEPTED ON ITS ID ALONE, and the file it lives in is why. A
+        manuscript that repeats a stanza -- estonia-ecm's appendix opens six
+        table files with the same two `\\newcolumntype` lines -- disambiguates
+        the copies with a `-2`, `-3`, `-4` suffix counted in document order. Edit
+        the fourth and it stops being a copy, so the fifth BECOMES `-4` in the
+        next cut: the same id string, a different paragraph, in a different
+        file. Following it wrote the author's edit into a table he had not
+        opened.
+
+        So the whole question is asked INSIDE THE BLOCK'S OWN FILE. `rematch`
+        already refuses to pair two blocks across files on similarity; it is its
+        exact-id pass that does not ask, and that pass is the one a renumber
+        fools. Given only this file's blocks it cannot reach the wrong copy, and
+        the renumbered stanza resolves on similarity to the paragraph it
+        actually became -- which is what lets the author keep typing into a
+        paragraph his manuscript happens to repeat, rather than being refused
+        from his second keystroke onward.
+        """
+        from manuscriptor.source import blocks as _blocks
+
+        fresh = build_mod.source_blocks(self.root, self.build.main_tex)
+        here = tuple(b for b in fresh if b.file == block.file)
+        # Untouched since the build: same name, same words, same file.
+        for b in here:
+            if b.id == block.id and b.source_text == block.source_text:
+                return b
+        # Otherwise it was rewritten -- by this page's own last save, most
+        # likely -- and an edit renames its block, so follow it through the one
+        # thing that maps ids across two cuts.
+        was = tuple(b for b in self.build.blocks if b.file == block.file)
+        moved = _blocks.rematch(was, here).get(block.id)
+        return next((b for b in here if b.id == moved), None) if moved else None
 
     def keep_draft(self, block_id: str, source: str) -> dict:
         """Hold unsaved text where a crash cannot take it.
@@ -556,8 +749,8 @@ def classify(paths) -> tuple[str, bool]:
     return "assets", assets
 
 
-def block_html(html: str, block_id: str) -> str | None:
-    """Everything the block rendered as, not only the element carrying its anchor.
+def block_span(html: str, block_id: str) -> tuple[int, int] | None:
+    """Where a block's markup starts and ends in the rendered document.
 
     Most blocks are one element and this returns exactly that. Some are SEVERAL:
     the front matter renders as a title, a byline, an abstract label, the abstract
@@ -568,6 +761,11 @@ def block_html(html: str, block_id: str) -> str | None:
 
     The run ends at the next element that carries an anchor of its own, which is
     where the next block starts, or at the closing tag of the container.
+
+    Separate from `block_html` because two callers want different things from the
+    same answer -- one wants the markup, one wants to know what is NOT covered by
+    any block -- and finding a block's run twice, in two functions, is how the
+    two would come to disagree about where a block ends.
     """
     m = re.search(r'data-mx="' + re.escape(block_id) + r'"', html)
     if not m:
@@ -587,7 +785,52 @@ def block_html(html: str, block_id: str) -> str | None:
         if nend is None or 'data-mx="' in html[nxt:nend]:
             break                                   # the next block starts here
         end = nend
-    return html[start:end]
+    return (start, end)
+
+
+def block_html(html: str, block_id: str) -> str | None:
+    """Everything the block rendered as, ready to be put on the page."""
+    span = block_span(html, block_id)
+    return None if span is None else html[span[0]:span[1]]
+
+
+def _rendered(build) -> tuple[dict[str, str], str]:
+    """What each block LOOKS like, and everything no block covers.
+
+    The markup carries the block's own `data-mx`, and that is left in it. An id
+    is derived from content, so a block cannot be renamed without its source
+    moving -- `rematch` resolves a shifted duplicate suffix by id and never
+    reports it as a rename -- which means the id in the value can only differ
+    when the caller has already found a difference in the source. Stripping it
+    first would be an unreachable branch dressed as a safeguard.
+
+    The remainder is every byte of the document outside a block run. It should be
+    whitespace -- a run absorbs the unanchored elements after it, so everything
+    from the first anchor to the end of the container belongs to some block --
+    and `tests/test_live_frames.py` holds it to that. It is returned rather than
+    assumed because it is the one part of the document that no frame can address,
+    and a silent stale patch of it is exactly the class of bug this comparison
+    was written to end.
+    """
+    html = build.blob["html"]
+    spans: list[tuple[int, int]] = []
+    out: dict[str, str] = {}
+    for b in build.blocks:
+        span = block_span(html, b.id)
+        if span is None:
+            continue
+        spans.append(span)
+        out[b.id] = html[span[0]:span[1]]
+    spans.sort()
+
+    rest: list[str] = []
+    at = 0
+    for start, end in spans:
+        if start > at:
+            rest.append(html[at:start])
+        at = max(at, end)
+    rest.append(html[at:])
+    return out, "".join(rest)
 
 
 def _diff(old, new) -> dict | None:
@@ -599,22 +842,46 @@ def _diff(old, new) -> dict | None:
     one thing the whole anchoring design exists to prevent. `rematch` is what
     maps an old id onto the block it became, so the diff goes through it and the
     rename travels to the client.
+
+    ONE RULE DECIDES WHETHER A BLOCK MOVED: anything the client holds about it.
+    That is its markup OR its LaTeX, and it has to be both because the two come
+    apart in each direction. This asked only about the LaTeX, and a block's
+    render depends on inputs its own LaTeX never mentions -- the `.bib` behind
+    a `\\citep`, the `.aux` behind a `\\ref`. The bibliography's source is the
+    unchanging line `\\bibliography{references}`, so adding a citation patched
+    the paragraph and left the reference list below it as it was, and a fix to
+    a journal name in the `.bib` produced no frame AT ALL: the file is watched
+    and the rebuild was right, and the whole of it was discarded in silence.
+    The reverse also happens -- a whitespace or comment-only edit changes the
+    LaTeX and not the render -- and the inspector's source editor would go
+    stale on it, so the source comparison stays alongside rather than instead.
     """
     from manuscriptor.source import blocks as _blocks
 
     mapping = _blocks.rematch(old.blocks, new.blocks)
     old_src = {b.id: b.source_text for b in old.blocks}
     new_by_id = {b.id: b for b in new.blocks}
+    old_render, old_rest = _rendered(old)
+    new_render, new_rest = _rendered(new)
 
     changed: list[str] = []
     renamed: dict[str, str] = {}
     for old_id, new_id in mapping.items():
         if new_id is None:
             continue
-        if old_src.get(old_id) != new_by_id[new_id].source_text:
+        if (old_src.get(old_id) != new_by_id[new_id].source_text
+                or old_render.get(old_id) != new_render.get(new_id)):
             changed.append(new_id)
         if new_id != old_id:
             renamed[old_id] = new_id
+
+    # Nothing outside a block can be addressed by a frame, so if the document
+    # moved OUT THERE the only honest answer is to redraw all of it. Compared on
+    # its non-whitespace content, because the remainder is whitespace in every
+    # document this renders and a repaint on a shifted newline would be the
+    # "re-emit everything" failure the narrow patch exists to avoid.
+    if "".join(old_rest.split()) != "".join(new_rest.split()):
+        changed = [b.id for b in new.blocks]
 
     claimed = {v for v in mapping.values() if v}
     order = [b.id for b in new.blocks]
@@ -816,8 +1083,11 @@ def make_app(session: Session) -> web.Application:
                 session.rebuild()
             except Exception:
                 pass  # a manuscript mid-edit may not render; the watcher will
-        await session.broadcast({"type": "cites",
-                                 "cites": session.blob.get("cites", {})})
+        # Through the one derived-state push, not a `cites` broadcast of its
+        # own. This route sending the verdicts and the watcher sending nothing
+        # was two implementations of one job, and the half that was missing is
+        # why an underline could only ever be recoloured by clicking the button.
+        await session.push_derived()
         await session.broadcast({"type": "evidence", "done": True, "ok": rc == 0,
                                  "missing": session.blob.get("missing_fulltexts", 0)})
 
@@ -914,7 +1184,7 @@ def make_app(session: Session) -> web.Application:
 
     # The build assets (rasterized figures, copied images) are served from the
     # CURRENT document's build directory, not a fixed mount: switching to a
-    # document in another folder moves its `build/manuscriptor` with it, and a
+    # document in another folder moves its cache directory with it, and a
     # static mount frozen at app creation would 404 every figure. Resolved per
     # request against `session.root`, with the same traversal guard `add_static`
     # gave us -- a path escaping the build directory is refused, not served.
@@ -982,12 +1252,22 @@ def serve(
             asyncio.run_coroutine_threadsafe(coro, loop)
 
         stop = watch_tree(session.dir, changed)
-        # The drain's live feed lives in the build directory, which the tree
-        # watcher ignores on purpose. Watched by name instead.
-        from manuscriptor.server import feed as feed_mod
+        # The drain's live feed is generated and hidden, so the tree watcher
+        # skips it on purpose. Watched by name instead, at the path the session
+        # itself names -- never a path spelled out here, which is how this came
+        # to watch `build/manuscriptor` for months after the drain stopped
+        # writing there.
         stop_feed = watch_file(
-            feed_mod.progress_path(session.root / 'build' / 'manuscriptor'),
+            session.feed_file,
             lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop))
+        # And the ledger by its own name. The two files move at different
+        # moments -- the ring is coalesced to at most one write every 0.4s while
+        # every entry is appended to the ledger at once -- so watching only the
+        # feed would leave the last lines of a quiet turn unpushed until
+        # something else happened to shift the envelope.
+        stop_history = watch_file(
+            session.history_file,
+            lambda: asyncio.run_coroutine_threadsafe(session.push_history(), loop))
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "
@@ -1005,6 +1285,8 @@ def serve(
             await asyncio.Event().wait()
         finally:
             stop()
+            stop_feed()
+            stop_history()
             await runner.cleanup()
 
     try:

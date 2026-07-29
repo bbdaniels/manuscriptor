@@ -284,15 +284,46 @@ def test_a_ticker_line_leads_with_the_request_and_hovers_the_place():
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
-def test_an_entry_with_no_request_still_names_its_block():
-    """A `patch` has no comment behind it, and a state record written before
-    the field existed has none either. Both must keep rendering."""
+def test_a_patch_has_no_request_and_names_its_block_instead():
+    """A `patch` is the ONE entry with nothing behind it that could be quoted.
+
+    It reports an edit landing on the page, which no author asked for in words,
+    so naming the place is the whole of what it can say.
+
+    This test used to make the same claim about a `state` entry, and that was
+    wrong in a way that mattered. A state entry answers a comment, a comment
+    always has a body, and both paths that build one derive `asked` from it --
+    so a state entry with no request is not a thing the server can produce. By
+    asserting on one, this pinned the fallback branch as though it were the
+    normal shape of a live line, and the live frames were arriving in exactly
+    that shape for months with nothing to say otherwise. What the server does
+    produce is now held in `tests/test_live_frames.py`, against the frame it
+    actually sends, and the seed side is held below.
+
+    The fallback itself stays in `tickerText`: a line that renders as a bare
+    " · done" tells the author nothing at all, and a defensive lead is cheap.
+    It is not, however, a description of any entry the server writes.
+    """
     assert node_call("tickerText", {"kind": "patch", "section": "Data", "n": 2}) \
         == "Data · edited, 2 blocks"
-    assert node_call("tickerText", {"kind": "state", "state": "done",
-                                    "section": "Results"}) == "Results · done"
-    assert node_call("tickerTitle", {"kind": "state", "state": "done",
-                                     "section": "Results"}) == "Results"
+    assert node_call("tickerTitle", {"kind": "patch", "section": "Data", "n": 2}) == "Data"
+
+
+def test_a_state_entry_always_says_what_was_asked(tmp_path):
+    """The seed half of the guard above: `ticker_view` never omits `asked`.
+
+    A comment carries a body, so there is no state record whose request cannot
+    be recovered. If this ever fails, the ticker has an entry that will render
+    through the defensive fallback -- and the author will read a line about his
+    paragraph where he should be reading one about his request.
+    """
+    d, _, b = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    drain.mark(d, "c-0001", "done")
+    t = build_mod.ticker_view(paths.comments(d), build_mod.build(d).blocks)
+    assert t, "the fixture marked a comment worked and finished"
+    for e in t:
+        assert e["asked"], f"a state entry with no request: {e!r}"
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
@@ -376,6 +407,135 @@ def test_the_ticker_is_a_handful_not_a_scrollback(tmp_path):
     assert 0 < len(t) <= 8, len(t)
 
 
+# ------------------------------------------------------------------ the history
+#
+# The queue is what is waiting and the ticker is what just happened. Neither is
+# a record of the work itself: the sentences the agent wrote while doing it
+# lived in an 80-entry ring that the next drain restart overwrote, so the
+# author could watch it work and could never afterwards read what it had done.
+
+
+def wrote(d: Path, *lines) -> None:
+    """Lines the drain's session emitted, written the way the drain writes them.
+
+    Through `Feed`, not by hand: a test that types the file out asserts on a
+    shape nothing produces, which is how the seed path came to be checked
+    everywhere and the live path nowhere.
+    """
+    from manuscriptor.server import feed as feed_mod
+
+    feed = feed_mod.Feed(path=feed_mod.progress_path(paths.agent_dir(d)), every=0.0)
+    feed.add([feed_mod.Entry(feed_mod.now(), who, kind, text, tuple(work))
+              for who, kind, text, work in lines], force=True)
+
+
+def history_of(d: Path, **kw):
+    from manuscriptor.server import feed as feed_mod
+
+    b = build_mod.build(d)
+    return build_mod.history_view(
+        paths.comments(d), b.blocks,
+        feed_mod.read_history(feed_mod.history_path(paths.agent_dir(d))),
+        root=d, **kw)
+
+
+def test_a_work_item_carries_the_request_the_place_the_lines_and_the_outcome(tmp_path):
+    """The whole row, which is the point: what was asked, where it landed, what
+    the agent said while doing it, and how it ended."""
+    d, bid, _ = setup(tmp_path)
+    drain.mark(d, "c-0001", "working")
+    wrote(d,
+          ("agent", "text", "Reading the analysis script.", ["c-0001"]),
+          ("teammate", "thinking", "the negation prefix was never checked here", ["c-0001"]),
+          ("agent", "note", "edited main.tex · +6 −4", ["c-0001"]))
+    drain.reply(d, "c-0001", "Softened it and kept the interval.")
+    drain.mark(d, "c-0001", "done")
+
+    got = history_of(d)
+    assert len(got) == 1, got
+    row = got[0]
+    assert row["id"] == "c-0001"
+    assert row["asked"] == "This overclaims. Soften it."
+    assert row["state"] == "done", "the outcome comes from the log, not from the ledger"
+    assert row["block"] == bid and row["section"], "a row must be somewhere he can go"
+    assert row["reply"] == "Softened it and kept the interval."
+    assert [l["text"] for l in row["lines"]] == [
+        "Reading the analysis script.",
+        "the negation prefix was never checked here",
+        "edited main.tex · +6 −4",
+    ], "the lines of one item read forwards, as a narrative"
+    assert row["lines"][1]["who"] == "teammate"
+
+
+def test_the_history_survives_a_restart_of_both_processes(tmp_path):
+    """The requirement in one test: the ledger is on disk, and the payload a
+    fresh build hands a fresh page carries it."""
+    d, _, _ = setup(tmp_path)
+    wrote(d, ("agent", "text", "Tightening the claim.", ["c-0001"]))
+    drain.mark(d, "c-0001", "done")
+
+    blob = build_mod.build(d).blob          # a new server process, a new page
+    assert [r["id"] for r in blob["history"]] == ["c-0001"]
+    assert blob["history"][0]["lines"][0]["text"] == "Tightening the claim."
+    assert blob["agent_feed"]["entries"], "the live feed must not be regressed by this"
+
+
+def test_a_line_about_the_appendix_is_not_shown_under_the_paper(tmp_path):
+    """The ledger is per manuscript DIRECTORY, because the drain session is,
+    while this payload is per DOCUMENT. Reconciled by the comment each line
+    names: a line belongs to whichever document its comment does."""
+    d, _, b = setup(tmp_path)
+    (d / "appendix.tex").write_text(DOC.replace("Results", "Appendix"), encoding="utf-8")
+    for cid, doc in (("c-0008", "main.tex"), ("c-0009", "appendix.tex")):
+        chat.append(paths.comments(d),
+                    {"id": cid, "kind": "comment", "block": "", "doc": doc,
+                     "body": f"the {doc} request", "author": "bb", "ts": ago_iso(50)})
+    wrote(d,
+          ("agent", "text", "about the paper", ["c-0008"]),
+          ("agent", "text", "about the appendix", ["c-0009"]))
+    drain.mark(d, "c-0008", "done")
+    drain.mark(d, "c-0009", "done")
+
+    paper = [r["id"] for r in history_of(d, doc="main.tex")]
+    assert "c-0008" in paper and "c-0009" not in paper, paper
+    assert all("appendix" not in l["text"]
+               for r in history_of(d, doc="main.tex") for l in r["lines"])
+
+    appendix = [r["id"] for r in history_of(d, doc="appendix.tex")]
+    assert "c-0009" in appendix and "c-0008" not in appendix, appendix
+
+
+def test_a_line_that_could_not_be_told_apart_says_so_under_each(tmp_path):
+    """Three comments in flight and a line that names none of them. It is shown
+    under each and marked shared, because the alternative is to invent the link
+    the ledger exists to make trustworthy."""
+    d, _, b = setup(tmp_path)
+    comment_on(d, b.blocks, 0, "c-0002", "and this one", age=100)
+    wrote(d, ("agent", "text", "Reading the analysis script.", ["c-0001", "c-0002"]))
+    rows = {r["id"]: r for r in history_of(d)}
+    assert set(rows) == {"c-0001", "c-0002"}
+    assert all(r["lines"][0]["shared"] is True for r in rows.values())
+
+
+def test_a_comment_nobody_has_touched_is_not_history(tmp_path):
+    """It is in the queue. Putting it here as well would make the history a
+    second copy of the queue with none of its ordering."""
+    d, _, _ = setup(tmp_path)
+    assert history_of(d) == []
+
+
+def test_the_newest_work_is_first_and_the_list_is_bounded(tmp_path):
+    d, _, b = setup(tmp_path)
+    for i in range(2, 20):
+        comment_on(d, b.blocks, i % 3, f"c-{i:04d}", f"request {i}", age=1000 - i * 10)
+        chat.append(paths.comments(d), {"id": f"c-{i:04d}", "kind": "state",
+                                        "state": "done", "ts": ago_iso(900 - i * 10)})
+    got = history_of(d)
+    assert len(got) == build_mod.HISTORY_LIMIT, len(got)
+    assert got[0]["id"] == "c-0019", "the newest work must lead"
+    assert got[0]["at"] >= got[-1]["at"]
+
+
 # ------------------------------------------------------------------- the frames
 
 
@@ -411,6 +571,56 @@ def test_the_queue_is_not_repainted_when_nothing_changed(tmp_path):
     sent = collect_frames(s)
     asyncio.run(s.on_log_change())
     assert sent == []
+
+
+def test_a_history_frame_goes_out_when_either_half_of_the_row_moves(tmp_path):
+    """A row is a join of two files that move independently.
+
+    The drain appends a line to the ledger, which is one watcher; the outcome
+    that closes the row is a state record in the comment log, which is the
+    other. Pushed from both, or the row carries the agent's sentences and then
+    sits on `working` until something unrelated happens to shift it.
+    """
+    from manuscriptor.server.app import Session
+
+    d, _, _ = setup(tmp_path)
+    s = Session(d)
+    asyncio.run(s.on_log_change())
+    sent = collect_frames(s)
+
+    wrote(d, ("agent", "text", "Reading the analysis script.", ["c-0001"]))
+    asyncio.run(s.on_feed_change())
+    hs = [m for m in sent if m["type"] == "history"]
+    assert hs, "a line landed in the ledger and the page was never told"
+    assert hs[-1]["history"][0]["lines"][0]["text"] == "Reading the analysis script."
+    assert hs[-1]["history"][0]["state"] == "queued"
+
+    drain.mark(d, "c-0001", "done")
+    asyncio.run(s.on_log_change())
+    hs = [m for m in sent if m["type"] == "history"]
+    assert hs[-1]["history"][0]["state"] == "done", (
+        "the outcome landed in the comment log and the row never closed"
+    )
+
+
+def test_the_history_is_not_repainted_when_nothing_changed(tmp_path):
+    """It is compared whole rather than by an identity tuple, because a row
+    changes by GAINING A LINE and no summary of ids and states can see that."""
+    from manuscriptor.server.app import Session
+
+    d, _, _ = setup(tmp_path)
+    wrote(d, ("agent", "text", "Reading it.", ["c-0001"]))
+    s = Session(d)
+    asyncio.run(s.on_feed_change())
+    sent = collect_frames(s)
+    asyncio.run(s.on_feed_change())
+    assert [m for m in sent if m["type"] == "history"] == []
+
+    wrote(d, ("agent", "text", "Now rewriting it.", ["c-0001"]))
+    asyncio.run(s.on_feed_change())
+    assert [m for m in sent if m["type"] == "history"], (
+        "a second line on the same row, in the same state, moved nothing"
+    )
 
 
 def test_a_queue_frame_is_reanchored_like_the_state_frame(tmp_path):

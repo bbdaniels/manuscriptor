@@ -25,6 +25,8 @@ from typing import Callable
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from manuscriptor.server import paths
+
 # Source suffixes drive a re-render; figure suffixes drive an asset refresh.
 # Figures are here because the agent answers a figure comment by editing the
 # producing script and regenerating the PDF, and a watcher that only knew
@@ -52,6 +54,17 @@ class _Handler(FileSystemEventHandler):
         if path.suffix not in WATCHED:
             return
         if any(part in IGNORED_DIRS for part in path.parts):
+            return
+        # OUR OWN OUTPUT IS NOT THE AUTHOR'S MANUSCRIPT. The hidden directory
+        # holds the drain's stream log and its history, both `.jsonl` and both
+        # appended to as fast as a session emits events. Every one of those
+        # appends classified as a source change and re-rendered the whole
+        # manuscript through pandoc, because `IGNORED_DIRS` still named the
+        # pre-2026-07-27 `build/` and nothing had told it where we moved.
+        # `comments.jsonl` is the deliberate exception: it is how the page
+        # learns the agent picked a comment up. The live feed and the ledger
+        # are watched BY NAME instead, in `cmd_serve`.
+        if paths.HOME in path.parts and path.name != paths.COMMENTS_NAME:
             return
         # An atomic splice writes a dotfile then renames; the rename is the event
         # that matters and the temp file must never trigger a render of its own.
@@ -111,11 +124,17 @@ def block_until_log_grows(log: Path, *, from_offset: int, poll: float = 0.5) -> 
 def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 200):
     """Watch ONE file, wherever it lives. Returns a function that stops it.
 
-    The tree watcher ignores `build`, and rightly: it holds the rasterized
-    figures this pipeline writes, so watching it would redraw on its own output
-    forever. But the drain's live feed lives there too, because it is generated
-    and must not make `git status` grow, and the page needs it as it changes. One
-    file, watched by name, is the narrow exception rather than a hole in the rule.
+    The tree watcher skips generated output, and rightly: it holds the
+    rasterized figures this pipeline writes, so watching it would redraw on its
+    own output forever. But the drain's live feed is generated too, because it
+    must not make `git status` grow, and the page needs it as it changes. One
+    file, watched by name, is the narrow exception rather than a hole in the
+    rule.
+
+    Ask `server/paths.py` for the path. This docstring used to say the feed
+    lived under `build/`, and the caller that believed it watched a file the
+    drain had stopped writing months earlier -- which fires no events, so the
+    panel simply never moved and nothing reported an error.
     """
     path = Path(path).resolve()
 

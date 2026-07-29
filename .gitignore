@@ -7,3 +7,7 @@ dist/
 .venv/
 venv/
 .DS_Store
+# The page driver's jsdom, installed by `npm install` in tests/js. Test-only;
+# nothing the product ships depends on node.
+tests/js/node_modules/
+tests/js/package-lock.json

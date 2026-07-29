@@ -41,7 +41,7 @@ from pathlib import Path
 # of split that rots quietly and then bites mid-revision.
 from manuscriptor.source.flatten import (
     _INCLUDE_RE,
-    _is_commented,
+    is_commented,
     _resolve,
     FlatSource,
 )
@@ -209,6 +209,14 @@ class Block:
     editable: bool
     includes: tuple[Include, ...] = ()
     caption: str | None = None
+    # The single characters that delimit the block in its host file, `""` at
+    # the start or the end of the file. WHERE THE CUT FELL, which is the one
+    # thing the id cannot say: an id says what the block's bytes ARE, so it
+    # hashes back just as happily when those bytes have become the first half
+    # of a longer paragraph. `splice` needs both facts to know it is replacing
+    # a whole block and not a prefix of one; see `splice._locate`.
+    src_before: str = ""
+    src_after: str = ""
 
 
 # ------------------------------------------------------------------ public API
@@ -328,6 +336,12 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
             bid = f"{bid}-{n}"
 
         starts = line_starts[host]
+        # Normalized the way `splice` normalizes the file it reads, or every
+        # block of a CRLF manuscript would record a boundary splice can never
+        # see.
+        host_text = texts[host]
+        before = host_text[src_lo - 1] if src_lo > 0 else ""
+        after = host_text[src_hi] if src_hi < len(host_text) else ""
         blocks.append(
             Block(
                 id=bid,
@@ -343,6 +357,8 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
                 editable=whole,  # splicing safety only; see producers.apply
                 includes=tuple(includes),
                 caption=_caption_of(source_text),
+                src_before="\n" if before == "\r" else before,
+                src_after="\n" if after == "\r" else after,
             )
         )
 
@@ -917,7 +933,7 @@ def _root_file(flat: FlatSource, texts: dict[Path, str]) -> Path:
     for f in order:
         text = texts[f]
         for m in _INCLUDE_RE.finditer(text):
-            if _is_commented(text, m.start()):
+            if is_commented(text, m.start()):
                 continue
             hit = _resolve(m.group(2).strip(), including=f, root=flat.root)
             if hit is not None:

@@ -37,11 +37,39 @@ class Segment:
 
 
 @dataclass(frozen=True)
+class Directive:
+    """One `\\input` or `\\include`, and what its target actually contributed.
+
+    `contributed` is the number of characters the target added to the flattened
+    buffer, counted by the walk itself rather than by a second reading of the
+    file. That is the only honest measure of "did this fragment say anything":
+    a zero-byte file, a file holding one comment, and a file that inputs two
+    other empty files all contribute nothing, and all three drop a number out
+    of a sentence without troubling the compiler.
+    """
+
+    kind: str                    # "input" or "include"
+    target: str                  # the text inside the braces, as written
+    file: Path                   # the file the directive appears in
+    line: int                    # 1-indexed line within that file
+    resolved: Path | None        # what it resolved to, None when nothing did
+    cyclic: bool                 # already open further up the include stack
+    flat_start: int              # where its contribution begins in `text`
+    contributed: int
+
+
+@dataclass(frozen=True)
 class FlatSource:
     text: str
     segments: tuple[Segment, ...]
     root: Path
-    missing: tuple[str, ...]
+    directives: tuple[Directive, ...] = ()
+
+    @property
+    def missing(self) -> tuple[str, ...]:
+        """Include targets that resolved to nothing, in document order."""
+        return tuple(d.target for d in self.directives
+                     if d.resolved is None and not d.cyclic)
 
     def locate(self, offset: int) -> tuple[Path, int]:
         """Map a byte offset in `text` back to its (file, 1-indexed line)."""
@@ -70,7 +98,7 @@ def flatten(main_tex: Path) -> FlatSource:
         text="".join(state.parts),
         segments=tuple(state.segments),
         root=main_tex.parent,
-        missing=tuple(state.missing),
+        directives=tuple(d for d in state.directives if d is not None),
     )
 
 
@@ -82,7 +110,10 @@ class _State:
         self.root = root
         self.parts: list[str] = []
         self.segments: list[Segment] = []
-        self.missing: list[str] = []
+        # Slots are reserved on the way down and filled on the way back up, so
+        # the tuple stays in document order while `contributed` can be measured
+        # across the whole recursion.
+        self.directives: list[Directive | None] = []
         self.length = 0
 
     def emit(self, chunk: str, file: Path, line: int) -> None:
@@ -120,7 +151,7 @@ def _walk(
     pos = 0
     line = 1
     for m in _INCLUDE_RE.finditer(text):
-        if _is_commented(text, m.start()):
+        if is_commented(text, m.start()):
             continue
 
         chunk = text[pos:m.start()]
@@ -128,12 +159,15 @@ def _walk(
         line += chunk.count("\n")
 
         target = _resolve(m.group(2).strip(), including=path, root=state.root)
+        slot = len(state.directives)
+        state.directives.append(None)
+        before = state.length
         if target is None or target in stack:
             # Unresolvable or cyclic: keep the directive visible rather than
             # dropping content the author expected to see.
-            if target is None:
-                state.missing.append(m.group(2).strip())
             state.emit(m.group(0), path, line)
+            # The echoed directive is not a contribution; it is the hole.
+            before = state.length
         else:
             _walk(
                 target,
@@ -148,6 +182,12 @@ def _walk(
                 ),
             )
 
+        state.directives[slot] = Directive(
+            kind=m.group(1), target=m.group(2).strip(), file=path, line=line,
+            resolved=target,
+            cyclic=target is not None and target in stack,
+            flat_start=before, contributed=state.length - before,
+        )
         line += m.group(0).count("\n")
         pos = m.end()
 
@@ -194,7 +234,7 @@ def _contribution(text: str, *, directive_ends_line: bool) -> str:
 def _trailing_comment(text: str) -> int | None:
     """Index of the `%` opening a comment that runs to the end of `text`."""
     body = text[:-1] if text.endswith("\n") else text
-    return _comment_at(body, body.rfind("\n") + 1, len(body))
+    return comment_at(body, body.rfind("\n") + 1, len(body))
 
 
 def _rest_of_line_is_blank(text: str, at: int) -> bool:
@@ -208,12 +248,12 @@ def _rest_of_line_is_blank(text: str, at: int) -> bool:
     return text[at : len(text) if eol < 0 else eol].strip(" \t") == ""
 
 
-def _is_commented(text: str, at: int) -> bool:
+def is_commented(text: str, at: int) -> bool:
     """True when an unescaped `%` precedes `at` on the same line."""
-    return _comment_at(text, text.rfind("\n", 0, at) + 1, at) is not None
+    return comment_at(text, text.rfind("\n", 0, at) + 1, at) is not None
 
 
-def _comment_at(text: str, start: int, stop: int) -> int | None:
+def comment_at(text: str, start: int, stop: int) -> int | None:
     """Index of the first unescaped `%` in `text[start:stop]`, or None.
 
     One scanner. `\\%` is a literal percent sign and opens nothing, and reading

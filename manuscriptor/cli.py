@@ -330,6 +330,10 @@ def start_agent(manuscript_dir: Path, *, lock=None) -> tuple[subprocess.Popen, P
     print(f"         silence past {int(STALL_AFTER)}s mid-turn is treated as wedged "
           "and restarted")
     print(f"         feed {feed_mod.progress_path(log.parent)}")
+    # Named beside the feed, because they are read for opposite reasons: the
+    # feed is what it is doing and is rewritten, the history is what it has
+    # done and is appended to. The panel reads both.
+    print(f"         history {feed_mod.history_path(log.parent)}")
     print(f"         log {log}")
     return proc, log
 
@@ -776,7 +780,13 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     print("[01/05] parse...")
     parse.run(main_tex=main_tex, bib_file=bib_file, output_dir=output_dir)
     print("[02/05] resolve...")
-    resolve.run(bib_file=bib_file, output_dir=output_dir)
+    try:
+        resolve.run(bib_file=bib_file, output_dir=output_dir)
+    except resolve.ZoteroMatchFailure as exc:
+        # Everything downstream is built on these matches and every stage of it
+        # completes successfully on nothing at all, so this stops here rather
+        # than producing an evidence report with no evidence behind it.
+        sys.exit(f"\nERROR: {exc}")
     print("[03/05] fetch (read-only)...")
     fetch.run(output_dir=output_dir)
     if args.skip_extract:
@@ -828,6 +838,23 @@ def cmd_tidy(args: argparse.Namespace) -> int:
     for f in kept:
         print(f"  kept {f.path.name}: {f.reason}")
     return 0
+
+
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Say what a clean compile would not have told you. Modifies nothing.
+
+    Exits 2 when a check could not run, and that outranks findings: a skipped
+    check is not a pass, and it is the failure that hides the others.
+    """
+    from manuscriptor.server import preflight
+
+    d = Path(args.manuscript).resolve()
+    if not d.is_dir():
+        sys.exit(f"not a directory: {d}")
+    planned = preflight.plan(d, args.main)
+    results = preflight.run(d, args.main)
+    print(preflight.report(d, planned, results))
+    return preflight.exit_code(planned, results)
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
@@ -985,7 +1012,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Citation-evidence viewer (the absorbed cite-evidence pipeline; read-only against Zotero).",
     )
     p_ev.add_argument("manuscript", help="Path to manuscript directory containing the .tex and .bib")
-    p_ev.add_argument("--output", "-o", help="Output directory (default: <manuscript>/build/manuscriptor)")
+    # Deliberately not a spelled-out path: this help text said
+    # `<manuscript>/build/manuscriptor` for months after the layout moved, and
+    # naming the layout in a string is how it goes stale again.
+    p_ev.add_argument("--output", "-o",
+                      help="Output directory (default: Manuscriptor's cache for this manuscript)")
     p_ev.add_argument("--main", help="Main .tex filename (default: auto-detect main.tex or first *.tex)")
     p_ev.add_argument("--bib", help="Bibliography filename (default: first *.bib)")
     p_ev.add_argument("--model", default="sonnet", help="Model alias for evidence extraction (default: sonnet)")
@@ -1009,6 +1040,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="Also remove the ones git ignores or has never seen. "
                              "Never removes a tracked file, and never a .tex.")
     p_tidy.set_defaults(func=cmd_tidy)
+
+    p_pre = sub.add_parser("preflight",
+                           help="Report what a clean compile would not have told you.")
+    p_pre.add_argument("manuscript", help="Manuscript directory to check")
+    p_pre.add_argument("--main", default=None,
+                       help="Check one document only (default: every document here)")
+    p_pre.set_defaults(func=cmd_preflight)
 
     p_clean = sub.add_parser("clean", help="Remove regenerable render output; optionally clear the shared cache.")
     p_clean.add_argument("manuscript",
