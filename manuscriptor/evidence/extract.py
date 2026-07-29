@@ -17,6 +17,7 @@ re-runs are free regardless of backend.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from . import cache
+
+log = logging.getLogger(__name__)
 
 MAX_FULLTEXT_CHARS = 180_000  # ~45K tokens — comfortable for 200K-context models
 QUOTE_MIN_LEN = 25
@@ -122,6 +125,8 @@ def run(*, output_dir: Path, model: str, dry_run: bool = False, backend: str = "
         try:
             raw = caller(fulltext, claim, cit)
         except Exception as e:
+            log.warning("extraction backend failed for %s ← %s (%s: %s)",
+                        claim["claim_id"], cite_key, type(e).__name__, e)
             print(f"FAIL ({e})")
             evidence_records.append(_missing_record(claim, cite_key, f"backend error: {e}"))
             continue

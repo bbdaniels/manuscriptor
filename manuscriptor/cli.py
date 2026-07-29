@@ -780,7 +780,13 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     print("[01/05] parse...")
     parse.run(main_tex=main_tex, bib_file=bib_file, output_dir=output_dir)
     print("[02/05] resolve...")
-    resolve.run(bib_file=bib_file, output_dir=output_dir)
+    try:
+        resolve.run(bib_file=bib_file, output_dir=output_dir)
+    except resolve.ZoteroMatchFailure as exc:
+        # Everything downstream is built on these matches and every stage of it
+        # completes successfully on nothing at all, so this stops here rather
+        # than producing an evidence report with no evidence behind it.
+        sys.exit(f"\nERROR: {exc}")
     print("[03/05] fetch (read-only)...")
     fetch.run(output_dir=output_dir)
     if args.skip_extract:
