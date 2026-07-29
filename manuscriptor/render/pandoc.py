@@ -188,6 +188,7 @@ def normalize_for_pandoc(source: str) -> str:
     declared = _declared_column_types(source)
     source = _strip_newcolumntypes(source)
     source = _expand_sym(source)
+    source = _hoist_equation_labels(source)
     source = _unwrap_text_outside_math(source)
     source = _flatten_stacked_cells(source)
     source = _strip_rules(source)
@@ -320,6 +321,55 @@ def _expand_sym(source: str) -> str:
         return source
     source = _SYM_DEF_RE.sub("", source)
     return _SYM_CALL_RE.sub(lambda m: "$^{" + m.group(1) + "}$", source)
+
+
+_EQUATION_RE = re.compile(r"\\begin\s*\{(equation\*?)\}(.*?)\\end\s*\{\1\}", re.S)
+_LABEL_OR_TAG_RE = re.compile(r"\\(?:label|tag)\s*\{[^{}]*\}")
+
+
+def _hoist_equation_labels(source: str) -> str:
+    """Move `\\label` and `\\tag` to the front of an `equation` body.
+
+    Pandoc 3.10.1 rewrote how it hands an `equation` environment to texmath,
+    and the new parser accepts `\\label` or `\\tag` ONLY immediately after
+    `\\begin{equation}`. One placed after the math -- which is where LaTeX
+    convention puts it, and where all ten of estonia-qbs's equations put it --
+    fails to parse, and the whole equation degrades to its literal source:
+
+        <span class="math display">$$\\begin{equation}
+        \\Delta \\widehat{VA}_{i} = \\alpha + \\beta \\, \\widetilde{S}_i
+        \\label{eq:va-xs}
+        \\end{equation}$$</span>
+
+    Raw LaTeX, in the body of the paper, where an equation should be. Pandoc
+    3.1.1 renders all ten correctly, so this is a regression rather than a
+    long-standing gap.
+
+    Worse than that, it is CONTENT DEPENDENT, which is why it cannot be left to
+    an author to notice and work around. Whether the parse fails turns on the
+    final token of the math body: a body ending in a brace group, a comma or a
+    control sequence re-syncs and survives, one ending in a bare identifier
+    does not. Of estonia-qbs's ten equations, all ten written identically, two
+    broke -- the two ending in `\\varepsilon_i` rather than `\\varepsilon_{it}`.
+
+    Hoisting rather than stripping, because the label is not this module's to
+    throw away. Only `equation` and `equation*` are touched. `align`, `gather`,
+    `multline` and `eqnarray` parse a trailing label correctly under both
+    versions, and in those a label binds to one row, so moving it would change
+    which equation it numbers.
+    """
+
+    def one(m: re.Match) -> str:
+        env, body = m.group(1), m.group(2)
+        found = _LABEL_OR_TAG_RE.findall(body)
+        if not found:
+            return m.group(0)
+        rest = _LABEL_OR_TAG_RE.sub("", body)
+        if not rest.strip():
+            return m.group(0)
+        return f"\\begin{{{env}}}{''.join(found)}{rest}\\end{{{env}}}"
+
+    return _EQUATION_RE.sub(one, source)
 
 
 _TEXT_RE = re.compile(r"\\text\s*(?=\{)")

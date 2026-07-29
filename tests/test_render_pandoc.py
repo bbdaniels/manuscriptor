@@ -184,6 +184,18 @@ def raw_pandoc(body: str) -> tuple[int, str]:
     return r.returncode, r.stdout
 
 
+def pandoc_version() -> tuple[int, ...]:
+    """The version of the pandoc actually on PATH, as a comparable tuple.
+
+    Whichever pandoc is installed is the one that renders the author's papers,
+    so a test that characterizes an upstream bug has to say which pandoc it is
+    talking about. Nothing else in the pipeline branches on this: the
+    normalizations run unconditionally, by design.
+    """
+    out = subprocess.run(["pandoc", "--version"], capture_output=True, text=True).stdout
+    return tuple(int(n) for n in out.split()[1].split("."))
+
+
 TABULAR = "\\begin{tabular}{cc}a&b\\\\\\end{tabular}"
 
 
@@ -240,12 +252,35 @@ def test_a_typesetting_wrapper_is_unwrapped_and_the_table_survives(wrapper, tmp_
     assert "<table" in render_document(src, cwd=tmp_path, bib=None)
 
 
-def test_a_parameterised_multicolumn_spec_silently_kills_the_table_before_normalizing():
+def test_a_parameterised_multicolumn_spec_before_normalizing():
+    """Pandoc 3.10.1 fixed this one; the reduction is kept anyway.
+
+    Through pandoc 3.9 a parameterised `\\multicolumn` spec took the WHOLE
+    table with it -- exit zero, nothing on stderr, no table. That is the bug
+    that took estonia-qbs from 2 of 7 tables to 7 of 7 on 2026-07-22.
+
+    Measured 2026-07-28 against both pandocs on this machine, 3.1.1 at
+    /usr/local and 3.10.1 at /opt/homebrew: 3.10.1 renders the table correctly
+    from the raw source, byte for byte identical to what it renders from the
+    reduced source. So `_plain_multicolumn_specs` is now a no-op here rather
+    than a repair, and a no-op is exactly why it stays. The manuscripts are
+    also opened on machines with older pandocs, removing it would silently
+    delete tables there, and it cannot double-handle output that is already
+    correct: reducing `m{3.4cm}` to `c` yields the same centered column pandoc
+    now produces on its own.
+
+    This test asserts what the installed pandoc actually does, so it keeps
+    documenting the bug on a machine that still has it.
+    """
     rc, html = raw_pandoc(
         "\\begin{tabular}{ccc}\\multicolumn{2}{m{3.4cm}}{X} & b\\\\\\end{tabular}"
     )
     assert rc == 0
-    assert "<table" not in html
+    if pandoc_version() >= (3, 10):
+        assert "<table" in html
+        assert 'colspan="2"' in html
+    else:
+        assert "<table" not in html
 
 
 def test_a_parameterised_multicolumn_spec_is_reduced_to_an_alignment(tmp_path):
@@ -255,6 +290,87 @@ def test_a_parameterised_multicolumn_spec_is_reduced_to_an_alignment(tmp_path):
 \\end{document}
 """
     assert "<table" in render_document(src, cwd=tmp_path, bib=None)
+
+
+# ------------------------------------------------- equation labels (pandoc 3.10)
+#
+# The one thing that renders WORSE under 3.10.1 than under 3.1.1, measured
+# 2026-07-28 across estonia-ecm, estonia-qbs and dsp-bias. Everything else in
+# the comparison was unchanged or repaired upstream; this went backwards, and
+# it goes backwards silently, in the body of the paper.
+
+EQ_TRAILING = (
+    "\\begin{equation}\n"
+    "\\Delta \\widehat{VA}_{i} = \\alpha + \\beta \\, \\widetilde{S}_i\n"
+    "\\label{eq:va-xs}\n"
+    "\\end{equation}"
+)
+
+
+def test_a_trailing_equation_label_before_normalizing():
+    """Characterizes the upstream regression, per installed pandoc.
+
+    `raw_pandoc` asks for `--mathjax`, where an unparsed equation is not an
+    absent `<math>` but a RETAINED `\\begin{equation}`: pandoc that understood
+    the environment consumes it and emits the inner math, pandoc that did not
+    hands the whole environment through verbatim. Exit status is zero either
+    way, which is what makes this worth a test rather than a bug report.
+    """
+    rc, html = raw_pandoc(EQ_TRAILING)
+    assert rc == 0
+    assert "\\label{eq:va-xs}" in html
+    if pandoc_version() >= (3, 10):
+        assert "\\begin{equation}" in html
+    else:
+        assert "\\begin{equation}" not in html
+
+
+def test_a_trailing_equation_label_is_hoisted_to_the_front():
+    out = normalize_for_pandoc(EQ_TRAILING)
+    assert out.startswith("\\begin{equation}\\label{eq:va-xs}")
+    assert out.count("\\label{eq:va-xs}") == 1
+
+
+def test_an_equation_with_a_trailing_label_renders_as_math(tmp_path):
+    """The guarantee that matters, and the one the reader sees.
+
+    The real pipeline renders with `--mathml`, where a failed parse degrades to
+    `<span class="math display">$$...$$</span>` -- the LaTeX source, on the
+    page, as text. So this asserts BOTH that MathML was produced and that no
+    such fallback span exists. `\\begin{equation}` itself is not asserted
+    absent: MathML carries the TeX round trip in `<annotation>`, so the string
+    is legitimately present in a correct render.
+    """
+    src = f"\\documentclass{{article}}\n\\begin{{document}}\n{EQ_TRAILING}\n\\end{{document}}\n"
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "<math" in html
+    assert 'class="math display"' not in html
+
+
+def test_a_trailing_tag_is_hoisted_too():
+    out = normalize_for_pandoc("\\begin{equation}\ny = x\n\\tag{1}\n\\end{equation}")
+    assert out.startswith("\\begin{equation}\\tag{1}")
+
+
+def test_hoisting_an_equation_label_is_idempotent():
+    once = normalize_for_pandoc(EQ_TRAILING)
+    assert normalize_for_pandoc(once) == once
+
+
+@pytest.mark.parametrize("env", ["align", "gather", "multline", "eqnarray"])
+def test_multi_row_math_environments_keep_their_labels_in_place(env):
+    """A label in `align` numbers ONE row. Hoisting it would renumber the
+    equation, and these environments parse a trailing label correctly under
+    both pandoc versions, so there is nothing to repair."""
+    src = "\\begin{" + env + "}\ny &= x \\label{a}\\\\ z &= w \\label{b}\n\\end{" + env + "}"
+    assert normalize_for_pandoc(src) == src
+
+
+def test_an_equation_that_is_only_a_label_is_left_alone():
+    """Rewriting a body with no math into `\\begin{equation}\\label{a}\\end{equation}`
+    would buy nothing and risks turning a degenerate case into a parse error."""
+    src = "\\begin{equation}\\label{a}\\end{equation}"
+    assert normalize_for_pandoc(src) == src
 
 
 @pytest.mark.parametrize(
