@@ -262,7 +262,7 @@ def test_a_parameterised_multicolumn_spec_before_normalizing():
     Measured 2026-07-28 against both pandocs on this machine, 3.1.1 at
     /usr/local and 3.10.1 at /opt/homebrew: 3.10.1 renders the table correctly
     from the raw source, byte for byte identical to what it renders from the
-    reduced source. So `_plain_multicolumn_specs` is now a no-op here rather
+    reduced source. So `tables.plain_multicolumn_specs` is now a no-op here rather
     than a repair, and a no-op is exactly why it stays. The manuscripts are
     also opened on machines with older pandocs, removing it would silently
     delete tables there, and it cannot double-handle output that is already

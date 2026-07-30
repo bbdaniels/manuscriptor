@@ -199,15 +199,15 @@ def test_esttab_star_column_spec_renders(tmp_path):
 
 
 def test_a_multiplier_greater_than_one_repeats(tmp_path):
-    from manuscriptor.render.pandoc import _plain_colspec
+    from manuscriptor.render.tables import plain_colspec
 
-    assert _plain_colspec("l*{3}{cc}") == _plain_colspec("lcccccc")
+    assert plain_colspec("l*{3}{cc}") == plain_colspec("lcccccc")
 
 
 def test_nothing_happens_to_a_spec_without_a_star():
-    from manuscriptor.render.pandoc import _plain_colspec
+    from manuscriptor.render.tables import plain_colspec
 
-    assert _plain_colspec("lrc") == "lrc"
+    assert plain_colspec("lrc") == "lrc"
 
 
 # --------------------------------------------------- wide tables and the page

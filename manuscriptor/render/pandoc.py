@@ -65,6 +65,20 @@ import re
 import subprocess
 from pathlib import Path
 
+# The column-type pair -- and the brace helpers every caller of it needs -- live
+# in `tables.py`, which is their one home. A second copy of them once existed in
+# the Word submission skills and had already drifted; see that module's
+# docstring and `tests/test_render_tables.py`.
+from manuscriptor.render.tables import (
+    declared_column_types,
+    group_start,
+    plain_multicolumn_specs,
+    plain_table_specs,
+    skip_group,
+    skip_optional,
+    strip_newcolumntypes,
+)
+
 _BASE_FLAGS = (
     "--from=latex+raw_tex",
     "--to=html5",
@@ -78,26 +92,6 @@ _USEPACKAGE_RE = re.compile(r"\\usepackage\s*(\[[^\]]*\])?\s*\{([^}]*)\}[ \t]*\n
 _DEF_RE = re.compile(
     r"\\(?:new|renew|provide)command\s*\*?\s*\{?\s*\\[A-Za-z@]+\s*\}?"
     r"(?:\[[^\]]*\])*\s*"
-)
-
-_NEWCOLUMNTYPE_RE = re.compile(r"\\newcolumntype\s*\{[^}]*\}\s*(?:\[[^\]]*\])?\s*")
-_MULTICOLUMN_RE = re.compile(r"\\multicolumn\s*\{[^}]*\}\s*(?=\{)")
-
-# Table environments, and how many mandatory arguments stand between
-# `\begin{...}` and the column specification. `tabular*` and `tabularx` take a
-# target width first; the rest go straight to the spec.
-_TABLE_ENVS = {
-    "tabular": 0,
-    "longtable": 0,
-    "supertabular": 0,
-    "tabular*": 1,
-    "tabularx": 1,
-    "xltabular": 1,
-}
-_TABLE_BEGIN_RE = re.compile(
-    r"\\begin\s*\{("
-    + "|".join(re.escape(n) for n in sorted(_TABLE_ENVS, key=len, reverse=True))
-    + r")\}\s*"
 )
 
 # Macros whose last mandatory argument is content and whose earlier arguments
@@ -114,9 +108,6 @@ _WRAPPER_ENVS = {
     "singlespace": 0, "singlespacing": 0, "onehalfspace": 0,
     "doublespace": 0, "spacing": 1,
 }
-
-# LaTeX column types reduced to the alignment pandoc can actually express.
-_ALIGN = {"c": "c", "l": "l", "r": "r", "m": "c", "p": "l", "b": "l", "X": "l"}
 
 
 class PandocError(RuntimeError):
@@ -185,8 +176,8 @@ def normalize_for_pandoc(source: str) -> str:
     error message. Block markers, prose, math, and citations are untouched.
     """
     source = _render_frontmatter(source)
-    declared = _declared_column_types(source)
-    source = _strip_newcolumntypes(source)
+    declared = declared_column_types(source)
+    source, _ = strip_newcolumntypes(source)
     source = _expand_sym(source)
     source = _hoist_equation_labels(source)
     source = _unwrap_text_outside_math(source)
@@ -197,8 +188,9 @@ def normalize_for_pandoc(source: str) -> str:
         source = _unwrap_macro(source, name, skip)
     for name, args in _WRAPPER_ENVS.items():
         source = _unwrap_environment(source, name, args)
-    source = _plain_multicolumn_specs(source, declared)
-    return _plain_table_specs(source, declared)
+    source, _ = plain_multicolumn_specs(source, declared)
+    source, _ = plain_table_specs(source, declared)
+    return source
 
 
 # ------------------------------------------------------------- front matter
@@ -267,7 +259,7 @@ def _command_text(source: str, name: str, *, break_as: str = " ") -> str | None:
     m = re.search(r"\\" + name + r"\s*(?=\{)", source)
     if m is None:
         return None
-    end = _skip_group(source, m.end())
+    end = skip_group(source, m.end())
     if end == m.end():
         return None
     return _clean_inline(source[m.end() + 1: end - 1], break_as=break_as) or None
@@ -290,7 +282,7 @@ def _clean_inline(text: str, *, break_as: str = " ") -> str:
             out.append(text[i:])
             break
         out.append(text[i: m.start()])
-        i = _skip_group(text, m.end())
+        i = skip_group(text, m.end())
     text = "".join(out)
     text = re.sub(r"\\and\b", ", ", text)
     text = re.sub(r"\\\\(\[[^\]]*\])?", break_as, text)
@@ -401,7 +393,7 @@ def _unwrap_text_outside_math(source: str) -> str:
             out.append(source[i : m.end()])
             i = m.end()
             continue
-        end = _skip_group(source, m.end())
+        end = skip_group(source, m.end())
         out.append(source[i : m.start()])
         out.append(source[m.end() + 1 : end - 1])
         i = end
@@ -441,7 +433,7 @@ def _flatten_stacked_cells(source: str) -> str:
         if m is None:
             out.append(source[i:])
             return "".join(out)
-        end = _skip_group(source, m.end())
+        end = skip_group(source, m.end())
         inner = source[m.end() + 1 : end - 1]
         # Only the breaks INSIDE the cell; a nested makecell is handled by
         # recursion, so its breaks are gone before this line runs.
@@ -494,48 +486,6 @@ def _single_longtable_head(source: str) -> str:
     return _LONGTABLE_RE.sub(one, source)
 
 
-def _declared_column_types(source: str) -> dict[str, str]:
-    """Read the alignment out of each `\\newcolumntype` before dropping it.
-
-    Guessing would be wrong on the reference manuscript, which redefines `r` as
-    ragged-*right*, i.e. left-aligned. The declaration says so; there is no
-    reason to infer what the source states.
-    """
-    declared: dict[str, str] = {}
-    for m in re.finditer(r"\\newcolumntype\s*\{([^}]*)\}\s*(?:\[[^\]]*\])?", source):
-        name = m.group(1).strip()
-        if len(name) != 1:
-            continue
-        end = _skip_group(source, m.end())
-        body = source[m.end():end]
-        if "\\centering" in body:
-            declared[name] = "c"
-        elif "\\raggedleft" in body:
-            declared[name] = "r"
-        elif "\\raggedright" in body:
-            declared[name] = "l"
-        else:
-            base = re.search(r"\\?\b([pmbclr])\s*\{", body)
-            declared[name] = _ALIGN.get(base.group(1), "l") if base else "l"
-    return declared
-
-
-def _strip_newcolumntypes(source: str) -> str:
-    """`\\newcolumntype{m}[1]{>{\\centering}p{#1}}` — the `#1` is what breaks it."""
-    out: list[str] = []
-    cursor = 0
-    while True:
-        m = _NEWCOLUMNTYPE_RE.search(source, cursor)
-        if m is None:
-            out.append(source[cursor:])
-            return "".join(out)
-        out.append(source[cursor:m.start()])
-        end = _skip_group(source, m.end())
-        if end < len(source) and source[end] == "\n":
-            end += 1
-        cursor = end
-
-
 def _unwrap_macro(source: str, name: str, skip: int) -> str:
     """`\\resizebox{w}{h}{TABLE}` becomes `TABLE`."""
     pattern = re.compile(r"\\" + name + r"\s*\*?\s*")
@@ -548,18 +498,18 @@ def _unwrap_macro(source: str, name: str, skip: int) -> str:
             break
         at = m.end()
         for _ in range(skip):
-            nxt = _skip_group(source, at)
+            nxt = skip_group(source, at)
             if nxt == at:  # an optional [..] argument, or a shape we do not know
-                nxt = _skip_optional(source, at)
+                nxt = skip_optional(source, at)
                 if nxt == at:
                     break
             at = nxt
-        inner_start = _group_start(source, at)
+        inner_start = group_start(source, at)
         if inner_start is None:
             out.append(source[cursor:m.end()])
             cursor = m.end()
             continue
-        inner_end = _skip_group(source, at)
+        inner_end = skip_group(source, at)
         out.append(source[cursor:m.start()])
         out.append(source[inner_start + 1:inner_end - 1])
         cursor = inner_end
@@ -577,9 +527,9 @@ def _unwrap_environment(source: str, name: str, args: int) -> str:
         if m is None:
             out.append(source[cursor:])
             return "".join(out)
-        at = _skip_optional(source, m.end())
+        at = skip_optional(source, m.end())
         for _ in range(args):
-            at = _skip_group(source, at)
+            at = skip_group(source, at)
         closing = source.find(end, at)
         if closing == -1:
             out.append(source[cursor:m.end()])
@@ -588,141 +538,6 @@ def _unwrap_environment(source: str, name: str, args: int) -> str:
         out.append(source[cursor:m.start()])
         out.append(source[at:closing])
         cursor = closing + len(end)
-
-
-def _plain_multicolumn_specs(source: str, declared: dict[str, str]) -> str:
-    """`\\multicolumn{2}{m{3.4cm}}{X}` becomes `\\multicolumn{2}{c}{X}`."""
-    out: list[str] = []
-    cursor = 0
-    while True:
-        m = _MULTICOLUMN_RE.search(source, cursor)
-        if m is None:
-            out.append(source[cursor:])
-            return "".join(out)
-        spec_end = _skip_group(source, m.end())
-        if spec_end == m.end():
-            out.append(source[cursor:m.end()])
-            cursor = m.end()
-            continue
-        spec = source[m.end() + 1:spec_end - 1]
-        out.append(source[cursor:m.end()])
-        out.append("{" + _plain_colspec(spec, declared) + "}")
-        cursor = spec_end
-
-
-def _plain_table_specs(source: str, declared: dict[str, str]) -> str:
-    """`\\begin{tabular}{R{4cm} M{2cm}}` becomes `\\begin{tabular}{lc}`.
-
-    This one is load-bearing rather than tidy. `R` and `M` come from the
-    `\\newcolumntype` declarations stripped above, and a column type pandoc does
-    not recognise makes it drop the entire table with exit status zero. Removing
-    the declarations without also reducing the specs that used them would trade
-    a loud failure for a silent one, which is the worse of the two.
-    """
-    out: list[str] = []
-    cursor = 0
-    while True:
-        m = _TABLE_BEGIN_RE.search(source, cursor)
-        if m is None:
-            out.append(source[cursor:])
-            return "".join(out)
-        at = _skip_optional(source, m.end())
-        for _ in range(_TABLE_ENVS[m.group(1)]):
-            at = _skip_group(source, at)
-        spec_end = _skip_group(source, at)
-        if spec_end == at:
-            out.append(source[cursor:m.end()])
-            cursor = m.end()
-            continue
-        start = _group_start(source, at)
-        out.append(source[cursor:start])
-        out.append("{" + _plain_colspec(source[start + 1:spec_end - 1], declared) + "}")
-        cursor = spec_end
-
-
-_REPEAT_RE = re.compile(r"\*\s*\{\s*(\d+)\s*\}\s*(?=\{)")
-
-
-def _expand_repeats(spec: str) -> str:
-    """Expand the `array` package's `*{n}{cols}` repetition.
-
-    This is what Stata's esttab emits by default (`l*{1}{ccccc}`), and pandoc
-    does not read it: the table vanishes with no error. estonia-qbs lost five of
-    its seven tables to exactly this.
-
-    Dropping the multiplier instead of expanding it is worse than it looks. At
-    `*{1}` it happens to be right, so it passes on the common case and then
-    quietly discards columns the moment a manuscript uses `*{3}`.
-    """
-    out = spec
-    for _ in range(8):  # bounded: nested repeats are legal but never deep
-        m = _REPEAT_RE.search(out)
-        if not m:
-            break
-        end = _skip_group(out, m.end())
-        inner = out[m.end() + 1 : end - 1]
-        out = out[: m.start()] + inner * int(m.group(1)) + out[end:]
-    return out
-
-
-def _plain_colspec(spec: str, declared: dict[str, str] | None = None) -> str:
-    """Reduce a column specification to alignment letters and rules.
-
-    Pandoc's HTML tables carry `text-align` and nothing else, so width, font,
-    and inter-column material are all noise. The reduction has to be a parse
-    rather than a substitution: `>{\\centering\\arraybackslash}p{4cm}` contains
-    the letters c, r, and l inside a command name, and a character filter would
-    read that single column as four.
-    """
-    spec = _expand_repeats(spec)
-    out: list[str] = []
-    i = 0
-    while i < len(spec):
-        c = spec[i]
-        if c in "<>@!":
-            nxt = _skip_group(spec, i + 1)
-            i = nxt if nxt > i + 1 else i + 1
-            continue
-        if c == "[":
-            i = _skip_optional(spec, i)
-            continue
-        if c == "|":
-            out.append("|")
-            i += 1
-            continue
-        if c.isalpha():
-            after = _skip_optional(spec, i + 1)
-            after = _skip_group(spec, after)
-            out.append((declared or {}).get(c) or _ALIGN.get(c, "l"))
-            i = max(after, i + 1)
-            continue
-        i += 1
-    return "".join(out) or "l"
-
-
-def _group_start(text: str, at: int) -> int | None:
-    i = at
-    while i < len(text) and text[i] in " \t\n":
-        i += 1
-    return i if i < len(text) and text[i] == "{" else None
-
-
-def _skip_optional(text: str, at: int) -> int:
-    i = at
-    while i < len(text) and text[i] in " \t":
-        i += 1
-    if i >= len(text) or text[i] != "[":
-        return at
-    depth = 0
-    while i < len(text):
-        if text[i] == "[":
-            depth += 1
-        elif text[i] == "]":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return at
 
 
 def _invoke(source: str, *, cwd: Path, bib: Path | None) -> str:
@@ -778,43 +593,11 @@ def _strip_definitions(preamble: str) -> str:
             out.append(preamble[cursor:])
             return "".join(out)
         out.append(preamble[cursor:m.start()])
-        end = _skip_group(preamble, m.end())
+        end = skip_group(preamble, m.end())
         # Eat a trailing newline so the preamble does not fill with blank lines.
         if end < len(preamble) and preamble[end] == "\n":
             end += 1
         cursor = end
-
-
-def _skip_group(text: str, at: int) -> int:
-    """Return the offset just past the brace group starting at or after `at`.
-
-    Comments are skipped, because LaTeX skips them and flattening does not
-    strip them. A `%` line carrying a lone brace is legal source, and counting
-    it would close a wrapper somewhere in the middle of the table it wraps.
-    """
-    i = at
-    while i < len(text) and text[i] in " \t":
-        i += 1
-    if i >= len(text) or text[i] != "{":
-        return at
-    depth = 0
-    while i < len(text):
-        c = text[i]
-        if c == "\\":
-            i += 2
-            continue
-        if c == "%":
-            nl = text.find("\n", i)
-            i = len(text) if nl == -1 else nl + 1
-            continue
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return len(text)
 
 
 def _find_csl(directory: Path) -> Path | None:
