@@ -95,16 +95,22 @@ def test_a_preamble_abstract_is_its_own_block(tmp_path):
     assert b.id
 
 
-def test_a_preamble_abstract_comes_first_and_leaves_the_body_alone(tmp_path):
+def test_a_preamble_abstract_comes_before_the_body_and_leaves_it_alone(tmp_path):
+    # Written when the abstract was the only preamble region and so was
+    # blocks[0]. The title is a preamble region too and is written above it, so
+    # the claim being made here is about document order, not about an index.
     main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
     blocks = segment(flatten(main))
-    assert "The abstract lives above" in blocks[0].source_text
-    assert [b.source_text for b in blocks[1:]] == ["\\maketitle", "Body text."]
+    assert "The abstract lives above" in blocks[1].source_text
+    assert [b.source_text for b in blocks[2:]] == ["\\maketitle", "Body text."]
 
 
 def test_a_preamble_abstract_block_maps_to_its_own_source_bytes(tmp_path):
     main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
-    b = segment(flatten(main))[0]
+    b = next(
+        x for x in segment(flatten(main))
+        if x.source_text.startswith("\\begin{abstract}")
+    )
     text = main.read_text(encoding="utf-8")
     lo = text.index("\\begin{abstract}")
     assert text[lo : lo + len(b.source_text)] == b.source_text
@@ -130,6 +136,105 @@ def test_an_in_document_abstract_is_still_one_body_block(tmp_path):
         "\\begin{abstract}\nInside the document.\n\\end{abstract}",
         "Body text.",
     ]
+
+
+# The manuscript title could not be edited in ANY of the six manuscripts. Where
+# `\title{}` is written in the preamble -- covet-india main and supplement,
+# estonia-ecm, dsp-bias -- it fell in no region and got no block at all, so the
+# only thing the rendered <h1> could carry was the `\maketitle` block's id and
+# clicking the paper's title opened an inspector on `\flushbottom\maketitle`.
+# Like the preamble abstract it is one contiguous byte range in the root file,
+# so it is admissible as exactly one block.
+
+
+def test_a_preamble_title_is_its_own_block(tmp_path):
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    blocks = segment(flatten(main))
+    got = [b for b in blocks if b.source_text.startswith("\\title")]
+    assert len(got) == 1
+    assert got[0].source_text == "\\title{A Paper}"
+    assert got[0].id
+
+
+def test_a_preamble_title_comes_before_the_preamble_abstract(tmp_path):
+    # Document order, and the title is written above the abstract on covet.
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    blocks = segment(flatten(main))
+    assert [b.source_text for b in blocks] == [
+        "\\title{A Paper}",
+        "\\begin{abstract}\nThe abstract lives above the document environment.\n"
+        "\\end{abstract}",
+        "\\maketitle",
+        "Body text.",
+    ]
+
+
+def test_a_preamble_title_block_maps_to_its_own_source_bytes(tmp_path):
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    b = segment(flatten(main))[0]
+    text = main.read_text(encoding="utf-8")
+    lo = text.index("\\title{A Paper}")
+    assert text[lo : lo + len(b.source_text)] == b.source_text
+    assert b.editable
+
+
+def test_a_preamble_title_is_named_by_its_own_words(tmp_path):
+    # `label()` tests the block's cleaned text for surviving markup, and
+    # `\title{...}` is markup end to end -- so an unhandled title block reports
+    # itself in the queue, the ticker and the inspector as its parent heading,
+    # or as nothing at all. Visible today on estonia-qbs and qutub-india, which
+    # write `\title` inside the document and so have had a block all along.
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    b = segment(flatten(main))[0]
+    assert blocks_mod.label(b) == "A Paper"
+
+
+def test_a_multiline_title_with_a_forced_break_is_one_block(tmp_path):
+    # estonia-ecm and covet-india's supplement both break the title with `\\`.
+    src = (
+        "\\documentclass{wlscirep}\n"
+        "\\title{In Sickness and In Health: \\\\ Motivating Improved Care}\n"
+        "\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n"
+    )
+    main = write(tmp_path, "main.tex", src)
+    blocks = segment(flatten(main))
+    assert blocks[0].source_text == (
+        "\\title{In Sickness and In Health: \\\\ Motivating Improved Care}"
+    )
+    assert blocks_mod.label(blocks[0]) == "In Sickness and In Health: Motivating Improved Care"
+
+
+def test_titlespacing_in_the_preamble_is_not_a_title(tmp_path):
+    # estonia-ecm sets `\titlespacing{\section}{0pt}{6pt}{6pt}` nineteen lines
+    # above its real `\title`. A prefix match would cut the wrong bytes.
+    src = (
+        "\\documentclass{article}\n"
+        "\\titlespacing{\\section}{0pt}{6pt}{6pt}\n"
+        "\\title{The Real Title}\n"
+        "\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n"
+    )
+    main = write(tmp_path, "main.tex", src)
+    blocks = segment(flatten(main))
+    assert blocks[0].source_text == "\\title{The Real Title}"
+
+
+def test_a_document_without_a_title_is_unchanged(tmp_path):
+    blocks = seg(tmp_path, "First paragraph here.\n\nSecond paragraph here.")
+    assert [b.source_text for b in blocks] == [
+        "First paragraph here.",
+        "Second paragraph here.",
+    ]
+
+
+def test_an_in_document_title_is_still_one_body_block(tmp_path):
+    # estonia-qbs and qutub-india write `\title` BELOW `\begin{document}`, where
+    # the body region already cuts it. No second block may appear.
+    blocks = seg(tmp_path, "\\title{Inside the document}\n\nBody text.")
+    assert [b.source_text for b in blocks] == [
+        "\\title{Inside the document}",
+        "Body text.",
+    ]
+    assert blocks_mod.label(blocks[0]) == "Inside the document"
 
 
 def test_fragment_without_document_environment_is_all_body(tmp_path):

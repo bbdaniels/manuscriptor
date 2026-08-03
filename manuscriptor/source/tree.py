@@ -20,10 +20,12 @@ turn a serve into a filesystem crawl.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
+# The title reader, not a fourth copy of it. `render` imports nothing from
+# `source.tree`, so the direction is one-way and there is no cycle.
+from manuscriptor.render import pandoc
 from manuscriptor.source.root import MAIN_NAME, HEAD_BYTES, has_documentclass
 
 # Directories a document search must never descend into: version control, the
@@ -38,9 +40,6 @@ SKIP_DIRS = {
 # A project tree deeper than this is almost certainly a dependency or data dump,
 # not more manuscripts. The cap keeps a serve from crawling the whole disk.
 MAX_DEPTH = 5
-
-_TITLE_RE = re.compile(r"\\title\s*\{(.+?)\}", re.S)
-
 
 @dataclass(frozen=True)
 class Document:
@@ -65,22 +64,17 @@ def _title_of(path: Path) -> str:
     """A best-effort document title from its `\\title{...}`, or "".
 
     Reads only the head, like `has_documentclass`, so a large document costs no
-    more than the class check that already paged it in. Strips the commonest
-    LaTeX so the switcher shows words, not markup; never fatal.
+    more than the class check that already paged it in. What counts as the title
+    is `pandoc.document_title`'s answer and not a fourth one written here; this
+    function owns only the decision to read a head rather than a whole file.
+    Never fatal.
     """
     try:
         with path.open("rb") as fh:
             head = fh.read(HEAD_BYTES)
     except OSError:
         return ""
-    text = head.decode("utf-8", errors="replace")
-    m = _TITLE_RE.search(text)
-    if not m:
-        return ""
-    title = m.group(1).replace("\\\\", " ")
-    title = re.sub(r"\\[a-zA-Z]+\*?", "", title)
-    title = title.replace("{", "").replace("}", "")
-    return re.sub(r"\s+", " ", title).strip()
+    return pandoc.document_title(head.decode("utf-8", errors="replace"))
 
 
 def _folder_sort_key(doc: Document) -> tuple:

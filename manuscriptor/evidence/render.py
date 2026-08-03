@@ -14,6 +14,8 @@ from pathlib import Path
 
 from jinja2 import Template
 
+from manuscriptor.render import pandoc
+
 
 def run(*, output_dir: Path, main_tex: Path) -> None:
     manuscript_html = (output_dir / "manuscript.html").read_text(encoding="utf-8")
@@ -219,25 +221,20 @@ def _aggregate_status(
 
 
 _TITLE_H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.IGNORECASE | re.DOTALL)
-_TEX_TITLE_RE = re.compile(r"\\title\s*\{([^}]+)\}", re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _extract_title(main_tex: Path, html: str, fallback: str) -> str:
-    # Prefer the LaTeX \title{...} directive
+    # Prefer the LaTeX \title{...} directive, read by the one function that
+    # knows what a \title is -- this was a fifth copy of a `\title\s*\{([^}]+)\}`
+    # that could not see `\title[Short]{Long}` and stopped at the first brace.
     try:
         src = main_tex.read_text(encoding="utf-8")
     except OSError:
         src = ""
-    m_tex = _TEX_TITLE_RE.search(src)
-    if m_tex:
-        text = m_tex.group(1).strip()
-        # Strip LaTeX commands within the title (e.g., \\, \emph{})
-        text = re.sub(r"\\[a-zA-Z]+\*?", "", text)
-        text = text.replace("{", "").replace("}", "").strip()
-        text = re.sub(r"\s+", " ", text)
-        if text:
-            return text
+    got = pandoc.document_title(src)
+    if got:
+        return got
     m = _TITLE_H1_RE.search(html)
     if m:
         text = _TAG_RE.sub("", m.group(1)).strip()

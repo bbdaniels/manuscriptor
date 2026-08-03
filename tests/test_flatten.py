@@ -260,3 +260,55 @@ def test_locate_rejects_an_out_of_range_offset(tmp_path):
     flat = flatten(main)
     with pytest.raises(IndexError):
         flat.locate(len(flat.text) + 10)
+
+
+# ------------------------------------------------- one matcher for \name[opt]{
+#
+# `blocks._preamble_title` cuts `\title`'s BYTES into a block; `pandoc.
+# _command_spans` reads `\title`'s and `\author`'s TEXT out for the rendered
+# heading and byline. Same question, opposite ends, and when the two answers
+# differ the block and the heading stop describing the same thing -- the marker
+# handoff that puts the title block's id on the `<h1>` looks for a `\title` the
+# other module already found and hands over nothing. They lived apart for about
+# an hour, which is how long it took to write them.
+
+
+def test_the_title_matcher_is_the_shared_one():
+    from manuscriptor.source import blocks
+    from manuscriptor.source.flatten import command_re
+
+    assert blocks._TITLE_CMD_RE.pattern == command_re("title").pattern
+
+
+def test_nothing_else_matches_a_frontmatter_command_itself():
+    """No module outside `flatten.command_re` may spell `\\title` or `\\author`.
+
+    Three copies existed before this guard: `blocks._preamble_title`,
+    `pandoc._command_spans`, and `build._TEX_TITLE_RE` for the browser tab. All
+    three were blind to `\\author[1]{...}` and the third also stopped at the
+    first closing brace. Whether each returned the right answer is not the test
+    -- two of them usually did -- the test is that nobody else implements it.
+    """
+    import re
+
+    src = Path(__file__).resolve().parent.parent / "manuscriptor"
+    home = src / "source" / "flatten.py"
+    offenders = []
+    for path in sorted(src.rglob("*.py")):
+        if path == home:
+            continue
+        # Docstrings and comments come out first: a guard that trips on the
+        # prose explaining why the logic is absent is a guard only silence can
+        # satisfy. Same lesson as `test_render_tables._strip_comments`.
+        body = re.sub(r'"""(?:.|\n)*?"""', "", path.read_text(encoding="utf-8"))
+        body = re.sub(r"'''(?:.|\n)*?'''", "", body)
+        body = "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+        # Quoting and whitespace come out too, so a change of quote character
+        # cannot defeat it -- the hole `test_paths._squash` was written to close.
+        body = re.sub(r"""(?<![A-Za-z0-9_])[rbufRBUF]{1,2}['"]|['"]|\s+""", "", body)
+        for name in ("title", "author"):
+            if "\\\\" + name in body or "\\" + name in body:
+                offenders.append(f"{path.relative_to(src)}: \\{name}")
+    assert not offenders, (
+        "a second matcher for a front-matter command: " + ", ".join(offenders)
+    )

@@ -14,6 +14,7 @@ empty string that looks like an empty manuscript.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -729,6 +730,192 @@ def test_a_forced_break_in_the_title_is_a_space_not_a_comma(tmp_path):
     html = render_document(src, cwd=tmp_path, bib=None)
     assert "In Sickness: Motivating Care" in html
     assert "A One, B Two" in html
+
+
+# The title's block marker has to reach the rendered <h1>, and the `\maketitle`
+# block's marker has to stop reaching it.
+#
+# This one cannot be done by adjacency the way the abstract's was. The abstract
+# is MOVED -- its bytes leave the preamble and arrive in the body with the
+# marker still glued to them. The title is COPIED: `_command_text` reads the
+# words out of `\title{}` and leaves the original command where it stands, so
+# two markers are candidates for one <h1> and only an explicit handoff can pick
+# between them. Left alone, `\maketitle`'s marker wins by standing nearer, and
+# clicking a paper's title opened an inspector whose whole source was
+# `\flushbottom\maketitle` -- in every one of the six manuscripts.
+
+MARKED_TITLE = """\\documentclass{wlscirep}
+⟦MX00c1⟧\\title{In Sickness and In Health}
+\\author[1]{A.~Author}
+\\begin{document}
+⟦MX00c2⟧\\flushbottom
+\\maketitle
+
+⟦MX00c3⟧Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+# estonia-qbs and qutub-india write `\title` INSIDE the document, where it has
+# had a block all along -- and rendered as an empty, zero-height <p> the author
+# could not click, while the visible <h1> still answered to `\maketitle`. Same
+# defect, opposite side; both routes have to end in the same place.
+BODY_TITLE = """\\documentclass{wlscirep}
+\\begin{document}
+⟦MX00d1⟧\\title{In Sickness and In Health}
+
+⟦MX00d2⟧\\author[1]{A.~Author}
+
+⟦MX00d3⟧\\maketitle
+
+⟦MX00d4⟧Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+
+def _heading(html: str) -> str:
+    at = html.find("⟦MXTITLE⟧")
+    assert at != -1, "no title token in the render"
+    return html[html.rfind("<", 0, at): html.find("</h1>", at) + 5]
+
+
+@pytest.mark.parametrize(
+    "src,title_id,maketitle_id",
+    [(MARKED_TITLE, "⟦MX00c1⟧", "⟦MX00c2⟧"), (BODY_TITLE, "⟦MX00d1⟧", "⟦MX00d3⟧")],
+)
+def test_the_title_heading_carries_the_title_blocks_marker(
+    tmp_path, src, title_id, maketitle_id
+):
+    html = render_document(src, cwd=tmp_path, bib=None)
+    head = _heading(html)
+    assert title_id in head, f"the title block's marker is not on the heading: {head!r}"
+    assert maketitle_id not in head, (
+        f"\\maketitle's marker is still on the heading: {head!r}"
+    )
+
+
+@pytest.mark.parametrize(
+    "src,title_id", [(MARKED_TITLE, "⟦MX00c1⟧"), (BODY_TITLE, "⟦MX00d1⟧")]
+)
+def test_the_title_marker_is_not_left_behind_where_it_was(tmp_path, src, title_id):
+    # One marker, one element. A copy left at the `\title{}` site either dies in
+    # discarded preamble or anchors an empty paragraph in the body -- which is
+    # exactly the invisible zero-height block on estonia-qbs.
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert html.count(title_id) == 1
+
+
+@pytest.mark.parametrize(
+    "src,maketitle_id", [(MARKED_TITLE, "⟦MX00c2⟧"), (BODY_TITLE, "⟦MX00d3⟧")]
+)
+def test_the_maketitle_marker_survives_as_its_own_anchor(tmp_path, src, maketitle_id):
+    # It is not dropped: the block still exists and still owns its bytes. It
+    # becomes a void anchor, which the viewer collapses to zero height.
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert maketitle_id in html
+
+
+def test_an_optional_argument_does_not_hide_the_byline(tmp_path):
+    # `_command_text` matched `\author` only when a `{` came next, and every
+    # wlscirep manuscript writes `\author[1]{...}`. The lookahead failed, the
+    # byline was None, and no byline has ever rendered on any of them.
+    html = render_document(MARKED_TITLE, cwd=tmp_path, bib=None)
+    assert "⟦MXBYLINE⟧" in html
+    assert "A. Author" in html or "A.\u00a0Author" in html
+
+
+def test_every_author_reaches_the_byline(tmp_path):
+    # wlscirep takes one `\author` per author. Printing only the first names
+    # the wrong paper.
+    src = (
+        "\\documentclass{wlscirep}\n"
+        "\\title{The Paper}\n"
+        "\\author[1]{A. One}\n\\author[2]{B. Two}\n\\author[3]{C. Three}\n"
+        "\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    for name in ("A. One", "B. Two", "C. Three"):
+        assert name in html
+
+
+def test_a_title_with_an_optional_argument_still_renders(tmp_path):
+    src = (
+        "\\documentclass{article}\n"
+        "\\title[Short]{The Long Title}\n\\author{A. Author}\n"
+        "\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "The Long Title" in html
+
+
+PREAMBLE_TITLE_DOC = """\\documentclass{wlscirep}
+\\title{In Sickness and In Health}
+\\author[1]{A.~Author}
+\\begin{document}
+\\flushbottom
+\\maketitle
+
+Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+BODY_TITLE_DOC = """\\documentclass{wlscirep}
+\\begin{document}
+\\title{In Sickness and In Health}
+
+\\author[1]{A.~Author}
+
+\\maketitle
+
+Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+
+@pytest.mark.parametrize("src", [PREAMBLE_TITLE_DOC, BODY_TITLE_DOC])
+def test_the_rendered_title_is_the_title_blocks_own_element(tmp_path, src):
+    # The whole point, end to end and through the real segmenter: click the
+    # paper's title and the inspector must show `\title{...}`, not
+    # `\flushbottom\maketitle`. Both layouts, one outcome.
+    from manuscriptor.render.postprocess import postprocess
+    from manuscriptor.source import anchors
+    from manuscriptor.source.blocks import segment
+    from manuscriptor.source.flatten import flatten
+
+    main = write(tmp_path, "main.tex", src)
+    blocks = segment(flatten(main))
+    title = next(b for b in blocks if b.source_text.startswith("\\title"))
+    html = render_document(
+        anchors.inject(flatten(main).text, blocks), cwd=tmp_path, bib=None
+    )
+    page = postprocess(
+        html, blocks=blocks, manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out", labels={},
+    )["html"]
+    h1 = re.search(r'<h1[^>]*\bclass="[^"]*doc-title[^"]*"[^>]*>', page)
+    assert h1 is not None, page
+    assert f'data-mx="{title.id}"' in h1.group(0), h1.group(0)
+
+
+@pytest.mark.parametrize("src", [PREAMBLE_TITLE_DOC, BODY_TITLE_DOC])
+def test_the_maketitle_block_is_still_anchored_somewhere(tmp_path, src):
+    # It keeps its own element -- an empty one the viewer collapses -- rather
+    # than being reported unanchored, which is what the margin reads as a
+    # comment that never arrived.
+    from manuscriptor.render.postprocess import postprocess
+    from manuscriptor.source import anchors
+    from manuscriptor.source.blocks import segment
+    from manuscriptor.source.flatten import flatten
+
+    main = write(tmp_path, "main.tex", src)
+    blocks = segment(flatten(main))
+    mk = next(b for b in blocks if "\\maketitle" in b.source_text)
+    out = postprocess(
+        render_document(anchors.inject(flatten(main).text, blocks), cwd=tmp_path, bib=None),
+        blocks=blocks, manuscript_dir=tmp_path,
+        output_dir=tmp_path / "out", labels={},
+    )
+    assert mk.id not in out["unanchored"]
+    assert f'data-mx="{mk.id}"' in out["html"]
 
 
 def test_a_spacing_environment_does_not_swallow_the_title(tmp_path):

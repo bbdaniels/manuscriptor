@@ -41,6 +41,7 @@ from pathlib import Path
 # of split that rots quietly and then bites mid-revision.
 from manuscriptor.source.flatten import (
     _INCLUDE_RE,
+    command_re,
     is_commented,
     _resolve,
     FlatSource,
@@ -147,11 +148,15 @@ _BARE = {
     "singlespacing", "doublespacing", "onehalfspacing",
 }
 # Commands that wrap words the author meant to read. Sectioning is here so a
-# heading block, whose whole source IS the command, comes back as its title.
+# heading block, whose whole source IS the command, comes back as its title --
+# and `title` is here for exactly the same reason. A `\title{...}` block is
+# markup end to end, so `label()`'s markup test threw the name away and the
+# paper's own title reported itself in the queue, the ticker and the inspector
+# as its parent heading, or as nothing at all.
 _UNWRAP = {
     "textbf", "textit", "textrm", "textsf", "texttt", "textsc", "textnormal",
     "emph", "text", "mbox", "textsuperscript", "textsubscript", "uline",
-    "underline", "MakeUppercase", "MakeLowercase", *_SECTION_LEVEL,
+    "underline", "MakeUppercase", "MakeLowercase", "title", *_SECTION_LEVEL,
 }
 # Words that end in a period and do not end a sentence. Initialisms (`U.S.`,
 # `e.g.`) are matched by shape rather than listed.
@@ -300,13 +305,20 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
 
     tokens = _tokenize(flat.text, 0, len(flat.text))
     body_start, body_end = _body_bounds(flat.text, tokens)
-    # In document order: a preamble abstract, when the class takes one, always
-    # precedes `\begin{document}`. Both regions are cut by the SAME `_cut`, so
-    # there is still exactly one implementation of splitting LaTeX into blocks.
+    # Prose the author edits that is written ABOVE `\begin{document}`, plus the
+    # body. Each region is cut by the SAME `_cut`, so there is still exactly one
+    # implementation of splitting LaTeX into blocks. Sorted rather than
+    # prepended, because "which comes first" is a fact about the manuscript --
+    # covet writes the title above the abstract, and nothing forbids the
+    # reverse.
     regions = [(body_start, body_end)]
-    pre = _preamble_abstract(tokens, body_start)
-    if pre is not None:
-        regions.insert(0, pre)
+    for extra in (
+        _preamble_title(flat.text, body_start),
+        _preamble_abstract(tokens, body_start),
+    ):
+        if extra is not None:
+            regions.append(extra)
+    regions.sort()
 
     cuts: list[_Cut] = []
     for lo, hi in regions:
@@ -729,6 +741,37 @@ def _body_bounds(text: str, tokens: list[_Tok]) -> tuple[int, int]:
             end = max(start, t.start)
             break
     return start, end
+
+
+_TITLE_CMD_RE = command_re("title")
+
+
+def _preamble_title(text: str, body_start: int) -> tuple[int, int] | None:
+    """The span of a `\\title{...}` written ABOVE `\\begin{document}`.
+
+    Four of the six manuscripts put it there, and it fell in no region: no
+    block, no id, and nothing for the rendered `<h1>` to answer to except the
+    `\\maketitle` block standing next to it. Clicking a paper's title opened an
+    inspector whose entire source was `\\flushbottom\\maketitle`.
+
+    One contiguous byte range in the root file, the same shape as a
+    `\\section{...}` heading block the editor already splices, so it is
+    admissible as exactly one block.
+
+    What counts as a `\\title` is decided by `flatten.command_re` and not here,
+    because `render/pandoc.py` asks the same question from the other end -- it
+    reads the title's TEXT where this reads its BYTES -- and two answers to it
+    means the block and the rendered heading stop describing the same thing.
+    """
+    if body_start <= 0:                      # a fragment: it is all body already
+        return None
+    m = _TITLE_CMD_RE.search(text, 0, body_start)
+    if m is None:
+        return None
+    _, end = _read_group(text, m.end())
+    if end <= m.end() or end > body_start:
+        return None
+    return m.start(), end
 
 
 def _preamble_abstract(tokens: list[_Tok], body_start: int) -> tuple[int, int] | None:

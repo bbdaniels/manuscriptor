@@ -69,6 +69,7 @@ from pathlib import Path
 # in `tables.py`, which is their one home. A second copy of them once existed in
 # the Word submission skills and had already drifted; see that module's
 # docstring and `tests/test_render_tables.py`.
+from manuscriptor.source.flatten import command_re
 from manuscriptor.render.tables import (
     declared_column_types,
     group_start,
@@ -220,20 +221,55 @@ _THANKS_RE = re.compile(r"\\thanks\s*(?=\{)")
 # The block marker standing immediately before the construct being rewritten.
 # Same pattern as anchors.MARKER_RE, including the `-2` disambiguation suffix.
 _MARKER_BEFORE_RE = re.compile(r"⟦MX[0-9a-f]+(?:-\d+)?⟧\s*$")
+# The same thing with the marker and its trailing whitespace apart, so the
+# marker can be lifted out without dragging the line break after it along.
+_MARKER_ONLY_BEFORE_RE = re.compile(r"(⟦MX[0-9a-f]+(?:-\d+)?⟧)\s*$")
 
 
 def _render_frontmatter(source: str) -> str:
     after_title: int | None = None
     m = _MAKETITLE_RE.search(source)
     if m:
-        title = _command_text(source, "title", break_as=" ")
+        title = command_text(source, "title", break_as=" ")
         if title:
-            byline = _command_text(source, "author", break_as=", ")
-            repl = "\\section*{" + TITLE_TOKEN + title + "}"
+            byline = _byline(source)
+            # The title block's marker is HANDED OVER to the constructed
+            # heading, explicitly, rather than being left to whichever marker
+            # happens to stand nearest it.
+            #
+            # This is where the title differs from the abstract, and the
+            # difference is the whole bug. The abstract is MOVED: its bytes
+            # leave the preamble and arrive in the body with the marker still
+            # glued to them, so adjacency keeps telling the truth. The title is
+            # COPIED -- `_command_text` reads the words out of `\title{}` and
+            # leaves the original command exactly where it stands -- so two
+            # blocks are candidates for one `<h1>`: the title's, and
+            # `\maketitle`'s, which sits at the site being rewritten. Adjacency
+            # picked `\maketitle` in all six manuscripts, and clicking a paper's
+            # title opened an inspector whose entire source was
+            # `\flushbottom\maketitle`.
+            #
+            # The marker is written INSIDE the `\section*{}` argument, so pandoc
+            # nests it in the heading element and `anchors.harvest` attaches it
+            # there by containment rather than by proximity. That also settles
+            # the loser: `postprocess._hoist_empty_anchors` refuses to overwrite
+            # an element that already carries a block id, so `\maketitle`'s
+            # marker stops on its own empty paragraph and becomes the void
+            # anchor it should always have been.
+            #
+            # And it is lifted, not copied: one marker, one element. A second
+            # copy left at the `\title{}` site either dies in discarded preamble
+            # or -- on estonia-qbs and qutub-india, which write `\title` inside
+            # the document -- anchors the empty, zero-height paragraph the
+            # author could never click.
+            mark, mark_at = _marker_on_title(source)
+            repl = "\\section*{" + TITLE_TOKEN + mark + title + "}"
             if byline:
                 repl += "\n\n" + BYLINE_TOKEN + byline + "\n"
-            source = source[: m.start()] + repl + source[m.end():]
-            after_title = m.start() + len(repl)
+            edits = [(m.start(), m.end(), repl)]
+            if mark_at is not None:
+                edits.append((mark_at[0], mark_at[1], ""))
+            source, after_title = _apply_edits(source, edits, past=0)
         # No \title: nothing to show and nothing to invent. The empty block is
         # collapsed by the viewer's void pass rather than papered over here.
 
@@ -287,15 +323,108 @@ def _relocate_abstract(
     return cut[:d] + "\n\n" + piece + cut[d:]
 
 
-def _command_text(source: str, name: str, *, break_as: str = " ") -> str | None:
+def _marker_on_title(source: str) -> tuple[str, tuple[int, int] | None]:
+    """The block marker anchoring `\\title{...}`, and where to lift it from.
+
+    `("", None)` when the title carries no marker -- a fragment, a render of one
+    block, a manuscript whose `\\title` is inside a construct the segmenter did
+    not cut. Then nothing is handed over and nothing is taken away.
+    """
+    spans = _command_spans(source, "title")
+    if not spans:
+        return "", None
+    mk = _MARKER_ONLY_BEFORE_RE.search(source, 0, spans[0][0])
+    if mk is None:
+        return "", None
+    return mk.group(1), mk.span(1)
+
+
+def _apply_edits(
+    source: str, edits: list[tuple[int, int, str]], *, past: int
+) -> tuple[str, int]:
+    """Apply non-overlapping `(start, stop, text)` edits, left to right.
+
+    Returns the new text and the offset just past edit `past` IN IT, because the
+    abstract relocation needs a destination measured against the string it will
+    actually cut, and an offset taken before a second edit landed above it is a
+    position in a document that no longer exists.
+    """
+    order = sorted(range(len(edits)), key=lambda i: edits[i][0])
+    out: list[str] = []
+    prev = 0
+    end_of_past = 0
+    for i in order:
+        start, stop, text = edits[i]
+        out.append(source[prev:start])
+        out.append(text)
+        prev = stop
+        if i == past:
+            end_of_past = sum(len(p) for p in out)
+    out.append(source[prev:])
+    return "".join(out), end_of_past
+
+
+def _command_spans(source: str, name: str) -> list[tuple[int, int, int]]:
+    """Every `\\name[opt]{...}`, as `(command start, argument start, argument end)`.
+
+    What counts as a `\\name` is decided by `flatten.command_re` and not here.
+    `source/blocks.py` asks the same question about `\\title` from the other end
+    -- it cuts the title's BYTES into a block where this reads its TEXT for the
+    heading -- and two answers to it means the block and the rendered heading
+    stop describing the same thing, with the marker handoff between them
+    silently finding nothing to hand over.
+    """
+    out: list[tuple[int, int, int]] = []
+    for m in command_re(name).finditer(source):
+        end = skip_group(source, m.end())
+        if end > m.end():
+            out.append((m.start(), m.end(), end))
+    return out
+
+
+def document_title(source: str) -> str:
+    """The paper's title as plain words, or `""`. One implementation.
+
+    Four other spellings of this existed on 2026-08-03 -- `server/build.py` for
+    the browser tab, `source/tree.py` for the document switcher,
+    `evidence/render.py` for a report header, and the `\\title` reader inside
+    `_render_frontmatter` -- and every one of them was a bare
+    `\\title\\s*\\{(...)\\}`. All four were blind to `\\title[Short]{Long}`, and
+    two stopped at the FIRST closing brace, so `\\title{A \\textbf{bold} title}`
+    named the tab `A \\textbf{bold`. They did not need months to diverge; they
+    were written apart and were wrong together from the start.
+
+    Markup that survives is dropped rather than rendered: this feeds a tab, a
+    switcher row and a report heading, none of which have a stylesheet.
+    """
+    got = command_text(source, "title", break_as=" ")
+    if not got:
+        return ""
+    text = re.sub(r"\\[a-zA-Z]+\*?", "", got)
+    return re.sub(r"\s+", " ", text.replace("{", "").replace("}", "")).strip()
+
+
+def command_text(source: str, name: str, *, break_as: str = " ") -> str | None:
     """The cleaned text of a preamble command's argument, or None."""
-    m = re.search(r"\\" + name + r"\s*(?=\{)", source)
-    if m is None:
+    spans = _command_spans(source, name)
+    if not spans:
         return None
-    end = skip_group(source, m.end())
-    if end == m.end():
-        return None
-    return _clean_inline(source[m.end() + 1: end - 1], break_as=break_as) or None
+    _, lo, hi = spans[0]
+    return _clean_inline(source[lo + 1: hi - 1], break_as=break_as) or None
+
+
+def _byline(source: str) -> str | None:
+    """Every `\\author` joined, because `authblk` and `wlscirep` take one each.
+
+    estonia-ecm writes a single `\\author{A, B and C}`; covet-india writes nine
+    `\\author[n]{...}` commands. Reading only the first would put one name under
+    a nine-author paper, which is a byline for a different paper.
+    """
+    names = [
+        _clean_inline(source[lo + 1: hi - 1], break_as=", ")
+        for _, lo, hi in _command_spans(source, "author")
+    ]
+    return ", ".join(n for n in names if n) or None
 
 
 def _clean_inline(text: str, *, break_as: str = " ") -> str:

@@ -25,6 +25,27 @@ from pathlib import Path
 _INCLUDE_RE = re.compile(r"\\(input|include)\s*\{([^}]*)\}")
 
 
+def command_re(name: str) -> re.Pattern[str]:
+    """`\\name[optional]{`, matched up to but not including the `{`.
+
+    One spelling of this, because two callers ask the same question about the
+    same commands from opposite ends: `blocks._preamble_title` cuts `\\title`'s
+    BYTES into a block, and `pandoc._command_spans` reads `\\title`'s and
+    `\\author`'s TEXT out for the rendered heading and byline. When they
+    disagree about what counts as a `\\title` the block and the heading stop
+    describing the same thing, and the marker handoff between them silently
+    finds nothing to hand over.
+
+    Both halves of the pattern are load-bearing and both were once missing. The
+    optional argument is why no byline had ever rendered on any manuscript:
+    every `wlscirep` paper writes `\\author[1]{Benjamin Daniels}` and a bare `{`
+    lookahead never matched it. The trailing word boundary is why estonia-ecm's
+    `\\titlespacing{\\section}{0pt}{6pt}{6pt}`, declared nineteen lines above its
+    real `\\title`, is not mistaken for the title of the paper.
+    """
+    return re.compile(r"\\" + name + r"(?![a-zA-Z@])\s*(?:\[[^\]]*\])?\s*(?=\{)")
+
+
 @dataclass(frozen=True)
 class Segment:
     """One contiguous run of the flattened buffer, traced to its origin file."""

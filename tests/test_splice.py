@@ -131,6 +131,27 @@ def test_splice_to_a_preamble_abstract_writes_only_its_own_bytes(tmp_path):
     assert after.endswith("\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n")
 
 
+def test_splice_to_a_preamble_title_writes_only_its_own_bytes(tmp_path):
+    # The title block is one contiguous range in the root .tex, above
+    # \begin{document}, and a splice to it must write those bytes and no
+    # others. It sits directly against the abstract below it, which is the
+    # neighbour a wrong range would eat.
+    main = manuscript(tmp_path, PREAMBLE_ABSTRACT)
+    before = main.read_text(encoding="utf-8")
+    block = next(b for b in blocks_of(main) if b.source_text.startswith("\\title"))
+    assert block.source_text == "\\title{A Paper}"
+
+    new = "\\title{A Retitled Paper}"
+    splice(block, new, root=tmp_path)
+
+    after = main.read_text(encoding="utf-8")
+    head, tail = before.split(block.source_text)
+    assert after == head + new + tail
+    assert after.startswith("\\documentclass{wlscirep}\n\\title{A Retitled Paper}\n")
+    assert "The abstract lives above the document environment." in after
+    assert after.endswith("\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n")
+
+
 # ----------------------------------------------------------------- line drift
 
 

@@ -919,21 +919,19 @@ def _outline(bl) -> list[dict]:
     return out
 
 
-_TEX_TITLE_RE = re.compile(r"\\title\s*\{(.+?)\}\s*$", re.M | re.S)
-
-
 def _title(main_tex: Path, html: str) -> str:
+    """What the browser tab is called.
+
+    Reading the title out of `\\title{...}` is `pandoc.document_title`'s job, not
+    a spelling of it here; this function owns only the fallbacks.
+    """
     try:
         src = main_tex.read_text(encoding="utf-8")
     except OSError:
         src = ""
-    m = _TEX_TITLE_RE.search(src)
-    if m:
-        text = m.group(1).replace("\\\\", " ")
-        text = re.sub(r"\\[a-zA-Z]+\*?", "", text)
-        text = re.sub(r"\s+", " ", text.replace("{", "").replace("}", "")).strip()
-        if text:
-            return text
+    got = pandoc.document_title(src)
+    if got:
+        return got
     m2 = re.search(r"<h1[^>]*>(.*?)</h1>", html, re.S)
     if m2:
         text = re.sub(r"<[^>]+>", "", m2.group(1)).strip()
