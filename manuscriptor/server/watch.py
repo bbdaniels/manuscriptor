@@ -39,6 +39,86 @@ ASSET_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg"}
 IGNORED_DIRS = {".git", "build", "__pycache__", ".venv", "node_modules", "renv"}
 
 
+# ONE OBSERVER PER DIRECTORY, BECAUSE THE OPERATING SYSTEM ALREADY DECIDED THAT.
+# watchdog's fsevents backend registers its streams in a process-global table
+# keyed by `ObservedWatch(path, is_recursive)`, so two `Observer()` objects
+# watching one directory are not two registrations -- the second raises
+# `RuntimeError: ... it is already scheduled` inside its own emitter thread,
+# where nothing is waiting to catch it. The observer object survives, `stop()`
+# still works, and the caller holds a watcher that will never deliver an event.
+#
+# `serve` watches the drain's live feed and the drain's ledger by name; both
+# live in `paths.agent_dir`, so that was every boot. Sharing here rather than
+# merging the two call sites, because the collision is a property of the
+# directory and not of those particular two callers: any future pair would have
+# reintroduced it, silently, in the same way.
+_SHARED: dict[tuple[str, bool], "_Shared"] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+class _Fanout(FileSystemEventHandler):
+    """Delivers one directory's events to every handler registered for it."""
+
+    def __init__(self):
+        self.handlers: list[FileSystemEventHandler] = []
+        self.guard = threading.Lock()
+
+    def dispatch(self, event):
+        with self.guard:
+            handlers = list(self.handlers)
+        for handler in handlers:
+            handler.dispatch(event)
+
+
+class _Shared:
+    def __init__(self, path: str, recursive: bool):
+        self.fanout = _Fanout()
+        self.observer = Observer()
+        self.observer.schedule(self.fanout, path, recursive=recursive)
+        self.observer.daemon = True
+        self.observer.start()
+
+
+def _schedule(path: str, recursive: bool, handler: FileSystemEventHandler):
+    """Attach `handler` to the watch on `path`, starting it if it is the first.
+
+    Returns a function that detaches it, stopping the observer once the last
+    handler has gone -- and only then, since tearing it down on the first leaver
+    would leave the remaining callers holding a watch that never fires, which is
+    the same failure wearing the opposite sign.
+    """
+    key = (path, recursive)
+    with _SHARED_LOCK:
+        shared = _SHARED.get(key)
+        if shared is None:
+            shared = _SHARED[key] = _Shared(path, recursive)
+        with shared.fanout.guard:
+            shared.fanout.handlers.append(handler)
+
+    def stop() -> None:
+        with _SHARED_LOCK:
+            held = _SHARED.get(key)
+            if held is not shared:
+                return
+            with shared.fanout.guard:
+                if handler in shared.fanout.handlers:
+                    shared.fanout.handlers.remove(handler)
+                remaining = len(shared.fanout.handlers)
+            if remaining:
+                return
+            del _SHARED[key]
+        shared.observer.stop()
+        shared.observer.join(timeout=2)
+
+    return stop
+
+
+def active_watches() -> list[tuple[str, bool]]:
+    """Every directory currently watched, as `(path, recursive)`. For tests."""
+    with _SHARED_LOCK:
+        return list(_SHARED)
+
+
 class _Handler(FileSystemEventHandler):
     def __init__(self, on_batch: Callable[[set[Path]], None], debounce: float):
         self.on_batch = on_batch
@@ -94,16 +174,7 @@ def watch_tree(
 ) -> Callable[[], None]:
     """Watch `root` for manuscript changes. Returns a function that stops it."""
     handler = _Handler(on_change, debounce_ms / 1000.0)
-    observer = Observer()
-    observer.schedule(handler, str(Path(root).resolve()), recursive=True)
-    observer.daemon = True
-    observer.start()
-
-    def stop() -> None:
-        observer.stop()
-        observer.join(timeout=2)
-
-    return stop
+    return _schedule(str(Path(root).resolve()), True, handler)
 
 
 def block_until_log_grows(log: Path, *, from_offset: int, poll: float = 0.5) -> int:
@@ -131,6 +202,10 @@ def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 
     file, watched by name, is the narrow exception rather than a hole in the
     rule.
 
+    Two files in one directory is the normal case here -- the feed and the
+    ledger both sit in `paths.agent_dir` -- so the directory's watch is shared
+    (see `_schedule`) and this handler only picks its own filename out of it.
+
     Ask `server/paths.py` for the path. This docstring used to say the feed
     lived under `build/`, and the caller that believed it watched a file the
     drain had stopped writing months earlier -- which fires no events, so the
@@ -157,13 +232,4 @@ def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 
                 self.timer.start()
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    observer = Observer()
-    observer.schedule(_One(), str(path.parent), recursive=False)
-    observer.daemon = True
-    observer.start()
-
-    def stop() -> None:
-        observer.stop()
-        observer.join(timeout=2)
-
-    return stop
+    return _schedule(str(path.parent), False, _One())
