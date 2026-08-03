@@ -26,6 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 JS = ROOT / "tests" / "js"
 DRIVE = JS / "drive.js"
+PROBE = JS / "probe.js"
 NODE = shutil.which("node")
 
 
@@ -99,6 +100,36 @@ def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) ->
     out = json.loads(p.stdout)
     assert not out["errors"], f"the page threw: {out['errors']}"
     return out
+
+
+def computed(page_html: str, probes, *, tmp_path: Path) -> list[dict]:
+    """What the stylesheet says about elements of the page the server rendered.
+
+    A DIFFERENT and WEAKER claim than `drive` makes, and the difference has to
+    stay visible at every call site: this resolves the cascade, it does not
+    measure a layout. jsdom does no layout at all -- every box it reports is
+    zero -- so a CSS bug that moves a column's width or a row's height cannot
+    be caught here by its effect. It can be caught by the declaration that
+    causes it, on the element that declaration governs, which is what this
+    returns. A test using it owes its docstring the browser measurement.
+
+    `probes` is a list of ``{"sel", "props", "inherited", "nth"}``. `props` are
+    read as declared on the element; `inherited` are resolved by walking
+    ancestors, because jsdom's `getComputedStyle` does not inherit.
+    """
+    why = missing()
+    if why:
+        raise RuntimeError(why)
+    html_file = tmp_path / "probe-page.html"
+    html_file.write_text(page_html, encoding="utf-8")
+    plan_file = tmp_path / "probes.json"
+    plan_file.write_text(json.dumps(list(probes)), encoding="utf-8")
+    p = subprocess.run(
+        [NODE, str(PROBE), str(html_file), str(plan_file)],
+        capture_output=True, text=True, cwd=str(JS),
+    )
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
 
 
 class record:

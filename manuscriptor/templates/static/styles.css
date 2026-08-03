@@ -222,7 +222,19 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 /* 34rem at the 17px body lands the measure near 72 characters a line. The
    38rem/16px original measured 85 to 90, which is past what an afternoon of
    reading should be asked to track (2026-07-22 audit). */
-.doc-inner { overflow-wrap: anywhere; max-width: 34rem; margin: 0 auto; }
+/* No `overflow-wrap: anywhere` here, and the omission is the fix. It wrapped
+   the whole manuscript to stop a long URL scrolling the measure sideways, but
+   `anywhere` is not `break-word`: it removes the min-content floor from
+   intrinsic sizing, so table auto-layout inherited permission to size a column
+   NARROWER than its own longest word and then break that word in half.
+   covet-india's Table 1, at this 543px measure: stub column 76px with the rule
+   and 95px without, its 60px content box narrower than the word "statement"
+   (69px), so the page read "Opening statemen / t". The narrow, correct form of
+   the same rule is below on `.doc a, .doc code, .doc tt` -- it was already
+   there, so this was the second implementation of one job and the wrong one.
+   Every long token in the reference manuscripts sits inside one of those three
+   elements; `.doc` itself is `overflow: auto`, so nothing can reach the body. */
+.doc-inner { max-width: 34rem; margin: 0 auto; }
 .doc h1, .doc h2, .doc h3, .doc h4 { font-family: var(--serif); font-weight: 600; letter-spacing: .01em; }
 .doc h1 { font-size: 1.4rem; margin: 0 0 1.1rem; }
 .doc h2 { font-size: 1.15rem; margin: 2rem 0 1.1rem; }
@@ -529,6 +541,18 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .doc table td[colspan]:only-child { text-align: left; font-weight: 600;
   padding-top: .6rem; border-bottom: 0; }
 .doc table tbody tr:hover { background: var(--sunken); }
+/* A cell's block children must not bring the body paragraph's margin into the
+   row. Pandoc emits `<td><p>x</p></td>` rather than bare text whenever a cell
+   holds something it cannot flatten to `Plain` -- a `\hspace{0.3cm}` stub
+   indent survives `latex+raw_tex` as a RawInline and does exactly that -- so
+   ONE cell in a row gets a `<p>` and its siblings do not. Unreset, that cell
+   carried 13.12px above and below, opened its row from 25px to 51px, and left
+   the row's label sitting 16px below the numbers it labels. Trimming only the
+   outer edges keeps the spacing between two paragraphs in a cell that has
+   two. The `<p>` is legitimate output; the page styles it rather than the
+   render pass stripping the `\hspace`. */
+.doc table td > :first-child, .doc table th > :first-child { margin-top: 0; }
+.doc table td > :last-child, .doc table th > :last-child { margin-bottom: 0; }
 
 /* A long unbroken string (a URL, a DOI, an accession number) has no break
    opportunity of its own, and one of them is enough to make the whole
