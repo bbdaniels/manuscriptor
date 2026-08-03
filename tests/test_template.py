@@ -778,10 +778,15 @@ def test_the_client_defers_the_panel_rebuild_for_the_focused_block():
 
 
 def test_drafts_are_persisted_outside_the_page():
+    """`.dirtybar` was asked for here too until 2026-08-04, when it was deleted:
+    it sat above the source editor, appeared on the first keystroke and left on
+    the save, so it moved the box being typed in about once a second, and it
+    only repeated what `#headsave` says permanently.
+    See tests/test_save_badge.py."""
     js = VIEWER.read_text(encoding="utf-8")
     assert "localStorage" in js
     css = STYLES.read_text(encoding="utf-8")
-    assert ".restored" in css and ".dirtybar" in css
+    assert ".restored" in css
 
 
 def test_all_three_scrolls_are_captured_and_restored():

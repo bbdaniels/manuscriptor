@@ -592,9 +592,15 @@
     store(draftKey(S.docKey, id), text);
     markDirty(id, true);
   }
+  /* The draft is gone; the NOTICE that one was restored is not. It reports what
+     happened when this block was opened, and that stays true after the text it
+     was holding reaches the file. Clearing it here made it a save-state banner
+     in disguise: it sits above the editor, so it vanished from under the
+     author's cursor the moment his first save landed and took the editor 33px
+     up the panel with it. `retireRestored` drops it when he leaves the block,
+     which is a moment the panel is rebuilt for anyway. */
   function clearDraft(id) {
     delete S.drafts[id];
-    delete S.restored[id];
     drop(draftKey(S.docKey, id));
     markDirty(id, false);
   }
@@ -942,11 +948,24 @@
     return prev.key;
   }
 
+  /* The "draft restored" notice belongs to one VISIT to a block, not to the
+     draft: it reports what was waiting when the panel opened, which stays true
+     after that text reaches the file. Retiring it when the author leaves is
+     what keeps it out of the save's way -- it used to be dropped by
+     `clearDraft`, which is to say it vanished from above the editor the moment
+     his first save landed and took the box he was typing in 33px up the panel.
+     Called only where the panel is being rebuilt anyway. */
+  function retireRestored() {
+    var was = S.sel && S.sel.blockId;
+    if (was) delete S.restored[was];
+  }
+
   function select(kind, key, blockId, tab, opts) {
     var els = document.querySelectorAll('.sel');
     for (var i = 0; i < els.length; i++) els[i].classList.remove('sel');
 
     if (kind === 'block' && !(opts && opts.fromBack)) S.back.length = 0;
+    if (blockId !== (S.sel && S.sel.blockId)) retireRestored();
     S.sel = { kind: kind, key: key, blockId: blockId || null };
     S.tab = tab === undefined ? (S.tabMemory[selKey()] || 0) : tab;
 
@@ -1016,7 +1035,21 @@
   }
 
   /* The banners live in their own container so they can be refreshed without
-     rebuilding the panel, which would take the editor and the caret with it. */
+     rebuilding the panel, which would take the editor and the caret with it.
+     They sit ABOVE the editor in the panel's flow, so anything that appears or
+     vanishes here moves the box the author is typing in -- which is why what
+     is left here may only change when the SELECTION changes, never when the
+     save state does.
+
+     A second "Unsaved" bar used to live here and did exactly that. Reported
+     2026-08-04: "the 'unsaved' popup when typing moves the text window which
+     messes with inserts." It was 33px tall, it arrived on the first keystroke,
+     `clearDraft` took it away again about a second later, and it came back on
+     the next keystroke -- so the editor walked up and down the panel for the
+     whole of a typing session. It was also a SECOND rendering of a fact the
+     header's save line already carries permanently, so the repair was to
+     delete it rather than to hold it still: one save badge, always present,
+     out of the editor's flow, changing only its wording. */
   function renderBanners() {
     var box = ibodyEl.querySelector('[data-role="banners"]');
     if (!box) return;
@@ -1024,9 +1057,6 @@
     var html = '';
     if (id && S.restored[id]) {
       html += '<div class="restored">Unsaved draft restored. It was kept when you clicked away.</div>';
-    }
-    if (id && draftOf(id) !== null) {
-      html += '<div class="dirtybar"><span>Unsaved</span> kept on this block until it saves or you discard it</div>';
     }
     box.innerHTML = html;
   }
@@ -1296,9 +1326,9 @@
        needs: measured live, an unbalanced draft typed while the server was down
        reported only the brace and said nothing about the connection. */
     if (S.sockState !== 'live' && draftOf(id) !== null) {
-      return '<div class="savestate offline"><i></i><span><b>Not connected.</b> '
-        + 'Your draft is held in this window and is written to disk the moment '
-        + 'the server is back.</span></div>' + saveButtons(id);
+      return saveLineHtml(' offline',
+        '<b>Not connected.</b> Your draft is held in this window and is '
+        + 'written to disk the moment the server is back.') + saveButtons(id);
     }
     if (s.state === 'held') {
       cls = ' held';
@@ -1321,8 +1351,19 @@
     } else {
       text = '<b>No unsaved changes</b> in this block.';
     }
-    return '<div class="savestate' + cls + '"><i></i><span>' + text + '</span></div>' +
-      saveButtons(id);
+    return saveLineHtml(cls, text) + saveButtons(id);
+  }
+
+  /* One line, whatever it says. The badge is permanent and the editor sits
+     below it, so a wording long enough to wrap would move the box being typed
+     in; the stylesheet holds it to a single line and elides the overflow, and
+     the whole sentence goes on the `title` so nothing it can say is out of
+     reach. `text` is already escaped, so stripping its markup leaves an
+     attribute value that is escaped too. */
+  function saveLineHtml(cls, text) {
+    var plain = text.replace(/<[^>]*>/g, '');
+    return '<div class="savestate' + cls + '" title="' + plain + '">' +
+      '<i></i><span>' + text + '</span></div>';
   }
 
   /* "Revert to last good" and "Discard draft" belong to every state of the save
@@ -2788,6 +2829,7 @@
      on the document's own background both come back here. */
   function deselect() {
     if (!S.sel) return;
+    retireRestored();
     S.sel = null;
     S.extView = null;
     S.insert = null;

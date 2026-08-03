@@ -421,12 +421,16 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .savestate.pending i { background: var(--accent); }
 .savestate b { color: var(--ink); font-weight: 600; }
 
-/* Nothing typed is ever thrown away. The draft belongs to the block, so these
-   two marks are what tell the author where the unsaved work actually lives. */
-.restored, .dirtybar { font-size: .74rem; border-radius: 6px; padding: .45rem .6rem; line-height: 1.4; }
-.restored { background: var(--accent-soft); color: var(--ink); border: 1px solid var(--accent); }
-.dirtybar { background: var(--computed-soft); color: var(--muted); border: 1px solid var(--computed); }
-.dirtybar span { font-weight: 700; color: var(--computed); text-transform: uppercase; font-size: .66rem; letter-spacing: .07em; margin-right: .3rem; }
+/* Nothing typed is ever thrown away. The draft belongs to the block, so this
+   mark and the dot in the margin are what tell the author where the unsaved
+   work actually lives.
+
+   There used to be a `.dirtybar` beside this one, an "Unsaved" bar that
+   appeared on the first keystroke and left again on the save. It is gone: it
+   sits above the editor, so it moved the box being typed in, and it said only
+   what `#headsave` already says permanently. */
+.restored { font-size: .74rem; border-radius: 6px; padding: .45rem .6rem; line-height: 1.4;
+  background: var(--accent-soft); color: var(--ink); border: 1px solid var(--accent); }
 .blk.dirty, .exhibit.dirty { position: relative; }
 .blk.dirty::after, .exhibit.dirty::after {
   content: ''; position: absolute; right: -1.5rem; top: 2.1rem;
@@ -630,8 +634,21 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .back[hidden] { display: none; }
 .back:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .back span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The save badge, and the one rule it has to keep: it may change what it says
+   without changing how tall it is. It sits in the header, above the tabs and
+   above the panel body, so a second line here pushes the source editor down --
+   under a cursor already in it. Measured in Chrome at a 420px inspector: "No
+   unsaved changes in this block." is one line and 24.2px, "Saved to <file>,
+   just now. Writes on a pause, not a button." is two and 41.9px, and the
+   editor's top edge moved 422.3 -> 440.1 as the state changed under the
+   author. `nowrap` is inherited, so it settles every wording the line can
+   carry, including ones not written yet; the span clips and elides what does
+   not fit, and the state's own word leads the sentence, so what is elided is
+   the explanation and never the state. The whole line is on the `title`. */
 #headsave:empty { display: none; }
+#headsave { white-space: nowrap; }
 #headsave .savestate { padding: .4rem 0 0; }
+#headsave .savestate span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* The inspector body is a flex column, so its children shrink below their own
    content once the stack is taller than the panel, and `overflow: hidden` on a

@@ -103,9 +103,34 @@ function editorNow() {
   return document.querySelector('#ibody textarea.src[data-role="src"]');
 }
 
+/* Everything stacked between the top of the panel body and the editor's card.
+ *
+ * jsdom does no layout, so "did the editor move down the panel" cannot be
+ * asked as a rectangle here. It can be asked as this list: the editor's card
+ * is a child of `#ibody`, laid out in normal flow, so the ONLY thing that can
+ * push it down or pull it up is a box appearing or vanishing above it. A list
+ * that changes between two steps is an editor that moved between them. The
+ * pixel counts belong in a browser and are in the tests' docstrings. */
+function above() {
+  const body = document.querySelector('#ibody');
+  if (!body) return null;
+  const host = body.querySelector('[data-role="srchost"]');
+  const kids = Array.from(body.children);
+  const stop = host ? kids.indexOf(host) : kids.length;
+  return kids.slice(0, stop).map((n) => n.outerHTML);
+}
+
+/* The save line as the author reads it, wherever the panel keeps it. */
+function saveLine() {
+  const el = document.querySelector('#headsave .savestate');
+  return el ? el.textContent.replace(/\s+/g, ' ').trim() : null;
+}
+
 function editorTrail(step, el, first) {
   return {
     step,
+    above: above(),
+    save: saveLine(),
     present: !!el,
     same: !!el && el === first,
     block: el ? el.getAttribute('data-block') : null,
