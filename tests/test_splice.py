@@ -99,6 +99,38 @@ def test_splice_preserves_the_rest_of_the_file_exactly(tmp_path):
     assert text.endswith("Third paragraph, edited.\n\\end{document}\n")
 
 
+PREAMBLE_ABSTRACT = (
+    "\\documentclass{wlscirep}\n"
+    "\\title{A Paper}\n"
+    "\\begin{abstract}\n"
+    "The abstract lives above the document environment.\n"
+    "\\end{abstract}\n"
+    "\\begin{document}\n"
+    "\\maketitle\n"
+    "\n"
+    "Body text.\n"
+    "\\end{document}\n"
+)
+
+
+def test_splice_to_a_preamble_abstract_writes_only_its_own_bytes(tmp_path):
+    # covet-india's abstract is a contiguous range in the root .tex, above
+    # \begin{document}. Once it has a block id it must be spliceable like any
+    # other block, and touch nothing above or below it.
+    main = manuscript(tmp_path, PREAMBLE_ABSTRACT)
+    before = main.read_text(encoding="utf-8")
+    block = next(b for b in blocks_of(main) if "lives above" in b.source_text)
+
+    new = "\\begin{abstract}\nA rewritten abstract.\n\\end{abstract}"
+    splice(block, new, root=tmp_path)
+
+    after = main.read_text(encoding="utf-8")
+    head, tail = before.split(block.source_text)
+    assert after == head + new + tail
+    assert after.startswith("\\documentclass{wlscirep}\n\\title{A Paper}\n")
+    assert after.endswith("\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n")
+
+
 # ----------------------------------------------------------------- line drift
 
 

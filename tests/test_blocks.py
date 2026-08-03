@@ -64,6 +64,74 @@ def test_preamble_and_postamble_are_not_blocks(tmp_path):
     assert [b.source_text for b in blocks] == ["Body text."]
 
 
+# covet-india's `wlscirep` class takes the abstract as a delimited macro read
+# in the PREAMBLE, so its abstract sits above `\begin{document}`. The body
+# bounds cut it away entirely: no block, no id, no anchor, and a paragraph on
+# the page that nothing could splice. It is one contiguous byte range in the
+# root file, so it is admissible as exactly one block.
+
+PREAMBLE_ABSTRACT = (
+    "\\documentclass{wlscirep}\n"
+    "\\title{A Paper}\n"
+    "\\begin{abstract}\n"
+    "The abstract lives above the document environment.\n"
+    "\\end{abstract}\n"
+    "\\begin{document}\n"
+    "\\maketitle\n"
+    "\n"
+    "Body text.\n"
+    "\\end{document}\n"
+)
+
+
+def test_a_preamble_abstract_is_its_own_block(tmp_path):
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    blocks = segment(flatten(main))
+    abs_blocks = [b for b in blocks if "The abstract lives above" in b.source_text]
+    assert len(abs_blocks) == 1
+    b = abs_blocks[0]
+    assert b.source_text.startswith("\\begin{abstract}")
+    assert b.source_text.endswith("\\end{abstract}")
+    assert b.id
+
+
+def test_a_preamble_abstract_comes_first_and_leaves_the_body_alone(tmp_path):
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    blocks = segment(flatten(main))
+    assert "The abstract lives above" in blocks[0].source_text
+    assert [b.source_text for b in blocks[1:]] == ["\\maketitle", "Body text."]
+
+
+def test_a_preamble_abstract_block_maps_to_its_own_source_bytes(tmp_path):
+    main = write(tmp_path, "main.tex", PREAMBLE_ABSTRACT)
+    b = segment(flatten(main))[0]
+    text = main.read_text(encoding="utf-8")
+    lo = text.index("\\begin{abstract}")
+    assert text[lo : lo + len(b.source_text)] == b.source_text
+    assert b.file == str(main) or Path(b.file).name == "main.tex"
+    assert b.editable
+
+
+def test_a_document_without_a_preamble_abstract_is_unchanged(tmp_path):
+    # The addition must not invent a region where there is none.
+    blocks = seg(tmp_path, "First paragraph here.\n\nSecond paragraph here.")
+    assert [b.source_text for b in blocks] == [
+        "First paragraph here.",
+        "Second paragraph here.",
+    ]
+
+
+def test_an_in_document_abstract_is_still_one_body_block(tmp_path):
+    blocks = seg(
+        tmp_path,
+        "\\begin{abstract}\nInside the document.\n\\end{abstract}\n\nBody text.",
+    )
+    assert [b.source_text for b in blocks] == [
+        "\\begin{abstract}\nInside the document.\n\\end{abstract}",
+        "Body text.",
+    ]
+
+
 def test_fragment_without_document_environment_is_all_body(tmp_path):
     main = write(tmp_path, "main.tex", "Just a fragment.\n\nSecond one.\n")
     blocks = segment(flatten(main))

@@ -300,8 +300,18 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
 
     tokens = _tokenize(flat.text, 0, len(flat.text))
     body_start, body_end = _body_bounds(flat.text, tokens)
-    body_tokens = [t for t in tokens if t.start >= body_start and t.end <= body_end]
-    cuts = _cut(flat.text, body_tokens, body_start, body_end)
+    # In document order: a preamble abstract, when the class takes one, always
+    # precedes `\begin{document}`. Both regions are cut by the SAME `_cut`, so
+    # there is still exactly one implementation of splitting LaTeX into blocks.
+    regions = [(body_start, body_end)]
+    pre = _preamble_abstract(tokens, body_start)
+    if pre is not None:
+        regions.insert(0, pre)
+
+    cuts: list[_Cut] = []
+    for lo, hi in regions:
+        region_tokens = [t for t in tokens if t.start >= lo and t.end <= hi]
+        cuts.extend(_cut(flat.text, region_tokens, lo, hi))
 
     blocks: list[Block] = []
     seen: dict[str, int] = {}
@@ -719,6 +729,32 @@ def _body_bounds(text: str, tokens: list[_Tok]) -> tuple[int, int]:
             end = max(start, t.start)
             break
     return start, end
+
+
+def _preamble_abstract(tokens: list[_Tok], body_start: int) -> tuple[int, int] | None:
+    """The span of an `abstract` environment written ABOVE `\\begin{document}`.
+
+    covet-india's class (`wlscirep`) defines no abstract environment: the .cls
+    captures a delimited macro into `\\theabstract` for `\\maketitle` to typeset
+    later, so the abstract is written in the preamble. `_body_bounds` cuts it
+    away with the rest of the preamble, and the paper's abstract then had no
+    block, no id and no anchor at all.
+
+    Returned as a second region rather than by widening the body, because
+    everything else above `\\begin{document}` -- `\\usepackage`, `\\newcommand`,
+    class options -- genuinely is not prose and must stay outside every cut.
+    """
+    if body_start <= 0:                      # a fragment: it is all body already
+        return None
+    for i, t in enumerate(tokens):
+        if t.start >= body_start:
+            return None
+        if t.kind == "begin" and t.name == "abstract":
+            j = _match_end(tokens, i, "abstract")
+            if j is None or tokens[j].end > body_start:
+                return None
+            return t.start, tokens[j].end
+    return None
 
 
 # ------------------------------------------------------------------- segmenter

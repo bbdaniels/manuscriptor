@@ -213,6 +213,7 @@ BYLINE_TOKEN = "⟦MXBYLINE⟧"
 ABSTRACT_TOKEN = "⟦MXABSTRACT⟧"
 
 _MAKETITLE_RE = re.compile(r"\\maketitle\b")
+_BEGIN_DOC_RE = re.compile(r"\\begin\s*\{document\}")
 _ABSTRACT_BEGIN_RE = re.compile(r"\\begin\s*\{abstract\}\s*")
 _ABSTRACT_END_RE = re.compile(r"\\end\s*\{abstract\}")
 _THANKS_RE = re.compile(r"\\thanks\s*(?=\{)")
@@ -222,6 +223,7 @@ _MARKER_BEFORE_RE = re.compile(r"⟦MX[0-9a-f]+(?:-\d+)?⟧\s*$")
 
 
 def _render_frontmatter(source: str) -> str:
+    after_title: int | None = None
     m = _MAKETITLE_RE.search(source)
     if m:
         title = _command_text(source, "title", break_as=" ")
@@ -231,6 +233,7 @@ def _render_frontmatter(source: str) -> str:
             if byline:
                 repl += "\n\n" + BYLINE_TOKEN + byline + "\n"
             source = source[: m.start()] + repl + source[m.end():]
+            after_title = m.start() + len(repl)
         # No \title: nothing to show and nothing to invent. The empty block is
         # collapsed by the viewer's void pass rather than papered over here.
 
@@ -247,11 +250,41 @@ def _render_frontmatter(source: str) -> str:
             # on the label it would select a heading around nothing.
             mk = _MARKER_BEFORE_RE.search(before)
             at = mk.start() if mk else m.start()
-            source = (
-                before[:at] + head + before[at:]
-                + body + "\n" + source[end.end():]
-            )
+            doc = _BEGIN_DOC_RE.search(source)
+            if doc is not None and m.start() < doc.start():
+                source = _relocate_abstract(
+                    source, at, end.end(), head, mk.group(0) if mk else "",
+                    body, after_title if after_title is not None else doc.end(),
+                )
+            else:
+                source = (
+                    before[:at] + head + before[at:]
+                    + body + "\n" + source[end.end():]
+                )
     return source
+
+
+def _relocate_abstract(
+    source: str, at: int, stop: int, head: str, mark: str, body: str, dest: int
+) -> str:
+    """Move a PREAMBLE abstract into the body, marker and all.
+
+    covet-india's class (`wlscirep`) takes the abstract as a delimited macro
+    read above `\\begin{document}`, so rewriting it where it stands leaves it in
+    the preamble -- and pandoc discards every byte above `\\begin{document}`.
+    The abstract rendered nowhere at all.
+
+    The MARKER travels with the body, and that is load-bearing rather than
+    tidy: the block it names still lives at its original preamble byte range,
+    which is what a splice writes back to. Leave the marker behind and the
+    relocated paragraph belongs to no block -- unclickable, unsplicable prose --
+    while the marker itself lands in discarded preamble and the block becomes an
+    anchor pointing at nothing.
+    """
+    piece = head + mark + body + "\n\n"
+    cut = source[:at] + source[stop:]
+    d = dest - (stop - at) if dest > at else dest   # dest was measured pre-cut
+    return cut[:d] + "\n\n" + piece + cut[d:]
 
 
 def _command_text(source: str, name: str, *, break_as: str = " ") -> str | None:

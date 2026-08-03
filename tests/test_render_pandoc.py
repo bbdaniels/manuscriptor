@@ -635,6 +635,70 @@ def test_the_abstract_keeps_its_anchor_on_its_own_text(tmp_path):
     assert label_at < at_marker, "the label heading must precede the anchor"
 
 
+# covet-india's class (`wlscirep`) defines no `abstract` ENVIRONMENT: the .cls
+# captures a delimited macro into `\theabstract` for `\maketitle` to typeset
+# later, so the abstract is written in the PREAMBLE, above `\begin{document}`.
+# Rewriting it in place leaves it in the preamble, and pandoc discards
+# everything above `\begin{document}` — so covet-india's abstract rendered
+# nowhere at all. Both layouts must work; the in-document one is what every
+# other manuscript in the fleet uses.
+
+PREAMBLE_FRONTMATTER = """\\documentclass{wlscirep}
+\\title{In Sickness and In Health}
+\\author{A.~Author}
+⟦MX00b2⟧\\begin{abstract}
+The preamble abstract text survives into the page.
+\\end{abstract}
+
+\\begin{document}
+⟦MX00b1⟧\\maketitle
+
+⟦MX00b3⟧Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+
+def test_a_preamble_abstract_reaches_the_page(tmp_path):
+    html = render_document(PREAMBLE_FRONTMATTER, cwd=tmp_path, bib=None)
+    assert "The preamble abstract text survives into the page." in html
+    assert "⟦MXABSTRACT⟧" in html
+
+
+def test_a_preamble_abstract_is_relocated_into_the_body(tmp_path):
+    # It must land after the title, not merely somewhere: an abstract rendered
+    # above its own paper's title is not the front matter of anything.
+    html = render_document(PREAMBLE_FRONTMATTER, cwd=tmp_path, bib=None)
+    at_title = html.find("In Sickness and In Health")
+    at_text = html.find("The preamble abstract text survives")
+    at_prose = html.find("Ordinary prose follows")
+    assert -1 < at_title < at_text < at_prose
+
+
+def test_a_preamble_abstract_carries_its_marker_with_it(tmp_path):
+    # Load-bearing: the marker is the block's anchor, and the block's source
+    # bytes are still in the preamble. If the body moves and the marker does
+    # not, the rendered paragraph belongs to no block and cannot be spliced.
+    html = render_document(PREAMBLE_FRONTMATTER, cwd=tmp_path, bib=None)
+    at_marker = html.find("⟦MX00b2⟧")
+    at_text = html.find("The preamble abstract text survives")
+    assert at_marker != -1
+    assert at_marker < at_text
+    assert html.find("Abstract") < at_marker, "the label heading must precede the anchor"
+    # And it must not be left behind above the title.
+    assert at_marker > html.find("In Sickness and In Health")
+
+
+def test_a_preamble_abstract_with_no_maketitle_lands_after_begin_document(tmp_path):
+    src = (
+        "\\documentclass{wlscirep}\n"
+        "\\begin{abstract}\nOnly the abstract.\n\\end{abstract}\n"
+        "\\begin{document}\n\nOrdinary prose.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "Only the abstract." in html
+    assert html.find("Only the abstract.") < html.find("Ordinary prose.")
+
+
 def test_a_maketitle_with_no_title_is_left_alone(tmp_path):
     src = "\\documentclass{article}\n\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
     html = render_document(src, cwd=tmp_path, bib=None)
