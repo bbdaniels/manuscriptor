@@ -30,6 +30,24 @@ moment the last one is gone. It also resolves what would otherwise be a
 contradiction, since a drain launched by hand takes this same lock and would
 collide with its own parent.
 
+**A drain whose server is gone is not a drain, and must give the queue back.**
+The handoff above has a failure the first version did not think through. `kill
+-9` on the server leaves the drain alive -- deliberately -- but nothing then
+ever reaps it. It is reparented to pid 1, keeps polling a queue no page is
+attached to, and holds the flock for as long as the machine stays up, so every
+later `serve` on that manuscript is refused and silently serves with no agent.
+That is the 2026-07-31 COVET incident and the 2026-07-29 one before it,
+reproduced in `tests/test_single.py`: server killed, replacement refused twenty
+minutes later, `drain.lock` still naming the drain the dead server started.
+
+It was read as a stale lock, and it is not one. The lock was genuine and its
+holder was ALIVE; a pid-liveness check would have honoured it just as flock did,
+and cannot fix this. What was missing is the other half of the handoff: a drain
+handed a lock by a server watches for that server, and stops when it is gone.
+`parent_watch` is that half. A drain started BY HAND has no server to lose and
+is never armed, which is why the arming hangs off `inherited()` rather than off
+the lock existing.
+
 The file is in the manuscript's hidden directory rather than in `/tmp`. A
 tempdir lock can be swept while it is held, and the next process then creates a
 fresh inode, takes a lock on it, and drains a queue somebody else is already
@@ -41,6 +59,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import os
+import threading
 from pathlib import Path
 
 from . import paths
@@ -48,6 +67,50 @@ from . import paths
 # How the descriptor is named to the child. Popped on adoption so it cannot
 # reach a grandchild -- the drain starts a `claude`, which starts its own tree.
 FD_ENV = "MANUSCRIPTOR_DRAIN_LOCK_FD"
+
+
+def parent_watch(stop: threading.Event, *, poll: float = 2.0,
+                 note=None, _parent=os.getppid) -> threading.Thread:
+    """Set `stop` once the server that started this drain is gone.
+
+    **The signal is that OUR parent changed, not that some pid is missing.**
+    Checking a recorded pid with `kill(pid, 0)` is the obvious version and it is
+    wrong twice over: pids are recycled, so a long-lived drain can be fooled
+    into thinking a dead server is alive by an unrelated process landing on its
+    number, and a process can be alive without being reachable anyway. A parent
+    can only change by dying. The kernel reparents an orphan to pid 1 (or to a
+    subreaper on Linux), so `getppid()` differing from what it was at adoption
+    is exact, needs no permission to signal anything, and cannot be spoofed.
+
+    Started only by a drain that ADOPTED an inherited lock. One typed by hand
+    has no server, and arming it on the author's shell would kill the drain the
+    moment that shell exited.
+
+    A thread rather than a signal: macOS has no `PR_SET_PDEATHSIG`, and the
+    drain already runs a poll loop, so waiting is what this process does anyway.
+    """
+    server = _parent()
+
+    def watch() -> None:
+        # Already orphaned before we could arm -- the server died inside the
+        # handoff. Nothing is coming, so give the queue back rather than hold it
+        # forever on a technicality.
+        if server <= 1:
+            if note:
+                note(server)
+            stop.set()
+            return
+        while not stop.wait(poll):
+            if _parent() != server:
+                if note:
+                    note(server)
+                stop.set()
+                return
+
+    thread = threading.Thread(target=watch, daemon=True,
+                              name="manuscriptor-orphan-watch")
+    thread.start()
+    return thread
 
 
 class DrainLock:

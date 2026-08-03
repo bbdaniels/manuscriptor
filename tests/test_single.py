@@ -113,7 +113,14 @@ def test_a_killed_holder_leaves_the_queue_free(tmp_path):
 
 def test_the_lock_survives_the_process_that_took_it(tmp_path):
     """`serve` hands the claim to the drain it spawns, because the drain is
-    detached and outlives a killed server -- still editing the manuscript."""
+    detached and outlives a killed server -- still editing the manuscript.
+
+    This guards the raw handoff, and its drain deliberately does NOT arm the
+    orphan watch. Both halves are real: the lock must survive the server (here),
+    and the drain must then notice and stop
+    (`test_a_drain_whose_server_was_killed_gives_the_queue_back`). What the
+    product does is hold the queue for the moment between the two.
+    """
     script = tmp_path / "handoff.py"
     script.write_text(textwrap.dedent(f"""
         import os, subprocess, sys, time
@@ -159,6 +166,244 @@ def test_the_lock_survives_the_process_that_took_it(tmp_path):
             return
         time.sleep(0.05)
     raise AssertionError("the queue stayed locked after every holder died")
+
+
+# ------------------------------------------------------ the drain nobody owns
+
+
+def _orphan_script(root: Path) -> str:
+    """A drain that adopts an inherited lock and arms the orphan watch, which
+    is what `cmd_drain` does. Deliberately NOT a mock: the whole defect is a
+    real process holding a real kernel lock after its server is gone."""
+    return textwrap.dedent(f"""
+        import os, sys, threading, time
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        from manuscriptor.server import single
+
+        ROOT = {str(root)!r}
+        held = single.DrainLock.inherited(ROOT)
+        assert held is not None, "the child was handed no lock"
+        stop = threading.Event()
+        single.parent_watch(stop, poll=0.05)
+        print(os.getpid(), flush=True)
+        stop.wait(60)                  # the watch sets it when the server dies
+        held.release()
+    """)
+
+
+def _server_script(root: Path, child: Path) -> str:
+    return textwrap.dedent(f"""
+        import subprocess, sys, time
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        from manuscriptor.server.single import DrainLock
+
+        lock = DrainLock({str(root)!r})
+        assert lock.acquire()
+        kid = subprocess.Popen(
+            [sys.executable, {str(child)!r}],
+            env=lock.child_env(), pass_fds=(lock.fd,),
+            stdout=subprocess.PIPE, text=True, start_new_session=True)
+        print(kid.stdout.readline().strip(), flush=True)
+        time.sleep(120)
+    """)
+
+
+def _free_within(root: Path, seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        probe = DrainLock(root)
+        if probe.acquire():
+            probe.release()
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_a_drain_whose_server_was_killed_gives_the_queue_back(tmp_path):
+    """THE REPRODUCTION, 2026-07-31 and 2026-07-29.
+
+    A COVET server was killed rather than stopped, and 20 minutes later its
+    replacement was refused the queue -- correctly, by a genuine flock held by a
+    process that was genuinely alive. The drain is detached and reparented to
+    pid 1 when its server dies, and nothing ever reaped it, so it owned the
+    queue for as long as the machine stayed up. The author read the pid out of
+    the file, found it dead by the time he looked, and diagnosed a stale lock;
+    the file is not the lock and was never stale.
+
+    A pid-liveness check does not fix this and never could: the holder is ALIVE.
+    """
+    child = tmp_path / "drain.py"
+    child.write_text(_orphan_script(tmp_path), encoding="utf-8")
+    script = tmp_path / "server.py"
+    script.write_text(_server_script(tmp_path, child), encoding="utf-8")
+
+    server = subprocess.Popen([sys.executable, str(script)],
+                              stdout=subprocess.PIPE, text=True)
+    drain_pid = int(server.stdout.readline().strip())
+    try:
+        assert DrainLock(tmp_path).acquire() is False, "the drain holds the queue"
+        os.kill(server.pid, signal.SIGKILL)
+        server.wait()
+        assert _free_within(tmp_path), (
+            "the queue stayed locked after its server was killed: the drain is "
+            "an orphan nobody can reach, and every later serve is refused")
+    finally:
+        for pid in (drain_pid, server.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, TypeError):
+                pass
+        server.wait()
+
+
+def test_the_real_drain_command_gives_the_queue_back(tmp_path):
+    """The same reproduction through `manuscriptor drain` itself.
+
+    The test above proves the mechanism; this one proves it is WIRED. Without
+    it, deleting the arming in `cmd_drain` left the whole suite green -- the
+    mechanism existed, nothing called it, and the defect was untouched.
+
+    A stub `claude` on PATH, because the guard under test is the drain's
+    lifetime and not what a session does; a real one would cost a minute and
+    edit the fixture.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "claude"
+    stub.write_text("#!/bin/sh\nexec cat > /dev/null\n", encoding="utf-8")
+    stub.chmod(0o755)
+
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    (paper / "main.tex").write_text(
+        "\\documentclass{article}\\begin{document}\nHi.\n\\end{document}\n",
+        encoding="utf-8")
+
+    script = tmp_path / "server.py"
+    script.write_text(textwrap.dedent(f"""
+        import os, subprocess, sys, time
+        sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+        from manuscriptor.server.single import DrainLock
+
+        lock = DrainLock({str(paper)!r})
+        assert lock.acquire()
+        env = lock.child_env()
+        env["PATH"] = {str(bin_dir)!r} + os.pathsep + env.get("PATH", "")
+        kid = subprocess.Popen(
+            [sys.executable, "-m", "manuscriptor.cli", "drain", {str(paper)!r}],
+            env=env, pass_fds=(lock.fd,), start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print(kid.pid, flush=True)
+        time.sleep(120)
+    """), encoding="utf-8")
+
+    server = subprocess.Popen([sys.executable, str(script)],
+                              stdout=subprocess.PIPE, text=True)
+    drain_pid = int(server.stdout.readline().strip())
+    try:
+        # THE DRAIN has to hold it, not merely the server -- and the first
+        # version of this test checked only that the queue was busy, which the
+        # server alone satisfied, so it passed without a drain ever starting.
+        # The stamped pid is the drain's own, written when it adopts.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if DrainLock(paper).holder() == drain_pid:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError(
+                f"the drain never adopted the lock (holder stayed "
+                f"{DrainLock(paper).holder()}, wanted {drain_pid})")
+        assert DrainLock(paper).acquire() is False
+
+        os.kill(server.pid, signal.SIGKILL)
+        server.wait()
+        assert _free_within(paper, seconds=20), (
+            "`manuscriptor drain` kept the queue after its server was killed: "
+            "the orphan watch is not armed in cmd_drain")
+    finally:
+        for pid in (drain_pid, server.pid):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, TypeError):
+                pass
+        server.wait()
+
+
+def test_a_drain_run_by_hand_outlives_the_shell_that_started_it(tmp_path):
+    """The mirror of the guard above, and the reason the arming is gated.
+
+    `manuscriptor drain <dir>` typed by hand has no server to lose. Arming the
+    watch on whatever shell happened to start it would end the drain the moment
+    that shell exited -- immediately, when it is launched from a wrapper that
+    returns. That is the "worse defect than the one it fixes" failure the module
+    docstring warns about, arrived at from the other direction.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "claude"
+    stub.write_text("#!/bin/sh\nexec cat > /dev/null\n", encoding="utf-8")
+    stub.chmod(0o755)
+    paper = tmp_path / "paper"
+    paper.mkdir()
+    (paper / "main.tex").write_text(
+        "\\documentclass{article}\\begin{document}\nHi.\n\\end{document}\n",
+        encoding="utf-8")
+
+    env = dict(os.environ)
+    env.pop(FD_ENV, None)                       # nothing was handed down
+    env["PATH"] = str(bin_dir) + os.pathsep + env.get("PATH", "")
+    # A launcher that starts the drain and exits at once, so the drain is
+    # orphaned within milliseconds -- exactly the case the gate protects.
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent(f"""
+            import subprocess, sys
+            kid = subprocess.Popen(
+                [sys.executable, "-m", "manuscriptor.cli", "drain", {str(paper)!r}],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(kid.pid, flush=True)
+        """)],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        env=env, stdout=subprocess.PIPE, text=True)
+    drain_pid = int(launcher.stdout.readline().strip())
+    launcher.wait()                             # the shell is gone immediately
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if DrainLock(paper).holder() == drain_pid:
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("the hand-run drain never took the queue")
+        # Give the watch, were it wrongly armed, several poll intervals to fire.
+        time.sleep(6)
+        assert DrainLock(paper).acquire() is False, (
+            "a hand-run drain stopped when the shell that started it exited; "
+            "the orphan watch must be armed only for a drain a SERVER started")
+        os.kill(drain_pid, 0)                   # raises if it has gone
+    finally:
+        try:
+            os.kill(drain_pid, signal.SIGKILL)
+        except (ProcessLookupError, TypeError):
+            pass
+
+
+def test_the_orphan_watch_fires_only_on_reparenting(tmp_path):
+    """The signal is that OUR parent changed, not that some pid is missing.
+    A pid can be recycled; a parent can only change by dying."""
+    import threading
+
+    from manuscriptor.server import single
+
+    seen = iter([4242, 4242, 1])          # ...and then the server dies
+    stop = threading.Event()
+    single.parent_watch(stop, poll=0.02, _parent=lambda: next(seen, 1))
+    assert stop.wait(2.0), "a changed parent must stop the drain"
+
+    # The same pid throughout is a live server, however long we wait.
+    steady = threading.Event()
+    single.parent_watch(steady, poll=0.02, _parent=lambda: 4242)
+    assert not steady.wait(0.4), "an unchanged parent must not stop the drain"
 
 
 def test_the_environment_variable_does_not_reach_a_grandchild(tmp_path):

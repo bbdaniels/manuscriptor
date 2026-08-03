@@ -342,11 +342,20 @@ def refusal(lock) -> str:
     """
     pid = lock.holder()
     who = f"pid {pid}" if pid else "another process"
+    # A drain orphaned by a killed server now stops itself within a couple of
+    # seconds (see `single.parent_watch`), so a refusal that lasts means a drain
+    # that is genuinely running. Say what to do about it anyway: the remaining
+    # way to get stuck here is a holder that is alive and wedged, and the author
+    # should not have to work out the two commands himself.
     return (f"{who} is already draining {lock.root}\n"
             f"  its claim: {lock.path}\n"
             "  a second drain on one comment queue means two sessions editing "
             "one working tree, which is how four files were rewritten under "
-            "their own workers on 2026-07-27.")
+            "their own workers on 2026-07-27.\n"
+            + (f"  if it is wedged rather than working: `ps -o stat,command -p {pid}`, "
+               f"then `kill {pid}` and start again. Do NOT delete the claim file; "
+               "the lock is held by the process, not by the file, so removing it "
+               "frees nothing and loses the record of who has it.\n" if pid else ""))
 
 
 def cmd_drain(args: argparse.Namespace) -> int:
@@ -360,6 +369,7 @@ def cmd_drain(args: argparse.Namespace) -> int:
     """
     import threading
 
+    from manuscriptor.server import single
     from manuscriptor.server.single import DrainLock
     from manuscriptor.server.supervisor import Drain
 
@@ -373,6 +383,7 @@ def cmd_drain(args: argparse.Namespace) -> int:
     # Typed by hand it is taken here, which is the other way two sessions came
     # to fan out into one working tree.
     lock = DrainLock.inherited(d)
+    from_server = lock is not None
     if lock is None:
         lock = DrainLock(d)
         if not lock.acquire():
@@ -396,6 +407,21 @@ def cmd_drain(args: argparse.Namespace) -> int:
             signal.signal(sig, bye)
         except (ValueError, OSError):
             pass
+    # A DRAIN OUTLIVES ITS SERVER, BUT NOT FOREVER. `serve` detaches this
+    # process so a `kill -9` on the server leaves it editing rather than
+    # abandoning a half-written block. Nothing reaped it afterwards, though: it
+    # was reparented to pid 1 and held the queue lock until the machine
+    # restarted, so every later `serve` on the manuscript was refused and served
+    # with no agent at all. Twice, on COVET. Watch for the server and stop when
+    # it is gone; the lock is released in the `finally` below, which is what
+    # makes the next launch self-healing. Only when a server handed us the lock
+    # -- a drain typed by hand has no server, only a shell.
+    if from_server:
+        single.parent_watch(
+            stop, note=lambda pid: print(
+                f"       the server that started this drain (pid {pid}) is gone; "
+                "stopping so the queue is free for the next one", flush=True))
+
     print(f"drain  {d}")
     print(f"       feed {drain.feed.path}")
     print(f"       stream {drain.log}")
