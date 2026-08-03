@@ -361,7 +361,8 @@ def _invoke_pandoc(tex_path: Path, bib_path: Path) -> str:
     if csl:
         cmd.append(f"--csl={csl}")
     result = subprocess.run(
-        cmd, check=True, capture_output=True, text=True, cwd=tex_path.parent
+        cmd, check=True, capture_output=True,
+        encoding="utf-8", errors="replace", cwd=tex_path.parent
     )
     return result.stdout
 

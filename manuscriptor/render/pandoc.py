@@ -549,7 +549,8 @@ def _invoke(source: str, *, cwd: Path, bib: Path | None) -> str:
         if csl is not None:
             cmd.append(f"--csl={csl}")
     result = subprocess.run(
-        cmd, input=source, capture_output=True, text=True, cwd=str(cwd)
+        cmd, input=source, capture_output=True,
+        encoding="utf-8", errors="replace", cwd=str(cwd)
     )
     if result.returncode != 0:
         raise PandocError(result.stderr.strip() or f"pandoc exited {result.returncode}")

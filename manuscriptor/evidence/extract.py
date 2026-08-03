@@ -253,7 +253,7 @@ def _call_claude_cli(model: str, fulltext: str, claim: dict, citation: dict) -> 
         cmd,
         input=prompt,
         capture_output=True,
-        text=True,
+        encoding="utf-8", errors="replace",
         timeout=180,
     )
     if result.returncode != 0:

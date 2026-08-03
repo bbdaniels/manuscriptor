@@ -81,7 +81,8 @@ def _compile(body: str, *, preamble: str, png: Path) -> str | None:
         try:
             run = subprocess.run(
                 ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "pic.tex"],
-                cwd=tmp, capture_output=True, text=True, timeout=COMPILE_TIMEOUT,
+                cwd=tmp, capture_output=True, timeout=COMPILE_TIMEOUT,
+                encoding="utf-8", errors="replace",
             )
         except subprocess.TimeoutExpired:
             return f"tikz compile timed out after {int(COMPILE_TIMEOUT)}s"

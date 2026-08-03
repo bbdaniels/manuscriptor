@@ -25,11 +25,10 @@ so `run` returns an empty report and the caller says nothing.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from manuscriptor.server import paths
+from manuscriptor.server import gitcmd, paths
 
 # What lived directly in `build/manuscriptor/` and which tier it belongs to now.
 # Anything not named here is render output and goes to the cache, which is the
@@ -69,23 +68,12 @@ def needed(manuscript_dir: Path | str) -> bool:
 
 
 def _tracked_by_git(path: Path) -> bool:
-    try:
-        done = subprocess.run(
-            ["git", "ls-files", "--error-unmatch", str(path)],
-            cwd=str(path.parent), capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
+    return gitcmd.succeeded(["ls-files", "--error-unmatch", str(path)],
+                            cwd=path.parent, timeout=10)
 
 
 def _git_mv(src: Path, dst: Path) -> bool:
-    try:
-        done = subprocess.run(["git", "mv", str(src), str(dst)],
-                              cwd=str(src.parent), capture_output=True,
-                              text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
+    return gitcmd.succeeded(["mv", str(src), str(dst)], cwd=src.parent)
 
 
 def _move(src: Path, dst: Path, report: Report) -> None:

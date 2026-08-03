@@ -44,10 +44,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import subprocess
 from pathlib import Path
 
-from manuscriptor.server import producers
+from manuscriptor.server import gitcmd, producers
 
 MANIFEST_NAME = "values.json"
 
@@ -489,9 +488,19 @@ _UNCOMMITTED = "uncommitted change in the working tree"
 
 
 def _git_history(root: Path, manuscript_dir: Path, entries: dict) -> dict[str, list]:
-    dirs = sorted({str(Path(e["path"]).parent) for e in entries.values()})
-    rel = [str((manuscript_dir / d).resolve().relative_to(root)) for d in dirs
-           if (manuscript_dir / d).resolve().is_relative_to(root)]
+    """Ask git about the fragment FILES, never about the directories holding them.
+
+    This used to pass `Path(e["path"]).parent`, which is how a committed
+    `exhibits/sf2-attrition.pdf` ended up inlined in a `log -p` diff and took the
+    editor down on a document switch. Per-file pathspecs also cut the log to what
+    the manifest can actually use: everything `_parse_log` does with a diff of
+    anything else is discard it.
+    """
+    rel = sorted({
+        str((manuscript_dir / e["path"]).resolve().relative_to(root))
+        for e in entries.values()
+        if e.get("path") and (manuscript_dir / e["path"]).resolve().is_relative_to(root)
+    })
     if not rel:
         return {}
     out = _git(root, ["log", "-p", "--unified=0", "--no-color", "--no-renames",
@@ -535,14 +544,7 @@ def _head(root: Path) -> str | None:
 
 
 def _git(root: Path, args: list[str]) -> str | None:
-    try:
-        p = subprocess.run(
-            ["git", "-C", str(root)] + args,
-            capture_output=True, text=True, timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return p.stdout if p.returncode == 0 else None
+    return gitcmd.stdout(["-C", str(root)] + args, timeout=20)
 
 
 def _same(a, b) -> bool:

@@ -48,7 +48,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from manuscriptor.server import paths
+from manuscriptor.server import gitcmd, paths
 from manuscriptor.source import flatten as flat_mod
 from manuscriptor.source import root as root_mod
 
@@ -363,10 +363,8 @@ def _project_root(d: Path) -> Path:
     manuscript directory would miss the exact site the memo names, an R script
     printing a literal `Table~S19`.
     """
-    try:
-        done = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=str(d),
-                              capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.SubprocessError):
+    done = gitcmd.run(["rev-parse", "--show-toplevel"], cwd=d)
+    if done is None:
         return d
     top = done.stdout.strip()
     return Path(top) if top and Path(top).is_dir() else d
@@ -529,7 +527,8 @@ def _find_bst(d: Path, style: str) -> Path | None:
         return None
     try:
         done = subprocess.run(["kpsewhich", f"{style}.bst"], cwd=str(d),
-                              capture_output=True, text=True, timeout=30)
+                              capture_output=True, timeout=30,
+                              encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     found = done.stdout.strip().splitlines()

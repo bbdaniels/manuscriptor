@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .server import paths
+from .server import gitcmd, paths
 
 _NOT_YET = "not implemented yet (lands with {milestone}); see the Phase 1 design in the vault"
 
@@ -283,16 +283,11 @@ def repo_root(manuscript_dir: Path) -> Path | None:
     manuscript (`analysis/` next to `paper/`), and a session scoped to the
     manuscript alone is blocked from the very file the comment is about.
     """
-    try:
-        run = subprocess.run(
-            ["git", "-C", str(manuscript_dir), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired):
+    out = gitcmd.stdout(["-C", str(manuscript_dir), "rev-parse", "--show-toplevel"],
+                        timeout=5)
+    if out is None:
         return None
-    if run.returncode != 0:
-        return None
-    top = Path(run.stdout.strip()).resolve()
+    top = Path(out.strip()).resolve()
     return top if top != Path(manuscript_dir).resolve() else None
 
 

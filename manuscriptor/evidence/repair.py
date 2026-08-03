@@ -54,7 +54,7 @@ def run(*, build_dir: Path) -> int:
             result = subprocess.run(
                 ["zotero-cli", "item", "find-pdf", target],
                 capture_output=True,
-                text=True,
+                encoding="utf-8", errors="replace",
                 timeout=120,
             )
             # Exit status alone over-reports: `item find-pdf` exits 0 for

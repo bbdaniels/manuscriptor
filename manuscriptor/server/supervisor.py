@@ -413,7 +413,12 @@ class Session:
         self.proc = subprocess.Popen(
             self.argv(), cwd=str(self.root),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, start_new_session=True,
+            # NOT `text=True`: that decodes strictly, and a strict decode of a
+            # subprocess stream is what took the editor down on 2026-08-03.
+            # Text mode stays -- `bufsize=1` line buffering needs it, and the
+            # pump reads whole lines -- with the decode made forgiving.
+            encoding="utf-8", errors="replace",
+            bufsize=1, start_new_session=True,
         )
         self._last_event = time.monotonic()
         self._in_flight = 0

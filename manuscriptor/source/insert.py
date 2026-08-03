@@ -1532,7 +1532,8 @@ class ZoteroLibrary:
     def _cli(self, args):
         try:
             r = subprocess.run(["zotero-cli", "--json", *args],
-                               capture_output=True, text=True, timeout=180)
+                               capture_output=True, timeout=180,
+                               encoding="utf-8", errors="replace")
         except FileNotFoundError:
             raise LibraryError("zotero-cli is not on PATH, so nothing can be added to Zotero.")
         except subprocess.TimeoutExpired:

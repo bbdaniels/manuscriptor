@@ -333,7 +333,8 @@ def _default_runner(cmd: list[str], *, cwd: Path, env: dict | None = None):
     """
     try:
         done = subprocess.run(
-            cmd, cwd=str(cwd), env=env, capture_output=True, text=True,
+            cmd, cwd=str(cwd), env=env, capture_output=True,
+            encoding="utf-8", errors="replace",
             timeout=STEP_TIMEOUT, stdin=subprocess.DEVNULL,
         )
     except FileNotFoundError:
