@@ -1,6 +1,20 @@
-r"""Reduce LaTeX column specifications to something pandoc can actually read.
+r"""Repair what pandoc cannot read in a LaTeX table's structure.
 
-This module is the ONE implementation of that operation. `render/pandoc.py`
+Two repairs live here, and the invariant covering them was widened from the
+first to both on 2026-08-03:
+
+* **Column-type normalization**, the original and the subject of everything
+  below -- `\newcolumntype` and the specs that used it.
+* **Header-row identification** (`mark_header_rows`), further down under its own
+  heading -- pandoc promotes at most ONE row into `<thead>`, so a header two
+  rows deep arrives as body rows.
+
+They are one module because they answer the same question -- what does this
+LaTeX table actually say -- and both can only be answered while the LaTeX still
+says it. Once pandoc has run, the `\newcolumntype` is gone and so are the rules
+that fenced off the header.
+
+This module is the ONE implementation of both. `render/pandoc.py`
 calls it on the way into every HTML render, and the Word submission skills
 (`~/.claude/skills/submission/pandoc-docx`, `docx-package`) import it rather
 than carrying a copy. There was a second copy, standalone, in the skills; it had
@@ -110,6 +124,12 @@ MULTICOLUMN_RE = re.compile(r"\\multicolumn\s*\{[^}]*\}\s*(?=\{)")
 ALIGN = {"c": "c", "l": "l", "r": "r", "m": "c", "p": "l", "b": "l", "X": "l"}
 
 MANIFEST_SUFFIX = ".tables.json"
+
+# The mark a header row carries through pandoc. It uses the sentinel brackets
+# because those are the proven carrier in this codebase (`source/anchors.py`),
+# and it spells no hex, so `anchors.MARKER_RE` can never mistake one for a block
+# marker -- the same reasoning as `pandoc.TITLE_TOKEN`.
+HEADER_TOKEN = "⟦MXTHEAD⟧"
 
 
 # --------------------------------------------------------------- public API
@@ -277,6 +297,346 @@ def plain_multicolumn_specs(source: str, declared: dict[str, str] | None = None
         if gap < len(source) and source[gap] == "{" and "\n" in source[spec_end:gap]:
             cursor = gap
         count += 1
+
+
+# ------------------------------------------------------- header-row marking
+#
+# The second table-structure repair in this module, and a clearly separate
+# operation from the column-type pair above. It is here because both are LaTeX
+# table structure, decided where the LaTeX still says what it means.
+#
+# THE DEFECT
+# ----------
+# Pandoc's LaTeX reader promotes at most ONE row into the header. Measured on
+# pandoc 3.10.1::
+#
+#     one header row  + \hline  ->  <thead><tr><th> ...   promoted
+#     two header rows + \hline  ->  <tbody><tr><td> ...   nothing promoted
+#
+# So a table whose header is two rows deep -- a span label over the column
+# numbers, which is how nearly every regression table is written -- comes back
+# as body rows only. The headers are not missing from the page; they are sitting
+# in it as ordinary data cells, which is why this survived being looked at. What
+# is missing is the `<thead>`, and with it every sticky-header and header-rule
+# rule in the stylesheet. 72 of the corpus's 243 tables declare two or more:
+# 10 of estonia-ecm's 82, 1 of estonia-qbs's 7, 57 of qutub-india's 117, 4 of
+# covet-india's 5, 0 of dsp-bias's 32.
+#
+# WHY IT IS DECIDED HERE AND NOT IN THE HTML
+# ------------------------------------------
+# In the LaTeX the answer is written down: the header is the rows the author
+# fenced off with a full-width rule. In the HTML it is gone, and anything done
+# there is a guess about what a row looks like -- which covet-india's Table 1
+# defeats immediately, since it puts `\multicolumn{6}{l}{\textit{Patna}}` in the
+# middle of the body as a panel label. It is indistinguishable from a header row
+# by content and is not one. `render/postprocess.py` may only CARRY this
+# marking; it must never infer it.
+#
+# WHERE THE MARK GOES, WHICH IS NOT WHERE IT LOOKS LIKE IT SHOULD
+# ---------------------------------------------------------------
+# At the head of the row's FIRST CELL -- except that a cell beginning with
+# `\multicolumn` is a spanning cell to pandoc, and putting anything in front of
+# it costs both the span and the text inside it. Measured::
+#
+#     ⟦MXTHEAD⟧\multicolumn{2}{c}{Panel} & C \\
+#         ->  <td>⟦MXTHEAD⟧</td><td>C</td><td></td>
+#
+# `Panel` gone, colspan gone, at exit 0 -- the silent shape again. So the mark
+# descends into the content group of a leading `\multicolumn` or `\multirow`,
+# where it is ordinary cell text and the construct is untouched.
+
+_ROW_SEP_RE = re.compile(r"\\\\\s*\*?\s*(?:\[[^\]]*\])?")
+
+# Full-width rules only. `\cmidrule` and `\cline` underline a SPAN of a header
+# and do not close one -- `\toprule / span label / \cmidrule(lr){2-3} / column
+# numbers / \midrule` is the standard booktabs header, and reading the partial
+# rule as a boundary would leave the column numbers in the body, which is the
+# one row a reader most needs to see in the header.
+_FULL_RULE_RE = re.compile(r"\\(?:hline|toprule|midrule|bottomrule)\b\s*(?:\[[^\]]*\])?")
+
+# Row material that is syntax rather than cells. A longtable's first row is
+# `\caption{...} \\`, and reading it as the header would put the caption in
+# `<thead>` and leave the real header in the body.
+_NOT_CELLS_RE = re.compile(
+    r"\\(?:endfirsthead|endhead|endfoot|endlastfoot|nopagebreak|centering)\b|"
+    r"\\noalign\s*\{[^{}]*\}"
+)
+
+# The caption is taken out by brace counting rather than by `\{[^{}]*\}`, and
+# that is not a nicety. estonia-ecm writes `\caption{\textbf{ECM Impact:} On
+# patient's care (ANCOVA)}`, and the flat pattern cannot read it: the caption
+# row then looked like a row with cells, became the header block, and the two
+# real header rows below it stayed in the body. It cost 13 of that manuscript's
+# 17 tables and failed in total silence -- the mark landed in the caption, where
+# there is no `<tr>` to promote, so the table rendered exactly as it had before.
+_CAPTION_RE = re.compile(r"\\(?:caption|label)\s*\*?\s*(?=[\[{])")
+
+
+def _drop_captions(text: str) -> str:
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _CAPTION_RE.search(text, i)
+        if m is None:
+            out.append(text[i:])
+            return "".join(out)
+        out.append(text[i:m.start()])
+        at = skip_optional(text, m.end())
+        end = skip_group(text, at)
+        i = end if end > at else m.end()
+
+# A cell that opens with one of these hands its content to a trailing group, and
+# the mark belongs inside it. Both take two mandatory arguments before it.
+_SPANNING_CELL_RE = re.compile(r"\\(?:multicolumn|multirow)\s*(?=[\[{])")
+
+_CONTROL_RE = re.compile(r"\\[A-Za-z@]+\*?|\\.", re.S)
+
+
+def mark_header_rows(source: str) -> tuple[str, int]:
+    r"""Mark each table's header rows with `HEADER_TOKEN`, before pandoc reads them.
+
+    Returns `(text, rows_marked)` -- ROWS, not marks. A row carries one mark per
+    cell (see `_header_marks`), and the count that means anything to a caller is
+    how many rows were called headers. Identification is deterministic and comes
+    entirely from the rules the author wrote: the header is the first run of
+    rows fenced off by full-width rules, and a table with no rule, or with no
+    body after that fence, has no header and gains no mark. See the block
+    comment above for why this cannot be decided after the render.
+    """
+    edits: list[int] = []
+    rows_marked = 0
+    cursor = 0
+    while True:
+        m = TABLE_BEGIN_RE.search(source, cursor)
+        if m is None:
+            break
+        if _commented(source, m.start()):
+            cursor = m.end()
+            continue
+        at = skip_optional(source, m.end())
+        for _ in range(TABLE_ENVS[m.group(1)]):
+            at = skip_group(source, at)
+        body_start = skip_group(source, at)
+        if body_start == at:
+            cursor = m.end()
+            continue
+        body_end = _environment_end(source, m.group(1), body_start)
+        per_row = _header_marks(source, body_start, body_end)
+        rows_marked += len(per_row)
+        edits.extend(at for row in per_row for at in row)
+        cursor = body_end
+
+    if not edits:
+        return source, 0
+    out: list[str] = []
+    prev = 0
+    for at in sorted(edits):
+        out.append(source[prev:at])
+        out.append(HEADER_TOKEN)
+        prev = at
+    out.append(source[prev:])
+    return "".join(out), rows_marked
+
+
+def _environment_end(source: str, name: str, at: int) -> int:
+    r"""The offset of this environment's own `\end{name}`, counting nested ones.
+
+    Commented begins and ends do not count, and that is the whole reason this
+    is not a `source.find("\\end{...}")`. Authors leave a superseded table
+    commented out directly above or inside the live one -- the same habit
+    `count_table_environments` strips comments for -- and one commented
+    `\begin{longtable}` raised the depth here far enough that the scan ran off
+    the end of estonia-ecm, taking the cursor with it. One table was seen; the
+    other sixteen were never looked at.
+    """
+    pattern = re.compile(r"\\(begin|end)\s*\{" + re.escape(name) + r"\}")
+    depth = 0
+    for m in pattern.finditer(source, at):
+        if _commented(source, m.start()):
+            continue
+        if m.group(1) == "begin":
+            depth += 1
+        elif depth == 0:
+            return m.start()
+        else:
+            depth -= 1
+    return len(source)
+
+
+def _commented(source: str, at: int) -> bool:
+    """Does an unescaped `%` stand between the start of this line and `at`?"""
+    line = source.rfind("\n", 0, at) + 1
+    return _COMMENT_RE.search(source[line:at]) is not None
+
+
+def _header_marks(source: str, start: int, stop: int) -> list[list[int]]:
+    """Offsets at which a header token must be inserted, one list per header row."""
+    segments = _rule_segments(source, start, stop)
+    rows = [_cell_rows(source, lo, hi) for lo, hi in segments]
+    head = next((i for i, r in enumerate(rows) if r), None)
+    if head is None:
+        return []                      # no rows with cells at all
+    if not any(rows[head + 1:]):
+        # Nothing below the fence. `\toprule / rows / \bottomrule` with no
+        # `\midrule` declares no header -- there is nothing for one to stand
+        # over -- and pandoc emits no `<thead>` for it either.
+        return []
+    marks: list[list[int]] = []
+    for lo, hi in rows[head]:
+        # EVERY cell of the row, not just the first. A `\multirow{2}{*}{...}`
+        # opening the header makes pandoc emit `rowspan="2"` and the row below
+        # it has no first cell at all -- it was absorbed -- so a mark placed
+        # only at the head of each row disappears for that row and promotion
+        # stops above it. estonia-ecm's regression tables all open that way, and
+        # a three-row header arrived one row deep.
+        row = [
+            at for at in (_mark_offset(source, a, b) for a, b in _cells(source, lo, hi))
+            # A cell whose spanning construct could not be read is skipped
+            # rather than marked at its head: the row still carries the marks of
+            # its other cells, while a mark in front of a `\multicolumn` costs
+            # the span and the words inside it.
+            if at is not None
+        ]
+        if row:
+            marks.append(row)
+    return marks
+
+
+def _cells(source: str, start: int, stop: int) -> list[tuple[int, int]]:
+    """The spans of one row's cells, split at the top-level `&`."""
+    out: list[tuple[int, int]] = []
+    at = start
+    for lo, hi, kind in _top_level(source, start, stop):
+        if kind == "cell":
+            out.append((at, lo))
+            at = hi
+    out.append((at, stop))
+    return out
+
+
+def _rule_segments(source: str, start: int, stop: int) -> list[tuple[int, int]]:
+    """The body cut at every top-level full-width rule.
+
+    Consecutive rules yield an empty segment between them, which is what makes
+    `\\hline\\hline` -- one boundary written twice -- fall out correctly rather
+    than being read as an empty header block.
+    """
+    cuts: list[tuple[int, int]] = []
+    for lo, hi, kind in _top_level(source, start, stop):
+        if kind == "rule":
+            cuts.append((lo, hi))
+    out: list[tuple[int, int]] = []
+    at = start
+    for lo, hi in cuts:
+        out.append((at, lo))
+        at = hi
+    out.append((at, stop))
+    return out
+
+
+def _cell_rows(source: str, start: int, stop: int) -> list[tuple[int, int]]:
+    """The spans of the rows in one segment that actually carry cells."""
+    rows: list[tuple[int, int]] = []
+    at = start
+    for lo, hi, kind in _top_level(source, start, stop):
+        if kind == "rowsep":
+            rows.append((at, lo))
+            at = hi
+    # Whatever trails the last `\\` is not a row: LaTeX's final row separator is
+    # optional, so it is either the last row or nothing, and it is the last row
+    # only when it carries cells. `_has_cells` decides that either way.
+    rows.append((at, stop))
+    return [(lo, hi) for lo, hi in rows if _has_cells(source, lo, hi)]
+
+
+def _has_cells(source: str, start: int, stop: int) -> bool:
+    text = _drop_captions(strip_comments(source[start:stop]))
+    return bool(_NOT_CELLS_RE.sub("", text).strip())
+
+
+def _mark_offset(source: str, start: int, stop: int) -> int | None:
+    """Where the token goes in this row: the head of its first cell's content.
+
+    Descends through a leading `\\multicolumn`/`\\multirow` into its content
+    group, brace-counting rather than pattern-matching, because a spec may
+    itself contain braces. `None` when the descent cannot be made, which the
+    caller reads as "leave this row alone" -- see `_header_marks`.
+    """
+    at = start
+    while at < stop:
+        if source[at] in " \t\r\n":
+            at += 1
+            continue
+        if source[at] == "%":
+            nl = source.find("\n", at)
+            at = stop if nl == -1 else min(nl + 1, stop)
+            continue
+        m = _SPANNING_CELL_RE.match(source, at)
+        if m is None:
+            return at
+        after = m.end()
+        for _ in range(2):             # the two mandatory arguments
+            after = skip_optional(source, after)
+            nxt = skip_group(source, after)
+            if nxt == after:
+                return None
+            after = nxt
+        after = skip_optional(source, after)
+        opening = group_start(source, after)
+        if opening is None or opening + 1 > stop:
+            return None
+        at = opening + 1               # just inside the content group's brace
+    return min(at, stop)
+
+
+def _top_level(source: str, start: int, stop: int):
+    r"""Yield `(lo, hi, kind)` for cell breaks, row separators and rules at
+    brace depth zero.
+
+    Depth matters: `\\` inside a brace group is a line break within one cell,
+    not a row separator. `_flatten_stacked_cells` removes the `makecell` case
+    before this runs in the render pipeline, but the split must not depend on
+    that having happened -- the skills call this module directly.
+    """
+    depth = 0
+    i = start
+    while i < stop:
+        c = source[i]
+        if c == "%":
+            nl = source.find("\n", i)
+            i = stop if nl == -1 else min(nl + 1, stop)
+            continue
+        if c == "{":
+            depth += 1
+            i += 1
+            continue
+        if c == "}":
+            depth -= 1
+            i += 1
+            continue
+        if c == "&":
+            if depth == 0:
+                yield i, i + 1, "cell"
+            i += 1
+            continue
+        if c != "\\":
+            i += 1
+            continue
+        if depth == 0:
+            m = _ROW_SEP_RE.match(source, i, stop)
+            if m is not None:
+                yield m.start(), m.end(), "rowsep"
+                i = m.end()
+                continue
+            m = _FULL_RULE_RE.match(source, i, stop)
+            if m is not None:
+                yield m.start(), m.end(), "rule"
+                i = m.end()
+                continue
+        # Any other control sequence, escaped character included: consumed whole
+        # so that `\&`, `\%` and `\{` cannot be read as structure.
+        m = _CONTROL_RE.match(source, i)
+        i = m.end() if m else i + 1
 
 
 _COMMENT_RE = re.compile(r"(?<!\\)((?:\\\\)*)%[^\n]*")

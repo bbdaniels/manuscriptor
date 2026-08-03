@@ -38,6 +38,10 @@ from urllib.parse import unquote
 
 from manuscriptor.source import anchors
 from manuscriptor.render.refs import resolve
+# The header rows were IDENTIFIED in the LaTeX stage, in `render/tables.py`,
+# where the rules that delimit a header are still visible. This module only
+# carries the marking into `<thead>`; see `promote_marked_headers`.
+from manuscriptor.render.tables import HEADER_TOKEN
 
 _DATA_MX_RE = re.compile(r'data-mx="([^"]*)"')
 _CITATION_SPAN_RE = re.compile(r'<span\s+class="citation"\s+data-cites="([^"]*)"')
@@ -192,6 +196,92 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
     return _PDF_FIG_RE.sub(one, html), made
 
 
+# --------------------------------------------------------------- table heads
+
+
+_TABLE_RE = re.compile(r"<table\b[^>]*>.*?</table>", re.S)
+_TBODY_RE = re.compile(r"(<tbody[^>]*>)(.*?)(</tbody>)", re.S)
+_TR_RE = re.compile(r"<tr\b[^>]*>.*?</tr>", re.S)
+
+
+def promote_marked_headers(html: str) -> str:
+    r"""Move the rows the LaTeX marked as header into `<thead>`, as `<th>`.
+
+    Pandoc's LaTeX reader promotes at most ONE row, so a table with a two-deep
+    header comes back as `<tbody>` and nothing else -- 72 of the corpus's 243
+    tables. `render/tables.mark_header_rows` marks those rows before pandoc sees
+    them, while the rules that delimit a header are still in the source. This
+    only CARRIES that marking; it decides nothing.
+
+    That division is the whole design. Nothing here may look at what a row
+    contains and conclude it is a header: covet-india's Table 1 writes
+    `\multicolumn{6}{l}{\textit{Patna}}` as a panel label in the middle of the
+    body, which is a full-span row of bold-ish text and is not a header. In the
+    LaTeX the rules say which is which; in the HTML they are gone.
+
+    A table pandoc already gave a `<thead>` is left exactly as it is -- the
+    single-header-row case, which has always worked -- and only has its tokens
+    stripped. That branch is belt-and-braces rather than load-bearing, and it is
+    written down as such: pandoc promotes a row only when it finds exactly one,
+    and the marking finds exactly one in the same case, so the marked rows are
+    already inside the `<thead>` and the fallback below would do nothing anyway.
+    Deleting it changes no output today and would let a future pandoc that
+    promotes two rows promote them twice.
+
+    A table whose marked rows are ALL of its rows is also left alone: a table
+    that is nothing but header is not a table, and emptying its body would be a
+    worse answer.
+    """
+    def one(m: re.Match) -> str:
+        table = m.group(0)
+        if HEADER_TOKEN not in table:
+            return table
+        if "<thead" in table:
+            return table.replace(HEADER_TOKEN, "")
+        body = _TBODY_RE.search(table)
+        if body is None:
+            return table.replace(HEADER_TOKEN, "")
+        inner = body.group(2)
+        rows = list(_TR_RE.finditer(inner))
+        head_rows = []
+        for row in rows:
+            if HEADER_TOKEN not in row.group(0):
+                break
+            head_rows.append(row)
+        if not head_rows or len(head_rows) == len(rows):
+            return table.replace(HEADER_TOKEN, "")
+        thead = ("<thead>\n"
+                 + "\n".join(_as_header_cells(r.group(0)) for r in head_rows)
+                 + "\n</thead>\n")
+        rebuilt = (
+            table[: body.start()]
+            + thead
+            + body.group(1)
+            + inner[head_rows[-1].end():].lstrip("\n")
+            + body.group(3)
+            + table[body.end():]
+        )
+        return rebuilt.replace(HEADER_TOKEN, "")
+
+    # The sweep is the backstop, and it is not redundant. A table pandoc could
+    # not read comes back as prose, with no `<table>` for the loop above to work
+    # inside -- and a mark left in it is VISIBLE TEXT in the middle of the
+    # manuscript. Nothing may reach the reader on the strength of a repair that
+    # did not happen.
+    return _TABLE_RE.sub(one, html).replace(HEADER_TOKEN, "")
+
+
+def _as_header_cells(row: str) -> str:
+    """`<td …>` becomes `<th …>` inside one promoted row, and nothing else moves.
+
+    Attributes are untouched, which matters: `colspan` and the alignment style
+    are what a spanning header row is made of, and rebuilding the tag rather
+    than renaming it is how those get dropped.
+    """
+    row = re.sub(r"<td\b", "<th", row)
+    return row.replace("</td>", "</th>")
+
+
 _TABLE_OPEN_RE = re.compile(r"<table\b")
 
 
@@ -259,6 +349,7 @@ def postprocess(
     ids = [_block_id(b) for b in blocks]
 
     html, reported = _harvest(html)
+    html = promote_marked_headers(html)
     html = _hoist_empty_anchors(html)
     html = _frontmatter_classes(html)
     html, unresolved = resolve(html, labels)

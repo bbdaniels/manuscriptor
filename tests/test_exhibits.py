@@ -445,3 +445,196 @@ def test_a_non_empty_anchor_is_left_alone():
 
     src = '<p data-mx="b-1">real prose</p><h1>H</h1>'
     assert _hoist_empty_anchors(src) == src
+
+
+# ------------------------------------------------------ multi-row table heads
+#
+# Pandoc's LaTeX reader promotes at most ONE row to the header. A table with two
+# header rows emits `<tbody>` and nothing else, so `theadCount` is 0 and every
+# sticky-header and header-rule style in the stylesheet stays switched off. The
+# headers are not missing from the page -- they are sitting there as ordinary
+# body cells, which is why this survived being looked at.
+#
+# 72 of the corpus's 243 tables declare two or more header rows: 10 of
+# estonia-ecm's 82, 1 of estonia-qbs's 7, 57 of qutub-india's 117, 4 of
+# covet-india's 5.
+#
+# The rows are IDENTIFIED in the LaTeX stage, where the rules that delimit a
+# header are still visible, and `postprocess` only carries the marking through.
+
+
+def _rendered(body: str, tmp_path) -> str:
+    from manuscriptor.render.postprocess import promote_marked_headers
+
+    return promote_marked_headers(render_document(doc(body), cwd=tmp_path, bib=None))
+
+
+def _head_rows(html: str) -> list[str]:
+    head = re.search(r"<thead>(.*?)</thead>", html, re.S)
+    return [] if head is None else rows(head.group(1))
+
+
+_TWO_ROW_HEAD = (
+    "\\begin{tabular}{lcc}\n\\toprule\n"
+    "Variable & Round 1 & Round 2 \\\\\n & (2014--15) & (2019--20) \\\\\n"
+    "\\midrule\nProviders & 305 & 289 \\\\\n\\bottomrule\n\\end{tabular}\n"
+)
+
+
+def test_two_header_rows_reach_the_thead(tmp_path):
+    html = _rendered(_TWO_ROW_HEAD, tmp_path)
+    assert "<thead>" in html, "the table has a header and the page must know it"
+    assert len(_head_rows(html)) == 2, _head_rows(html)
+    assert "Round 1" in _head_rows(html)[0]
+    assert "(2014--15)" in _head_rows(html)[1] or "(2014" in _head_rows(html)[1]
+
+
+def test_promoted_header_cells_become_th(tmp_path):
+    html = _rendered(_TWO_ROW_HEAD, tmp_path)
+    head = re.search(r"<thead>(.*?)</thead>", html, re.S).group(1)
+    assert "<td" not in head, f"a header cell is still a data cell: {head}"
+    assert head.count("<th") == 6, head
+
+
+def test_promotion_moves_rows_and_invents_none(tmp_path):
+    """The only acceptable diff. A header row moving out of `<tbody>` is the
+    point; a change to the number of rows, the number of cells, or the text in
+    any of them is a regression."""
+    from manuscriptor.render.tables import HEADER_TOKEN
+
+    before = render_document(
+        doc(_TWO_ROW_HEAD), cwd=tmp_path, bib=None).replace(HEADER_TOKEN, "")
+    after = _rendered(_TWO_ROW_HEAD, tmp_path)
+    assert cells(after) == cells(before)
+    assert rows(after) == rows(before)
+    assert "<thead>" in after and "<thead>" not in before
+
+
+def test_the_marker_never_reaches_the_reader(tmp_path):
+    from manuscriptor.render.tables import HEADER_TOKEN
+
+    html = _rendered(_TWO_ROW_HEAD, tmp_path)
+    assert HEADER_TOKEN not in html
+    assert "MXTHEAD" not in html
+
+
+def test_a_single_header_row_table_is_untouched(tmp_path):
+    """Pandoc already promotes one row. These must render exactly as they did."""
+    from manuscriptor.render.postprocess import promote_marked_headers
+
+    body = ("\\begin{tabular}{lc}\n\\toprule\nA & B \\\\\n\\midrule\n"
+            "x & 1 \\\\\n\\bottomrule\n\\end{tabular}\n")
+    raw = render_document(doc(body), cwd=tmp_path, bib=None)
+    assert "<thead>" in raw, "pandoc's own promotion must still be happening"
+    assert promote_marked_headers(raw) == raw.replace(
+        __import__("manuscriptor.render.tables", fromlist=["x"]).HEADER_TOKEN, "")
+
+
+def test_a_table_with_no_header_gains_none(tmp_path):
+    """No rule, so nothing in the source says which row is a header. A `<thead>`
+    here would be an invention, and the first data row would be styled as one."""
+    html = _rendered(
+        "\\begin{tabular}{lc}\nA & 1 \\\\\nB & 2 \\\\\n\\end{tabular}\n", tmp_path)
+    assert "<thead>" not in html
+    assert {"A", "B", "1", "2"} <= set(cells(html))
+
+
+def test_a_spanning_header_row_keeps_its_colspan(tmp_path):
+    r"""The placement hazard, end to end. A cell that begins with `\multicolumn`
+    is a spanning cell to pandoc, and a marker in front of it loses both the
+    span and the text inside it."""
+    html = _rendered(
+        "\\begin{tabular}{lcc}\n\\toprule\n"
+        " & \\multicolumn{2}{c}{Means} \\\\\n & (1) & (2) \\\\\n\\midrule\n"
+        "Age & 68.7 & 67.3 \\\\\n\\bottomrule\n\\end{tabular}\n",
+        tmp_path,
+    )
+    assert 'colspan="2"' in html, html
+    assert "Means" in " ".join(cells(html))
+    assert len(_head_rows(html)) == 2
+
+
+def test_a_panel_row_mid_body_stays_in_the_body(tmp_path):
+    r"""covet-india's Table 1 puts `\multicolumn{6}{l}{\textit{Patna}}` in the
+    middle of the body. It looks like a header row and must not become one."""
+    html = _rendered(
+        "\\begin{tabular}{lc}\n\\toprule\nVariable & Value \\\\\n\\midrule\n"
+        "\\multicolumn{2}{l}{\\textit{Patna}} \\\\\n"
+        "Age & 41 \\\\\n\\bottomrule\n\\end{tabular}\n",
+        tmp_path,
+    )
+    head = re.search(r"<thead>(.*?)</thead>", html, re.S)
+    assert head is not None and "Patna" not in head.group(1), html
+    assert "Patna" in html
+
+
+def test_a_longtable_with_both_heads_promotes_once(tmp_path):
+    r"""`\endfirsthead` and `\endhead` write the header twice by design.
+    `normalize_for_pandoc` already keeps one; the promotion must not resurrect
+    the other, and must read the head block rather than the body rows that
+    follow `\endhead`."""
+    html = _rendered(
+        "\\begin{longtable}{lcc}\n\\hline\n"
+        "Variable & Control & Treatment \\\\\n & (1) & (2) \\\\\n\\hline\n"
+        "\\endfirsthead\n\\hline\n"
+        "Variable & Control & Treatment \\\\\n & (1) & (2) \\\\\n\\hline\n"
+        "\\endhead\n"
+        "Age & 68.7 & 67.3 \\\\\n\\end{longtable}\n",
+        tmp_path,
+    )
+    head = _head_rows(html)
+    assert len(head) == 2, head
+    assert " ".join(cells(html)).count("Control") == 1, "the head must not double"
+    assert "68.7" in " ".join(cells(html))
+
+
+def test_a_header_row_that_opens_with_a_multicolumn_keeps_its_text(tmp_path):
+    r"""The descent, end to end, and it needs its own case: a row whose first
+    cell is EMPTY (` & \multicolumn{2}{c}{Means}`) never exercises it, because
+    the mark lands in the empty cell in front of the span. Measured with the
+    mark at the row head instead: `⟦MXTHEAD⟧\multicolumn{2}{c}{Panel} & C`
+    came back as `⟦MXTHEAD⟧`, `C`, `` -- the word `Panel` gone, colspan gone,
+    at exit 0.
+    """
+    html = _rendered(
+        "\\begin{tabular}{lcc}\n\\toprule\n"
+        "\\multicolumn{2}{c}{Panel A} & Total \\\\\n(1) & (2) & (3) \\\\\n"
+        "\\midrule\nAge & 68.7 & 67.3 \\\\\n\\bottomrule\n\\end{tabular}\n",
+        tmp_path,
+    )
+    assert "Panel A" in " ".join(cells(html)), html
+    assert 'colspan="2"' in html, html
+    assert len(_head_rows(html)) == 2
+
+
+def test_a_row_under_a_multirow_is_still_promoted(tmp_path):
+    r"""estonia-ecm's regression tables open with `\multirow{2}{*}{Variable}`,
+    so pandoc emits `rowspan="2"` and the SECOND row has no first cell at all --
+    it was absorbed. A mark placed only in the first cell of each row therefore
+    vanishes for that row, promotion stops at the row above it, and a
+    three-row header arrives one row deep. Every cell of a header row carries
+    the mark for this reason.
+    """
+    html = _rendered(
+        "\\begin{tabular}{lcccc}\n\\hline\n"
+        "\\multirow{2}{*}{\\textbf{Variable}} & \\multicolumn{2}{c}{Means} "
+        "& \\multicolumn{2}{c}{Effect} \\\\\n"
+        " & Any & Count & Any & Count \\\\\n"
+        " & (1) & (2) & (3) & (4) \\\\\n\\hline\n"
+        "ECM inclusion & 0.049 & 0.027 & 0.764 & 0.453 \\\\\n"
+        "\\hline\n\\end{tabular}\n",
+        tmp_path,
+    )
+    head = _head_rows(html)
+    assert len(head) == 3, head
+    assert "0.049" not in " ".join(head), "a data row must not be promoted"
+
+
+def test_no_token_survives_even_when_the_table_did_not(tmp_path):
+    """A table pandoc turns into prose has no `<table>` for the carrier to work
+    inside, and a mark left in it would be visible text in the manuscript."""
+    from manuscriptor.render.postprocess import promote_marked_headers
+    from manuscriptor.render.tables import HEADER_TOKEN
+
+    prose = f"<p>{HEADER_TOKEN}A &amp; B {HEADER_TOKEN}C &amp; D</p>"
+    assert promote_marked_headers(prose) == "<p>A &amp; B C &amp; D</p>"

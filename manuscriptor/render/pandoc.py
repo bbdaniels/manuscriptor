@@ -73,6 +73,7 @@ from manuscriptor.source.flatten import command_re
 from manuscriptor.render.tables import (
     declared_column_types,
     group_start,
+    mark_header_rows,
     plain_multicolumn_specs,
     plain_table_specs,
     skip_group,
@@ -191,6 +192,14 @@ def normalize_for_pandoc(source: str) -> str:
         source = _unwrap_environment(source, name, args)
     source, _ = plain_multicolumn_specs(source, declared)
     source, _ = plain_table_specs(source, declared)
+    # Last, and it has to be. Every step above changes what a row looks like --
+    # `_flatten_stacked_cells` removes the `\\` inside a makecell that is not a
+    # row break, `_strip_rules` removes the partial rules that are not header
+    # boundaries, `_single_longtable_head` collapses the head a longtable
+    # declares twice, and the multicolumn rejoin puts a broken spanning cell
+    # back on one line. Marking before any of them would be reading a table
+    # nobody is going to render.
+    source, _ = mark_header_rows(source)
     return source
 
 
