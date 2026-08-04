@@ -680,6 +680,38 @@ def reveal(path, *, root, runner=None) -> Path:
     return target
 
 
+def open_file(path, *, root, runner=None) -> Path:
+    """Hand the compiled file to whatever owns its type, the way a double-click
+    in the Finder would.
+
+    This exists because the page CANNOT do it itself. "Open it" was an
+    `<a target="_blank">`, which a browser tab honours and the shell's WKWebView
+    does not: a second web view is created through `WKUIDelegate` and the shell
+    installs no UI delegate, so the click was swallowed in silence. Routing it
+    here is not a workaround for that -- `open -R` beside it has always been
+    routed this way, and this is the one mechanism in the app that reliably
+    opens an external thing. A second mechanism would be the divergence.
+
+    Same trust boundary as `reveal`, widened by exactly one file: `deliver`
+    copies the finished document OUT of the cache and beside the `.tex`, and
+    that copy is what "open it" means to the author. A gate written only around
+    the build directory would refuse the very file it is for.
+    """
+    target = Path(path).resolve()
+    if not _openable(target, Path(root).resolve()):
+        raise ValueError(f"{target} is not something a compile produced")
+    if not target.exists():
+        raise ValueError(f"{target} is not there any more")
+    (runner or _reveal_runner)(["open", str(target)])
+    return target
+
+
+def _openable(target: Path, root: Path) -> bool:
+    if _inside(target, out_dir(root)):
+        return True
+    return target.parent == root and target.suffix.lower() in (".pdf", ".docx")
+
+
 def _reveal_runner(cmd: list[str]) -> None:
     subprocess.run(cmd, capture_output=True, check=False)
 
@@ -717,6 +749,13 @@ def route(session):
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
             return web.json_response({"revealed": str(shown)})
+
+        if action == "open":
+            try:
+                opened = open_file(data.get("path", ""), root=session.root)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            return web.json_response({"opened": str(opened)})
 
         if action not in ("pdf", "docx"):
             return web.json_response(

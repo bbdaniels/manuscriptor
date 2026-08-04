@@ -29,7 +29,16 @@
     result: null,
     started: 0,
     tick: null,
-    ctx: null
+    ctx: null,
+    /* Why the last thing he pressed did not happen.
+     *
+     * Held apart from `result.error`, which the panel prints ONLY in the failed
+     * branch -- so an action refused after a SUCCESSFUL compile wrote its
+     * reason into markup that is never rendered, and Reveal in Finder had been
+     * failing in silence that way since it was written. A control that does
+     * nothing and says nothing is the defect; the mechanism underneath it is
+     * only ever the second question. */
+    actionError: null
   };
 
   var LABEL = { pdf: 'PDF', docx: 'Word' };
@@ -148,14 +157,21 @@
     if (r && !S.kind) {
       var inner;
       if (r.ok) {
-        inner = '<div class="ms-compile-path">' + esc(r.output) + '</div>' +
+        // What the author is being offered: the copy beside the `.tex` when
+        // there is one, and the cache copy on a read-only serve, where the
+        // deliver step is deliberately withheld. Both are openable.
+        var file = r.delivered || r.output;
+        inner = '<div class="ms-compile-path">' + esc(file) + '</div>' +
           '<div class="row ms-compile-row">' +
           '<button class="btn pri" data-act="compile:reveal">Reveal in Finder</button>' +
-          (r.url ? '<a class="btn" href="' + esc(r.url) + '" target="_blank" rel="noopener">Open it</a>' : '') +
+          (file ? '<button class="btn" data-act="compile:open">Open it</button>' : '') +
           '<span class="hintline">' + esc(secs(r.seconds)) + '</span></div>';
       } else {
         inner = '<div class="ms-compile-error">' + esc(r.error || 'it failed and said nothing') + '</div>' +
           (r.log ? '<div class="hintline">the full transcript is at ' + esc(r.log) + '</div>' : '');
+      }
+      if (S.actionError) {
+        inner += '<div class="ms-compile-error">' + esc(S.actionError) + '</div>';
       }
       if (r.notes && r.notes.length) {
         inner += '<ul class="ms-compile-notes">' +
@@ -207,6 +223,7 @@
     S.label = LABEL[kind];
     S.steps = [];
     S.result = null;
+    S.actionError = null;
     S.started = Date.now();
     paintToolbar();
     startTicking();
@@ -226,14 +243,40 @@
     });
   }
 
-  function reveal(ctx) {
-    if (!S.result || !S.result.output) return;
-    post({ action: 'reveal', path: S.result.output }, function (status, body) {
-      if (status !== 200 && S.result) {
-        S.result.error = (body && body.error) || 'the file could not be revealed';
-        ctx.refresh();
-      }
+  /* One path for both buttons, because they fail identically and the silence
+     was the bug. Every exit says something: no file, a refusal from the server,
+     a server that did not answer at all. */
+  function act(action, path, ctx, nothing) {
+    S.actionError = null;
+    if (!path) {
+      S.actionError = nothing;
+      ctx.refresh();
+      return;
+    }
+    post({ action: action, path: path }, function (status, body) {
+      if (status === 200) return;
+      S.actionError = (body && body.error) ||
+        (status ? 'the server refused (' + status + ')' : 'the server did not answer');
+      ctx.refresh();
     });
+    ctx.refresh();
+  }
+
+  function reveal(ctx) {
+    var r = S.result;
+    act('reveal', r && r.output, ctx, 'there is nothing compiled to reveal');
+  }
+
+  /* Through the server, exactly the way revealing is. The `target="_blank"`
+     this replaces is dead in the app: a new web view is created through
+     `WKUIDelegate.createWebViewWith` and the shell has no UI delegate, so the
+     click was swallowed with nothing logged anywhere. Adding a delegate would
+     be a SECOND way to open an external thing beside the one that already
+     works; there is one. */
+  function openIt(ctx) {
+    var r = S.result;
+    act('open', r && (r.delivered || r.output), ctx,
+        'there is nothing compiled to open yet');
   }
 
   /* --------------------------------------------------------------- the frames */
@@ -245,6 +288,7 @@
       S.label = msg.label || LABEL[msg.kind];
       S.steps = [];
       S.result = null;
+      S.actionError = null;
       if (!S.started) S.started = Date.now();
       startTicking();
     } else if (msg.phase === 'step') {
@@ -254,6 +298,9 @@
       stopTicking();
       S.result = {
         kind: msg.kind, ok: !!msg.ok, seconds: msg.seconds, output: msg.output,
+        // The copy beside the `.tex`; null on a read-only serve, which
+        // withholds it. This is what "Open it" opens.
+        delivered: msg.delivered,
         url: msg.url, error: msg.error, log: msg.log,
         notes: msg.notes || [], steps: msg.steps || []
       };
@@ -309,7 +356,8 @@
     act: {
       'compile:pdf': function (ctx) { start('pdf', ctx); },
       'compile:docx': function (ctx) { start('docx', ctx); },
-      'compile:reveal': function (ctx) { reveal(ctx); }
+      'compile:reveal': function (ctx) { reveal(ctx); },
+      'compile:open': function (ctx) { openIt(ctx); }
     },
     open: {
       'compile': function (ctx) { return view(ctx); }

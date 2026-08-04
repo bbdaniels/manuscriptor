@@ -597,6 +597,92 @@ def test_reveal_accepts_what_the_compile_produced(tmp_path):
     assert calls and calls[0][:2] == ["open", "-R"]
 
 
+# -------------------------------------------------------------------- opening
+#
+# "Open it" is the button beside "Reveal in Finder", and until now it was an
+# `<a target="_blank">` -- which the shell's WKWebView cannot honour, because
+# opening a second web view needs `WKUIDelegate.createWebViewWith` and the
+# shell has no UI delegate at all. The click did nothing and said nothing.
+# So it goes through the server, exactly the way revealing already does.
+
+
+def test_open_refuses_a_path_outside_anything_a_compile_produced(tmp_path):
+    """Same reasoning as reveal: served on localhost is not a licence to hand
+    the page an arbitrary path and have `open` run on it."""
+    d = tiny(tmp_path)
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4\n")
+    with pytest.raises(ValueError):
+        compile_mod.open_file(outside, root=d)
+
+
+def test_open_accepts_what_the_compile_produced(tmp_path):
+    d = tiny(tmp_path)
+    made = compile_mod.out_dir(d) / "main.pdf"
+    made.write_bytes(b"%PDF-1.4\n")
+    calls = []
+    compile_mod.open_file(made, root=d, runner=lambda cmd: calls.append(cmd))
+    assert calls == [["open", str(made.resolve())]]
+
+
+def test_open_accepts_the_delivered_copy_beside_the_tex(tmp_path):
+    """The one the author means. `deliver` copies the finished PDF out of the
+    cache and beside the `.tex`, and THAT is the file "open it" should open --
+    it outlives `manuscriptor clean` and it is where he already looks for it.
+    A gate written only around the cache would refuse it."""
+    d = tiny(tmp_path)
+    built = compile_mod.out_dir(d) / "main.pdf"
+    built.write_bytes(b"%PDF-1.4\n")
+    out = compile_mod.deliver(built, d)
+    assert out == d / "main.pdf" and out.exists()
+    calls = []
+    compile_mod.open_file(out, root=d, runner=lambda cmd: calls.append(cmd))
+    assert calls == [["open", str(out.resolve())]]
+
+
+def test_open_says_so_when_the_file_is_gone(tmp_path):
+    """A compile from an hour ago, then `manuscriptor clean`. The button must
+    not fail silently; the route turns this into a reason the panel prints."""
+    d = tiny(tmp_path)
+    gone = compile_mod.out_dir(d) / "main.pdf"
+    gone.parent.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(ValueError) as exc:
+        compile_mod.open_file(gone, root=d)
+    assert "not there" in str(exc.value)
+
+
+@pytest.mark.skipif(not HAS_PANDOC, reason="the session needs pandoc to build")
+def test_the_open_route_runs_open_and_reports_a_refusal(tmp_path, monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from manuscriptor.server.app import make_app
+
+    session = _session(tmp_path)
+    d = session.root
+    made = compile_mod.out_dir(d) / "main.pdf"
+    made.parent.mkdir(parents=True, exist_ok=True)
+    made.write_bytes(b"%PDF-1.4\n")
+
+    calls = []
+    monkeypatch.setattr(compile_mod, "_reveal_runner", lambda cmd: calls.append(cmd))
+
+    async def go():
+        client = TestClient(TestServer(make_app(session)))
+        await client.start_server()
+        ok = await client.post("/compile", json={"action": "open", "path": str(made)})
+        assert ok.status == 200, await ok.text()
+        assert calls == [["open", str(made.resolve())]]
+
+        bad = await client.post(
+            "/compile", json={"action": "open", "path": str(tmp_path / "elsewhere.pdf")})
+        assert bad.status == 400
+        body = await bad.json()
+        assert body["error"], "a refusal with no reason is the bug being fixed"
+        await client.close()
+
+    asyncio.run(go())
+
+
 # ---------------------------------------------------------------- the route
 
 

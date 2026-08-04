@@ -697,3 +697,136 @@ def test_a_row_the_author_opened_survives_the_next_line_arriving(tmp_path):
     assert any("Now rewriting it." in l for l in out["history"][0]["lines"]), (
         "and the line that arrived while it was folded never reached it"
     )
+
+
+# ------------------------------------------------------------------ "Open it"
+#
+# The author reported that "the open it button does not work", and it did not,
+# in the environment he uses. It was an `<a target="_blank">`: a browser tab
+# honours that, and the shell's WKWebView cannot, because a second web view
+# needs `WKUIDelegate.createWebViewWith` and the shell installs no UI delegate.
+# The click was swallowed with no error anywhere -- so these guards are about
+# the mechanism and about the silence, in that order.
+#
+# jsdom is a third environment and honours neither; that is the point. It can
+# say what the page ASKS THE SERVER FOR, which is the only claim the fix rests
+# on, and it can say that no `target="_blank"` remains to be swallowed.
+
+
+def compiled(tmp_path: Path, *, deliver: bool):
+    """A finished compile, broadcast by the SERVER's own route.
+
+    The frame is not typed here. `compile.route` runs, and `Result.as_frame`
+    serializes -- which is the half under test, since `delivered` is the field
+    the button now needs and the page never used to be handed it.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from manuscriptor.server import compile as compile_mod
+
+    session, page = served(tmp_path, CITED, bib=BIB)
+    built = compile_mod.out_dir(tmp_path) / "main.pdf"
+    built.parent.mkdir(parents=True, exist_ok=True)
+    built.write_bytes(b"%PDF-1.4\n")
+    out = compile_mod.deliver(built, tmp_path) if deliver else None
+
+    def fake(manuscript_dir, *, main=None, bib=None, on_step=None, **kw):
+        return compile_mod.Result(
+            "pdf", True, built, 3.0, [], None, None, delivered=out)
+
+    was = compile_mod.compile_pdf
+    compile_mod.compile_pdf = fake
+
+    async def go():
+        with pagedriver.record(session) as sent:
+            client = TestClient(TestServer(app.make_app(session)))
+            await client.start_server()
+            resp = await client.post("/compile", json={"action": "pdf"})
+            assert resp.status == 202
+            for _ in range(50):
+                await asyncio.sleep(0.02)
+                if any(f.get("phase") == "done" for f in sent):
+                    break
+            await client.close()
+        return sent
+
+    try:
+        frames = asyncio.run(go())
+    finally:
+        compile_mod.compile_pdf = was
+    assert any(f.get("phase") == "done" for f in frames), "the server never finished"
+    return session, page, frames, (out or built)
+
+
+def test_open_it_is_not_a_link_the_shell_cannot_follow(tmp_path):
+    """`target="_blank"` needs a UI delegate the shell has not got, so in the
+    app the click did nothing and said nothing. Nothing may reintroduce it."""
+    session, page, frames, _ = compiled(tmp_path, deliver=True)
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path,
+                           steps=["frames", "open:compile"])
+    panel = out["panel"] or ""
+    assert "Open it" in panel, "the button the author pressed is not on the page at all"
+    assert "_blank" not in panel, (
+        "Open it is still a new-window link, which the app's WKWebView swallows"
+    )
+
+
+def test_open_it_asks_the_server_for_the_file_beside_the_tex(tmp_path):
+    """Routed through the server exactly the way Reveal in Finder is -- the one
+    mechanism in this app that reliably opens an external thing. And it asks for
+    the DELIVERED copy, the PDF beside the `.tex`, not the one in the cache."""
+    session, page, frames, want = compiled(tmp_path, deliver=True)
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path,
+                           steps=["frames", "open:compile", "act:compile:open"])
+    posts = [f for f in out["fetched"] if f["url"].endswith("/compile") and f["body"]]
+    bodies = [json.loads(p["body"]) for p in posts]
+    opens = [b for b in bodies if b.get("action") == "open"]
+    assert opens, f"the click asked the server for nothing; it sent {bodies}"
+    assert opens[0]["path"] == str(want), opens[0]
+
+
+def test_open_it_falls_back_to_the_cache_on_a_read_only_serve(tmp_path):
+    """`--read-only` withholds the copy beside the `.tex`, so `delivered` is
+    None and the only file there is is the one in the cache. The button must
+    still open something rather than vanish."""
+    session, page, frames, want = compiled(tmp_path, deliver=False)
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path,
+                           steps=["frames", "open:compile", "act:compile:open"])
+    bodies = [json.loads(f["body"]) for f in out["fetched"]
+              if f["url"].endswith("/compile") and f["body"]]
+    opens = [b for b in bodies if b.get("action") == "open"]
+    assert opens, f"nothing to open on a read-only serve; it sent {bodies}"
+    assert opens[0]["path"] == str(want), opens[0]
+
+
+def test_a_refused_open_is_printed_where_the_author_is_looking(tmp_path):
+    """THE ACTUAL BUG, one level up from the mechanism. The panel prints an
+    error only when the COMPILE failed, so an action failing after a successful
+    compile set `S.result.error` into a branch that is never rendered -- which
+    is how Reveal in Finder has been failing silently too. A button that does
+    nothing and says nothing is the defect, whatever is underneath it."""
+    session, page, frames, _ = compiled(tmp_path, deliver=True)
+    out = pagedriver.drive(
+        page, frames, tmp_path=tmp_path,
+        steps=["frames", "open:compile", "act:compile:open"],
+        replies=[{"url": "/compile", "status": 400,
+                  "body": {"error": "main.pdf is not there any more"}}],
+    )
+    assert "not there any more" in (out["panel"] or ""), (
+        "the server refused and the page said nothing: " + (out["panel"] or "")[:400]
+    )
+
+
+def test_a_refused_reveal_is_printed_too(tmp_path):
+    """Same silence, the sibling button. Fixed at the shared surface rather
+    than once per action."""
+    session, page, frames, _ = compiled(tmp_path, deliver=True)
+    out = pagedriver.drive(
+        page, frames, tmp_path=tmp_path,
+        steps=["frames", "open:compile", "act:compile:reveal"],
+        replies=[{"url": "/compile", "status": 400,
+                  "body": {"error": "main.pdf is not there any more"}}],
+    )
+    assert "not there any more" in (out["panel"] or ""), (
+        "reveal was refused and the page said nothing"
+    )

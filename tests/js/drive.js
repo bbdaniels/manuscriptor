@@ -68,12 +68,31 @@ const dom = new JSDOM(html, {
      * server, and inventing one would put a second implementation of the
      * routes in the test suite. An empty answer is what a manuscript with no
      * unsaved text returns, which is every fixture here. */
+    /* The BODY is recorded, not just the URL. A control that posts the wrong
+     * path -- or posts nothing at all -- is indistinguishable from a working
+     * one when only the URL is kept, and "which file did Open it ask for" is
+     * exactly the question that could not be asked here before.
+     *
+     * `plan.replies` lets a test say what the server answers, in order, so the
+     * refusal path is drivable: a button that fails silently is the defect, and
+     * a harness that can only see success cannot see it. */
+    const replies = (plan.replies || []).slice();
     window.fetch = function (url, opts) {
-      window.__fetched.push({ url: String(url), method: (opts && opts.method) || 'GET' });
+      const body = (opts && opts.body) || null;
+      window.__fetched.push({
+        url: String(url),
+        method: (opts && opts.method) || 'GET',
+        body: body === null ? null : String(body),
+      });
+      let reply = null;
+      for (let i = 0; i < replies.length; i++) {
+        if (String(url).indexOf(replies[i].url) !== -1) { reply = replies.splice(i, 1)[0]; break; }
+      }
+      const status = reply ? reply.status : 200;
       return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({}),
+        ok: status >= 200 && status < 300,
+        status: status,
+        json: () => Promise.resolve((reply && reply.body) || {}),
         text: () => Promise.resolve(''),
       });
     };
@@ -194,6 +213,17 @@ function step(V, name) {
     tabs[n].click();
     return;
   }
+  /* Open a side panel the way the author does -- by clicking the control that
+   * carries `data-open`. An extension cannot open its own panel (the contract
+   * has no "show me"), so its panel content is unreachable until something is
+   * clicked, and a test that skipped this step would be asserting on a panel
+   * nobody opened. */
+  if (name.startsWith('open:')) {
+    const el = document.querySelector('[data-open="' + name.slice('open:'.length) + '"]');
+    if (!el) throw new Error('nothing opens ' + name);
+    el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    return;
+  }
   if (name.startsWith('act:')) {
     const btn = document.querySelector('[data-act="' + name.slice('act:'.length) + '"]');
     if (!btn) throw new Error('no control for ' + name);
@@ -264,12 +294,19 @@ async function main() {
 
   let first = null;
   const trail = [];
-  steps.forEach((s) => {
+  /* The page is allowed to settle between one gesture and the next, because a
+   * real one does: the author cannot click twice inside a single microtask, and
+   * anything a click starts over `fetch` resolves before he acts again. Run
+   * strictly synchronously and every consequence that arrives by promise is
+   * invisible -- which is exactly how "the server refused and the panel never
+   * said so" hid from this harness while being the whole defect. */
+  for (const s of steps) {
     step(V, s);
+    await new Promise((res) => setTimeout(res, 0));
     const el = editorNow();
     if (el && !first) first = el;
     trail.push(editorTrail(s, el, first));
-  });
+  }
   report(V, trail);
 }
 
@@ -349,6 +386,10 @@ function report(V, trail) {
     stats: ms.stats || null,
     citeRecords: ms.cites || null,
     sent: window.__sent,
+    fetched: window.__fetched,
+    /* The side panel as the author reads it. `docHtml` is the manuscript; an
+     * extension's whole surface lives here and was invisible to this report. */
+    panel: (document.querySelector('#ibody') || {}).innerHTML || null,
     errors: window.__errors,
     trail: trail,
   }));

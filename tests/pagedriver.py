@@ -46,7 +46,8 @@ def page(session) -> str:
     return app_mod._page(session)
 
 
-def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) -> dict:
+def drive(page_html: str, frames, *, source=None, steps=None, replies=None,
+          tmp_path: Path) -> dict:
     """Load `page_html` in jsdom, hand `frames` to the real `handle`, and report.
 
     `frames` are dicts the SERVER produced. Passing a literal here defeats the
@@ -79,8 +80,19 @@ def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) ->
         frames:<n>          only the next n of them do, so a test can put the
                             author's own action in the middle of the stream
 
+        open:<name>         click the control carrying that data-open, which
+                            is the only way an extension's panel comes into the
+                            document at all
+
+    `replies` is what the SERVER answers, as ``{"url", "status", "body"}``
+    matched by substring in order. Without it every request the page makes
+    succeeds, and a control whose only defect is that it says nothing when the
+    server refuses cannot be caught.
+
     The report gains a ``trail``: after every step, whether the source editor
     is still the SAME ELEMENT it was, what block it names, and what it holds.
+    It also carries ``fetched`` -- every request the page made, WITH ITS BODY --
+    and ``panel``, the side panel's HTML.
     """
     why = missing()
     if why:
@@ -89,6 +101,8 @@ def drive(page_html: str, frames, *, source=None, steps=None, tmp_path: Path) ->
     html_file.write_text(page_html, encoding="utf-8")
     plan_file = tmp_path / "frames.json"
     plan = {"frames": list(frames), "source": list(source or [])}
+    if replies:
+        plan["replies"] = list(replies)
     if steps is not None:
         plan["steps"] = list(steps)
     plan_file.write_text(json.dumps(plan), encoding="utf-8")
