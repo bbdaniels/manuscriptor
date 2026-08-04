@@ -370,7 +370,14 @@ function report(V, trail) {
     source[id] = b ? String(b.source || '') : null;
   });
 
-  process.stdout.write(JSON.stringify({
+  /* `fs.writeSync`, NOT `process.stdout.write`. Node's stdout is ASYNCHRONOUS
+   * on a pipe, and `process.exit` below does not flush what is still buffered:
+   * a report larger than the 64KB pipe buffer arrived at the caller cut off
+   * mid-character, and `subprocess.run(text=True)` raised
+   * `UnicodeDecodeError: unexpected end of data` at position 65535. Every
+   * fixture in this suite is small enough to fit, so the harness worked for a
+   * year and failed the first time it was pointed at a real manuscript. */
+  const report = JSON.stringify({
     ticker: state.ticker,
     queue: state.queue,
     tickerLines,
@@ -392,7 +399,8 @@ function report(V, trail) {
     panel: (document.querySelector('#ibody') || {}).innerHTML || null,
     errors: window.__errors,
     trail: trail,
-  }));
+  });
+  fs.writeSync(1, report);
 
   /* `boot` arms a 15-second interval so the ticker keeps ageing, which is
      right in a browser and is a process that never exits here. */

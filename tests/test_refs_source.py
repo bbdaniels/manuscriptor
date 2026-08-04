@@ -48,3 +48,99 @@ def test_a_reference_inside_math_still_resolves():
 def test_every_occurrence_is_replaced():
     out = resolve_source("\\ref{tab:foo} then \\ref{tab:foo} again", LABELS)[0]
     assert out == "2 then 2 again"
+
+
+# ------------------------------------------------- \thefigure in a heading
+#
+# An exhibit set free-standing rather than as a float opens with an explicit
+# `\refstepcounter{figure}\label{...}` and prints its own number with
+# `\thefigure`, because a starred heading steps no counter. Pandoc does not
+# execute TeX: it expands the `\renewcommand{\thefigure}{S\arabic{figure}}` it
+# was given and drops `\arabic`, so covet-india's supplement headings rendered
+# "Figure S." -- the S survived and the number vanished, at exit 0.
+#
+# The number TeX computed is in the .aux, against that very label, and reading
+# it out is what this module is for. `\refstepcounter` is what writes it there,
+# so the pairing is not a heuristic: `\label` right after `\refstepcounter{X}`
+# records exactly what `\theX` would print until the counter next moves.
+
+STEP_LABELS = {"s:fig-a": "S1", "s:fig-b": "S2", "s:tab-a": "S1"}
+
+
+def test_a_stepped_counter_prints_the_number_from_the_aux():
+    src = ("\\refstepcounter{figure}\\label{s:fig-a}\n"
+           "\\subsection*{Figure \\thefigure. Sampling}")
+    out, missing = resolve_source(src, STEP_LABELS)
+    assert "Figure S1. Sampling" in out
+    assert "\\thefigure" not in out
+    assert missing == []
+
+
+def test_each_exhibit_gets_its_own_number():
+    src = ("\\refstepcounter{figure}\\label{s:fig-a}\n"
+           "\\subsection*{Figure \\thefigure. One}\n\n"
+           "\\refstepcounter{figure}\\label{s:fig-b}\n"
+           "\\subsection*{Figure \\thefigure. Two}")
+    out = resolve_source(src, STEP_LABELS)[0]
+    assert "Figure S1. One" in out
+    assert "Figure S2. Two" in out
+
+
+def test_figure_and_table_counters_do_not_cross():
+    src = ("\\refstepcounter{table}\\label{s:tab-a}\n"
+           "\\subsection*{Table \\thetable. T}\n\n"
+           "\\refstepcounter{figure}\\label{s:fig-b}\n"
+           "\\subsection*{Figure \\thefigure. F}")
+    out = resolve_source(src, STEP_LABELS)[0]
+    assert "Table S1. T" in out
+    assert "Figure S2. F" in out
+
+
+def test_the_counter_definition_is_never_rewritten():
+    """`\\renewcommand{\\thefigure}{...}` is the definition, not a use."""
+    src = ("\\renewcommand{\\thefigure}{S\\arabic{figure}}\n"
+           "\\refstepcounter{figure}\\label{s:fig-a}\n"
+           "\\subsection*{Figure \\thefigure.}\n"
+           "\\renewcommand{\\thefigure}{X}")
+    out = resolve_source(src, STEP_LABELS)[0]
+    assert out.count("\\renewcommand{\\thefigure}") == 2
+    assert "Figure S1." in out
+
+
+def test_a_counter_the_aux_does_not_carry_is_reported():
+    src = "\\refstepcounter{figure}\\label{s:fig-nope}\n\\subsection*{Figure \\thefigure.}"
+    out, missing = resolve_source(src, STEP_LABELS)
+    assert "s:fig-nope" in missing
+    assert "\\thefigure" not in out, "a bare \\the macro must not reach pandoc"
+    assert "??" in out
+
+
+def test_an_unbound_counter_is_left_alone():
+    """No `\\refstepcounter\\label` in scope means nothing here knows the number.
+
+    Inventing one would be worse than pandoc's own guess, so the macro is left
+    exactly as it was and the renderer keeps whatever it made of it.
+    """
+    src = "\\subsection*{Figure \\thefigure. Orphan}"
+    out, missing = resolve_source(src, STEP_LABELS)
+    assert out == src
+    assert missing == []
+
+
+def test_a_float_ends_the_binding():
+    """`\\caption` inside a float steps the counter, and this module cannot
+    follow that. Past a float the printed number is unknown, so it is not
+    guessed."""
+    src = ("\\refstepcounter{figure}\\label{s:fig-a}\n"
+           "\\subsection*{Figure \\thefigure. Free-standing}\n"
+           "\\begin{figure}\\caption{A float}\\end{figure}\n"
+           "\\subsection*{Figure \\thefigure. After the float}")
+    out = resolve_source(src, STEP_LABELS)[0]
+    assert "Figure S1. Free-standing" in out
+    assert "Figure \\thefigure. After the float" in out
+
+
+def test_a_refstepcounter_without_a_label_binds_nothing():
+    src = "\\refstepcounter{figure}\n\\subsection*{Figure \\thefigure.}"
+    out = resolve_source(src, STEP_LABELS)[0]
+    assert out == src

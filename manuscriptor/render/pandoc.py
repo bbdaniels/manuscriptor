@@ -129,10 +129,18 @@ _SCALING_MACROS = {"resizebox": 2, "scalebox": 1}
 # The setspace family is here because dsp-bias wraps its whole front matter in
 # `singlespace`, and an environment pandoc does not know swallows everything
 # inside it: the title vanished with the line spacing.
+#
+# `landscape` (lscape/pdflscape) is the same failure on a whole exhibit.
+# covet-india's supplement sets its widest table sideways, and the entire
+# exhibit -- heading, table and note -- rendered as one empty paragraph on the
+# Manuscriptor page, at exit 0, with the block still anchored so the author
+# could click a sliver of nothing. Turning the page is print geometry and an
+# HTML page has no orientation, so unwrapping it costs nothing.
 _WRAPPER_ENVS = {
     "adjustbox": 1, "threeparttable": 0,
     "singlespace": 0, "singlespacing": 0, "onehalfspace": 0,
     "doublespace": 0, "spacing": 1,
+    "landscape": 0,
 }
 
 

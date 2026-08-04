@@ -937,3 +937,113 @@ Third paragraph, which must not be disturbed by anything happening above it here
         "his file: " + panel[:400]
     )
     assert "fig1.py" in panel, "the card refused the edit without naming a producer"
+
+
+# ------------------------------------- an exhibit converted from float to prose
+#
+# covet-india's supplement had eight exhibits set as `\begin{figure}[H]` floats
+# and the author converted all eight, live, to the free-standing shape main.tex
+# uses: a `\refstepcounter` carrying the label, a starred heading, the image,
+# and the note, as four blocks separated by blank lines. He then reported that
+# the figures were "rendering at the bottom".
+#
+# One float block becomes four, so `rematch` maps the old block onto ONE of the
+# four and the other three arrive as additions. An addition with nowhere to go
+# is appended to the end of the document, which is how a figure rendered below
+# the bibliography on 2026-07-27, and the conversion is precisely the shape that
+# makes `rematch` fail: the caption text moves from a `\caption` into a heading
+# and the block it belonged to no longer exists.
+
+FLOATED = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+
+The first paragraph, which is above the exhibit and does not move.
+
+\begin{figure}[H]
+\caption{Facility sample and panel retention}
+\label{fig:sampling}
+
+\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+
+\noindent\textit{Note: bars show the number of facilities.}
+\end{figure}
+
+The paragraph below the exhibit, which does not move either.
+
+\section{Discussion}
+
+The last paragraph in the document, which must stay last.
+\end{document}
+"""
+
+FREESTANDING = r"""\refstepcounter{figure}\label{fig:sampling}
+\subsection*{Figure \thefigure. Facility sample and panel retention}
+
+\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+
+\noindent\textit{Note: bars show the number of facilities.}
+"""
+
+_FLOAT_BLOCK = r"""\begin{figure}[H]
+\caption{Facility sample and panel retention}
+\label{fig:sampling}
+
+\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+
+\noindent\textit{Note: bars show the number of facilities.}
+\end{figure}
+"""
+
+
+def _doc_text(out: dict) -> str:
+    """The page's manuscript as plain-ish text, for order assertions."""
+    import re
+    return re.sub(r"<[^>]+>", " ", out["docHtml"])
+
+
+def test_a_float_converted_to_a_free_standing_exhibit_stays_where_it_was(tmp_path):
+    """The exhibit must land between its two paragraphs, not after the last one.
+
+    Asserted on the ORDER of the page's own markup after the server's frames
+    arrive. A conversion that reads correctly on reload and wrong on the open
+    page is the whole failure class this file exists for.
+    """
+    session, page = served(tmp_path, FLOATED)
+    rewrite(tmp_path, _FLOAT_BLOCK, FREESTANDING)
+    frames = pushed(session)
+    assert frames, "the rebuild produced no frame at all"
+
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path)
+    text = _doc_text(out)
+    above = text.index("above the exhibit")
+    below = text.index("below the exhibit")
+    last = text.index("must stay last")
+    caption = text.index("Facility sample and panel retention")
+    image = out["docHtml"].index("sampling.pdf")
+    note = text.index("bars show the number of facilities")
+
+    assert above < caption < below, \
+        "the heading did not land between the paragraphs it sits between"
+    assert above < note < below, "the note did not either"
+    assert caption < below and image < out["docHtml"].index("must stay last"), \
+        "the image rendered after the end of the document"
+    assert below < last, "the document order past the exhibit was disturbed"
+
+
+def test_the_converted_exhibit_prints_its_number_on_the_open_page(tmp_path):
+    """`\\thefigure` is not a number until something reads the `.aux`.
+
+    Pandoc does not execute TeX, so the heading rendered "Figure ." with the
+    number simply absent. The number is in the `.aux` against the label the
+    `\\refstepcounter` carried, which is what `render/refs.py` is for.
+    """
+    (tmp_path / "main.aux").write_text(
+        "\\newlabel{fig:sampling}{{S1}{6}{}{figure.1}{}}\n", encoding="utf-8")
+    session, page = served(tmp_path, FLOATED)
+    rewrite(tmp_path, _FLOAT_BLOCK, FREESTANDING)
+    frames = pushed(session)
+
+    out = pagedriver.drive(page, frames, tmp_path=tmp_path)
+    text = " ".join(_doc_text(out).split())
+    assert "Figure S1. Facility sample" in text, text[:400]

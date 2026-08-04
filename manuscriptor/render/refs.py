@@ -301,6 +301,85 @@ def _unresolved_span(macro: str, key: str) -> str:
 
 _UNRESOLVED = "??"
 
+# An exhibit set free-standing rather than as a float prints its own number,
+# because a starred heading steps no counter:
+#
+#     \refstepcounter{figure}\label{s:fig-sampling}
+#     \subsection*{Figure \thefigure. Facility sample and panel retention}
+#
+# Pandoc does not execute TeX. It expands the `\renewcommand{\thefigure}` the
+# preamble gave it, finds `\arabic{figure}` has no counter behind it, and drops
+# it -- so covet-india's supplement rendered eight headings reading "Figure S."
+# at exit 0, the redefinition's `S` surviving and the number gone.
+#
+# The number is in the `.aux`, written against that very label, and reading a
+# number TeX computed is what this module already exists to do. `\refstepcounter`
+# is the macro that puts it there, so pairing the two is not a heuristic:
+# `\label` immediately after `\refstepcounter{X}` records precisely what `\theX`
+# prints until the counter next moves.
+#
+# It stops at the first thing that could move the counter without saying so -- a
+# float, whose `\caption` steps it silently -- because a number this module
+# cannot follow must be left to the renderer rather than guessed.
+_COUNTER_SCAN = re.compile(
+    r"(?P<step>\\refstepcounter\s*\{(?P<step_c>[A-Za-z@]+)\}"
+    r"(?:\s*\\label\s*\{(?P<step_k>[^}]*)\})?)"
+    r"|(?P<env>\\begin\s*\{(?P<env_n>[A-Za-z@]+)\*?\})"
+    r"|(?P<define>\\(?:new|renew|provide)command\s*\*?\s*\{\s*\\the(?P<def_c>[A-Za-z@]+)\s*\}"
+    r"|\\def\s*\\the(?P<def_c2>[A-Za-z@]+))"
+    r"|(?P<use>\\the(?P<use_c>[A-Za-z@]+)(?![A-Za-z@]))"
+)
+
+
+def _resolve_counters(latex: str, labels: dict[str, str], missing: list[str]) -> str:
+    """Print `\\theX` as the number the `.aux` recorded for its `\\refstepcounter`.
+
+    One left-to-right scan carrying, per counter, the label most recently
+    stepped with it. A `\\theX` with no such label in scope is left exactly as
+    it was: nothing here knows that number, and inventing one would be worse
+    than whatever the renderer makes of the macro.
+
+    A `\\renewcommand{\\thefigure}{...}` is matched ahead of the use it contains,
+    so the counter's *definition* is never rewritten into its own value.
+    """
+    bound: dict[str, str] = {}
+    out: list[str] = []
+    cursor = 0
+    for m in _COUNTER_SCAN.finditer(latex):
+        out.append(latex[cursor:m.start()])
+        cursor = m.end()
+        if m.group("step") is not None:
+            counter, key = m.group("step_c"), m.group("step_k")
+            if key:
+                bound[counter] = key.strip()
+            else:
+                bound.pop(counter, None)
+            out.append(m.group(0))
+            continue
+        if m.group("env") is not None:
+            # A float steps its counter from inside `\caption`, which this scan
+            # cannot see, so the binding ends here rather than going stale.
+            bound.pop(m.group("env_n"), None)
+            out.append(m.group(0))
+            continue
+        if m.group("define") is not None:
+            out.append(m.group(0))
+            continue
+        counter = m.group("use_c")
+        key = bound.get(counter)
+        if key is None:
+            out.append(m.group(0))
+            continue
+        value = labels.get(key)
+        if value is None:
+            if key not in missing:
+                missing.append(key)
+            out.append(_UNRESOLVED)
+            continue
+        out.append(value)
+    out.append(latex[cursor:])
+    return "".join(out)
+
 
 def resolve_source(latex: str, labels: dict[str, str]) -> tuple[str, list[str]]:
     """Substitute `\\ref`, `\\pageref` and `\\eqref` in the LaTeX itself.
@@ -333,4 +412,6 @@ def resolve_source(latex: str, labels: dict[str, str]) -> tuple[str, list[str]]:
             return _UNRESOLVED
         return f"({value})" if macro == "eqref" else value
 
-    return _MACRO_RE.sub(one, latex), missing
+    # Counters first: `\refstepcounter{figure}\label{k}` has to be seen with its
+    # `\label` still intact, and the `\ref` pass does not touch `\label` anyway.
+    return _MACRO_RE.sub(one, _resolve_counters(latex, labels, missing)), missing

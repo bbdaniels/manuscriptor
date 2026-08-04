@@ -224,8 +224,9 @@ Prose after the declaration.
         "\\scalebox{0.8}{BODY}",
         "\\begin{adjustbox}{max width=\\textwidth}BODY\\end{adjustbox}",
         "\\begin{threeparttable}BODY\\end{threeparttable}",
+        "\\begin{landscape}BODY\\end{landscape}",
     ],
-    ids=["resizebox", "scalebox", "adjustbox", "threeparttable"],
+    ids=["resizebox", "scalebox", "adjustbox", "threeparttable", "landscape"],
 )
 def test_a_typesetting_wrapper_silently_swallows_its_table_before_normalizing(wrapper):
     """Guard on the guard: exit code zero, and the table is simply gone."""
@@ -241,8 +242,9 @@ def test_a_typesetting_wrapper_silently_swallows_its_table_before_normalizing(wr
         "\\scalebox{0.8}{BODY}",
         "\\begin{adjustbox}{max width=\\textwidth}BODY\\end{adjustbox}",
         "\\begin{threeparttable}BODY\\end{threeparttable}",
+        "\\begin{landscape}BODY\\end{landscape}",
     ],
-    ids=["resizebox", "scalebox", "adjustbox", "threeparttable"],
+    ids=["resizebox", "scalebox", "adjustbox", "threeparttable", "landscape"],
 )
 def test_a_typesetting_wrapper_is_unwrapped_and_the_table_survives(wrapper, tmp_path):
     src = (
