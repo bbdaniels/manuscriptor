@@ -732,6 +732,53 @@ def test_a_forced_break_in_the_title_is_a_space_not_a_comma(tmp_path):
     assert "A One, B Two" in html
 
 
+def test_a_commented_maketitle_is_not_the_maketitle_site(tmp_path):
+    # covet-india's supplement.tex explains, in a preamble comment, that
+    # `wlscirep.cls`'s own `\maketitle` typesets `\theabstract`. The front
+    # matter rewriter took that mention -- the FIRST literal `\maketitle` in
+    # the file, sitting in a comment above `\begin{document}` -- as the site to
+    # rewrite. The constructed heading landed in the preamble, which pandoc
+    # discards whole, so the supplement rendered with no title at all while the
+    # real `\maketitle` was left as an empty block.
+    src = (
+        "\\documentclass{article}\n"
+        "%% The class's \\maketitle always typesets \\theabstract.\n"
+        "\\title{The Real Title}\n"
+        "\\author{A One}\n"
+        "\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "The Real Title" in html
+    assert "A One" in html
+
+
+def test_a_commented_title_does_not_shadow_the_real_one(tmp_path):
+    # Same scanner, the other command. A superseded `\title` left commented out
+    # above the live one would otherwise name the paper.
+    src = (
+        "\\documentclass{article}\n"
+        "% \\title{The Old Title}\n"
+        "\\title{The Real Title}\n"
+        "\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "The Real Title" in html
+    assert "The Old Title" not in html
+
+
+def test_a_commented_abstract_environment_is_not_the_abstract(tmp_path):
+    src = (
+        "\\documentclass{article}\n"
+        "% \\begin{abstract} is what the class expects here.\n"
+        "\\begin{document}\n"
+        "\\begin{abstract}\nThe real abstract.\n\\end{abstract}\n"
+        "\nProse.\n\\end{document}\n"
+    )
+    html = render_document(src, cwd=tmp_path, bib=None)
+    assert "The real abstract." in html
+    assert html.find("The real abstract.") < html.find("Prose.")
+
+
 # The title's block marker has to reach the rendered <h1>, and the `\maketitle`
 # block's marker has to stop reaching it.
 #

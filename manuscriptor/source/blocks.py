@@ -795,7 +795,16 @@ def _preamble_title(text: str, body_start: int) -> tuple[int, int] | None:
     """
     if body_start <= 0:                      # a fragment: it is all body already
         return None
-    m = _TITLE_CMD_RE.search(text, 0, body_start)
+    # A commented-out `\title` is prose about the paper, not the paper's title.
+    # `_tokenize` skips comments, so the abstract region beside this one has
+    # always been comment-aware; this regex was not, and `render/pandoc.py`
+    # reads the same command from the other end. Two answers means the block
+    # and the rendered heading describe different bytes.
+    m = next(
+        (h for h in _TITLE_CMD_RE.finditer(text, 0, body_start)
+         if not is_commented(text, h.start())),
+        None,
+    )
     if m is None:
         return None
     _, end = _read_group(text, m.end())

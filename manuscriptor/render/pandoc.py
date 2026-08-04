@@ -69,7 +69,7 @@ from pathlib import Path
 # in `tables.py`, which is their one home. A second copy of them once existed in
 # the Word submission skills and had already drifted; see that module's
 # docstring and `tests/test_render_tables.py`.
-from manuscriptor.source.flatten import command_re
+from manuscriptor.source.flatten import command_re, is_commented
 from manuscriptor.render.tables import (
     declared_column_types,
     group_start,
@@ -95,6 +95,30 @@ _DEF_RE = re.compile(
     r"\\(?:new|renew|provide)command\s*\*?\s*\{?\s*\\[A-Za-z@]+\s*\}?"
     r"(?:\[[^\]]*\])*\s*"
 )
+
+
+def _live(pattern: re.Pattern[str], source: str, start: int = 0) -> re.Match[str] | None:
+    """The first match of `pattern` that is real LaTeX rather than prose in a comment.
+
+    A manuscript talks ABOUT its own commands. covet-india's `supplement.tex`
+    carries a preamble comment explaining that `wlscirep.cls`'s `\\maketitle`
+    always typesets `\\theabstract` -- and that mention, being the first literal
+    `\\maketitle` in the file, is where `_render_frontmatter` built the title
+    heading. It landed above `\\begin{document}`, which pandoc discards whole,
+    so the supplement rendered with no title while the real `\\maketitle` sat
+    below as an empty block. Nothing in the rewriter was wrong about titles; it
+    was reading a sentence as code.
+
+    Every scan this module runs over document source goes through here, because
+    the ones that do not are exactly the ones that will read the next comment.
+    The comment test itself is `flatten.is_commented`, the one scanner that
+    already knows `\\%` is a literal percent sign.
+    """
+    for m in pattern.finditer(source, start):
+        if not is_commented(source, m.start()):
+            return m
+    return None
+
 
 # Macros whose last mandatory argument is content and whose earlier arguments
 # are pure geometry. `\resizebox{w}{h}{...}`, `\scalebox{f}{...}`.
@@ -140,7 +164,7 @@ def extract_preamble(flat_text: str) -> str:
     A fragment with no `\\begin{document}` has no preamble; returning the whole
     fragment would make `render_block` wrap the block's own text around itself.
     """
-    m = _BEGIN_DOCUMENT_RE.search(flat_text)
+    m = _live(_BEGIN_DOCUMENT_RE, flat_text)
     return flat_text[: m.start()] if m else ""
 
 
@@ -223,7 +247,10 @@ BYLINE_TOKEN = "⟦MXBYLINE⟧"
 ABSTRACT_TOKEN = "⟦MXABSTRACT⟧"
 
 _MAKETITLE_RE = re.compile(r"\\maketitle\b")
-_BEGIN_DOC_RE = re.compile(r"\\begin\s*\{document\}")
+# `\begin{document}` is asked for in three places in this module and had two
+# spellings of the pattern until 2026-08-04. One question, one regex: where the
+# body starts decides what `extract_preamble` hands the hot path, where a
+# relocated abstract may land, and where `_degrade` cuts.
 _ABSTRACT_BEGIN_RE = re.compile(r"\\begin\s*\{abstract\}\s*")
 _ABSTRACT_END_RE = re.compile(r"\\end\s*\{abstract\}")
 _THANKS_RE = re.compile(r"\\thanks\s*(?=\{)")
@@ -237,7 +264,7 @@ _MARKER_ONLY_BEFORE_RE = re.compile(r"(⟦MX[0-9a-f]+(?:-\d+)?⟧)\s*$")
 
 def _render_frontmatter(source: str) -> str:
     after_title: int | None = None
-    m = _MAKETITLE_RE.search(source)
+    m = _live(_MAKETITLE_RE, source)
     if m:
         title = command_text(source, "title", break_as=" ")
         if title:
@@ -282,9 +309,9 @@ def _render_frontmatter(source: str) -> str:
         # No \title: nothing to show and nothing to invent. The empty block is
         # collapsed by the viewer's void pass rather than papered over here.
 
-    m = _ABSTRACT_BEGIN_RE.search(source)
+    m = _live(_ABSTRACT_BEGIN_RE, source)
     if m:
-        end = _ABSTRACT_END_RE.search(source, m.end())
+        end = _live(_ABSTRACT_END_RE, source, m.end())
         if end:
             body = source[m.end(): end.start()].strip()
             head = "\\subsection*{" + ABSTRACT_TOKEN + "Abstract}\n\n"
@@ -295,7 +322,7 @@ def _render_frontmatter(source: str) -> str:
             # on the label it would select a heading around nothing.
             mk = _MARKER_BEFORE_RE.search(before)
             at = mk.start() if mk else m.start()
-            doc = _BEGIN_DOC_RE.search(source)
+            doc = _live(_BEGIN_DOCUMENT_RE, source)
             if doc is not None and m.start() < doc.start():
                 source = _relocate_abstract(
                     source, at, end.end(), head, mk.group(0) if mk else "",
@@ -385,6 +412,11 @@ def _command_spans(source: str, name: str) -> list[tuple[int, int, int]]:
     """
     out: list[tuple[int, int, int]] = []
     for m in command_re(name).finditer(source):
+        # A commented-out `\title` is a superseded title, not the paper's, and
+        # `command_text` reads the FIRST span -- so without this the old title
+        # left above the live one names the document everywhere.
+        if is_commented(source, m.start()):
+            continue
         end = skip_group(source, m.end())
         if end > m.end():
             out.append((m.start(), m.end(), end))
@@ -739,7 +771,7 @@ def simplify_preamble(source: str) -> str:
     LaTeX rather than expanding into broken markup, so dropping a definition
     costs at most one unexpanded command and buys back the whole document.
     """
-    m = _BEGIN_DOCUMENT_RE.search(source)
+    m = _live(_BEGIN_DOCUMENT_RE, source)
     if m is None:
         return source
     preamble, body = source[: m.start()], source[m.start():]
