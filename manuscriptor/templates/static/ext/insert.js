@@ -51,6 +51,9 @@
      wrong, which is the whole point of offering it. */
   var pendingBeside = null;
   var host = null;
+  /* What was typed into the query box. Kept because the picker replaces the
+     form, and a pick has to carry the same query back with it. */
+  var lastQuery = '';
 
   function esc(s) {
     return String(s === null || s === undefined ? '' : s)
@@ -156,6 +159,13 @@
       '.msins .w h4 em{font-style:normal;color:var(--muted);font-family:var(--mono);font-size:.66rem;}',
       '.msins pre{margin:0;padding:.55rem .6rem;font-family:var(--mono);font-size:.7rem;',
       'line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-x:auto;}',
+      '.msins .cand{border:1px solid var(--rule);border-radius:6px;padding:.5rem .6rem;',
+      'display:flex;gap:.7rem;align-items:flex-start;}',
+      '.msins .cand div{flex:1;min-width:0;}',
+      '.msins .cand b{display:block;font-size:.8rem;line-height:1.35;}',
+      '.msins .cand span{display:block;font-size:.72rem;color:var(--muted);line-height:1.5;}',
+      '.msins .cand em{font-style:normal;font-family:var(--mono);font-size:.66rem;',
+      'color:var(--muted);word-break:break-all;}',
       '.msins .blocked{border:1px solid var(--missing);border-radius:6px;padding:.55rem .6rem;',
       'font-size:.76rem;line-height:1.5;}',
       '.msins .done{border:1px solid var(--verbatim);border-radius:6px;padding:.55rem .6rem;font-size:.76rem;}'
@@ -316,7 +326,7 @@
     return { block: id, at: String(b.source || '').length, base: String(b.source || ''), known: false };
   }
 
-  function check(kind, ctx) {
+  function check(kind, ctx, picked) {
     var at = target(ctx);
     if (!at) {
       say('Open a paragraph first: an insertion needs somewhere to land.');
@@ -329,7 +339,11 @@
       base: at.base
     };
     if (kind === 'citation') {
-      payload.query = val('query');
+      /* The query box is gone by the time a candidate is picked -- the picker
+         replaced it -- so what was typed is remembered rather than re-read. */
+      if (picked) payload.picked = picked;
+      else lastQuery = val('query');
+      payload.query = lastQuery;
       if (pendingBeside) payload.beside = pendingBeside;
     }
     else {
@@ -349,9 +363,64 @@
     if (el) el.textContent = text || '';
   }
 
+  /* The picker: which of these works did you mean?
+   *
+   * It sits between the query and the plan, and only on the path where the
+   * query was a title and a catalogue search was the source. A typed DOI, a
+   * work already in the bibliography, a Zotero hit and an ISBN are identity
+   * already; asking the author to confirm what he has just identified would be
+   * ceremony, so those never come through here.
+   *
+   * Every row shows authors, year and venue, not the title alone. Four Crossref
+   * hits for one query routinely share a title exactly -- an encyclopedia entry
+   * and the book it summarizes did -- and a list of titles is a coin toss with
+   * extra steps.
+   *
+   * A pick posts back the DOI and nothing else. The server looks it up again
+   * for itself, so the page never supplies metadata that could reach the
+   * bibliography: the same rule as the plan, which does not travel either. */
+  function picker(out, kind, ctx) {
+    var plan = out.plan || {};
+    var cands = plan.candidates || [];
+    body().innerHTML = '<p class="note">' + esc(plan.summary) + '</p>' +
+      cands.map(function (cand, i) {
+        return '<div class="cand"><button class="btn" data-pick="' + i + '">Cite this</button>' +
+          '<div><b>' + esc(cand.title) + '</b>' +
+          '<span>' + esc((cand.authors || []).join('; ')) + ' &middot; ' + esc(cand.year) +
+          ' &middot; ' + esc(cand.venue) + (cand.type ? ' &middot; ' + esc(cand.type) : '') +
+          '</span><em>' + esc(cand.doi) + '</em></div></div>';
+      }).join('');
+    foot().innerHTML = '<button class="btn" data-role="none">None of these</button>' +
+      '<button class="btn" data-role="back">Back</button>' +
+      '<button class="btn" data-role="cancel">Cancel</button>' +
+      '<span class="note" data-role="say"></span>';
+    foot().querySelector('[data-role="cancel"]').onclick = close;
+    foot().querySelector('[data-role="back"]').onclick = function () { form(kind, ctx, lastQuery); };
+    /* NOT A DEAD END, AND NOT A WRITE. Rejecting every candidate writes
+       nothing at all and returns to the query with the two roads that actually
+       work, because a catalogue that offered three wrong works will offer
+       three more for the same words retyped. */
+    foot().querySelector('[data-role="none"]').onclick = function () {
+      form(kind, ctx, lastQuery);
+      say('Nothing was written. The catalogues index books, chapters and grey literature '
+        + 'poorly, so this is as often a gap in them as in what you typed. Add the work to '
+        + 'Zotero and cite it from there, or give an ISBN or a DOI and it will be taken as '
+        + 'identity.');
+    };
+    Array.prototype.forEach.call(body().querySelectorAll('[data-pick]'), function (btn) {
+      btn.onclick = function () {
+        var cand = cands[Number(btn.getAttribute('data-pick'))];
+        if (!cand) return;
+        say('checking ' + cand.doi + '…');
+        check(kind, ctx, cand.doi);
+      };
+    });
+  }
+
   function render(out, kind, ctx) {
     if (!host) return;
     var plan = out.plan || {};
+    if ((plan.candidates || []).length) { picker(out, kind, ctx); return; }
     var html = '';
 
     if (plan.summary) html += '<p class="note">' + esc(plan.summary) + '</p>';
@@ -404,7 +473,7 @@
       '<button class="btn" data-role="cancel">Cancel</button>' +
       '<span class="note" data-role="say"></span>';
     foot().querySelector('[data-role="cancel"]').onclick = close;
-    foot().querySelector('[data-role="back"]').onclick = function () { form(kind, ctx, ''); };
+    foot().querySelector('[data-role="back"]').onclick = function () { form(kind, ctx, lastQuery); };
     var go = foot().querySelector('[data-role="write"]');
     if (go) go.onclick = function () {
       go.disabled = true;

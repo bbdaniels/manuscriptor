@@ -198,10 +198,12 @@ def agreeing_net():
     )
 
 
-def cite_plan(repo, *, net=None, library=None, caret=None, base=None, query="provider behaviour"):
+def cite_plan(repo, *, net=None, library=None, caret=None, base=None,
+              query="provider behaviour", picked=None):
     b = para(repo)
     return ins.plan_citation(
         query=query,
+        picked=picked,
         block=b,
         caret=len(b.source_text) - 1 if caret is None else caret,
         base=base,
@@ -279,14 +281,14 @@ def test_a_candidate_without_a_doi_is_blocked_and_says_so(repo):
 
 def test_crossref_not_holding_the_doi_is_blocked(repo):
     net = FakeNet(crossref={}, openalex={PAPER["doi"]: dict(PAPER)}, search=[dict(PAPER)])
-    plan = cite_plan(repo, net=net)
+    plan = cite_plan(repo, net=net, picked=PAPER["doi"])
     assert not plan.ok
     assert plan.failed_check == "crossref"
 
 
 def test_openalex_not_holding_the_doi_is_blocked(repo):
     net = FakeNet(crossref={PAPER["doi"]: dict(PAPER)}, openalex={}, search=[dict(PAPER)])
-    plan = cite_plan(repo, net=net)
+    plan = cite_plan(repo, net=net, picked=PAPER["doi"])
     assert not plan.ok
     assert plan.failed_check == "openalex"
 
@@ -295,26 +297,33 @@ def test_crossref_and_openalex_disagreeing_is_blocked(repo):
     other = dict(PAPER, title="An entirely different paper about something else")
     net = FakeNet(crossref={PAPER["doi"]: dict(PAPER)},
                   openalex={PAPER["doi"]: other}, search=[dict(PAPER)])
-    plan = cite_plan(repo, net=net)
+    plan = cite_plan(repo, net=net, picked=PAPER["doi"])
     assert not plan.ok
     assert plan.failed_check == "agreement"
     assert plan.writes == ()
 
 
-def test_a_candidate_that_has_nothing_to_do_with_the_query_is_blocked(repo):
+def test_a_candidate_that_has_nothing_to_do_with_the_query_is_never_written(repo):
     """Found by running the real thing: Crossref answers EVERY query with
     something. A nonsense search returned a real, resolvable, agreed-upon DOI
     for a book chapter about colonial legacies, and every identity check passed
     on it. Identity is not relevance, and inserting a plausible wrong citation
-    is worse than inserting none."""
+    is worse than inserting none.
+
+    This used to be caught by a relevance THRESHOLD, which the author replaced
+    with the picker on 2026-08-03: the threshold could be maxed out by a short
+    title, and was, by a three-page encyclopedia entry that scored 1.000. So the
+    irrelevant work is now offered rather than scored -- and it is still not
+    written, which is what this test has always been about.
+    """
     other = dict(PAPER, title="Colonial legacies and the administration of empire",
                  authors=["Someone"], year=2021)
     net = FakeNet(crossref={PAPER["doi"]: other}, openalex={PAPER["doi"]: other},
                   search=[other])
     plan = cite_plan(repo, net=net, query="statin prescribing after enrolment in Estonia")
     assert not plan.ok
-    assert plan.failed_check == "match"
     assert plan.writes == ()
+    assert [c["title"] for c in plan.candidates] == [other["title"]]
 
 
 def test_a_doi_typed_by_hand_is_not_asked_to_match_anything(repo):
@@ -324,13 +333,21 @@ def test_a_doi_typed_by_hand_is_not_asked_to_match_anything(repo):
     assert plan.ok, plan.blocked
 
 
-def test_an_author_and_year_query_matches(repo):
+def test_an_author_and_year_query_is_offered_and_then_matches(repo):
+    """`Nishtar 2019 provider behaviour` used to clear the threshold on its own.
+    It now reaches the same plan by way of a pick, which is one click and no
+    chance of the near miss the threshold could not tell apart."""
     plan = cite_plan(repo, query="Nishtar 2019 provider behaviour")
-    assert plan.ok, plan.blocked
+    assert [c["doi"] for c in plan.candidates] == [PAPER["doi"]]
+    picked = cite_plan(repo, query="Nishtar 2019 provider behaviour", picked=PAPER["doi"])
+    assert picked.ok, picked.blocked
 
 
 def test_every_check_is_reported_not_just_the_failing_one(repo):
-    plan = cite_plan(repo, net=FakeNet(search=[{"title": "No identifier here"}]))
+    """The search hit used to be a DOI-less one, which now stops at the doi row
+    before the others have anything to run against. A picked work that Crossref
+    does not hold exercises the same principle and reaches further."""
+    plan = cite_plan(repo, net=FakeNet(search=[dict(PAPER)]), picked=PAPER["doi"])
     names = [c.name for c in plan.checks]
     assert names[:5] == ["doi", "crossref", "openalex", "agreement", "match"]
     assert "zotero" in names
@@ -342,7 +359,7 @@ def test_every_check_is_reported_not_just_the_failing_one(repo):
 def test_a_paper_already_in_zotero_is_not_added_again(repo):
     lib = FakeLibrary(items=[{"key": "ABC", "doi": PAPER["doi"],
                               "title": PAPER["title"], "has_fulltext": True}])
-    plan = cite_plan(repo, library=lib)
+    plan = cite_plan(repo, library=lib, picked=PAPER["doi"])
     assert plan.ok, plan.blocked
     ins.apply(plan, root=repo / "latex", library=lib)
     assert lib.added == []
@@ -350,7 +367,7 @@ def test_a_paper_already_in_zotero_is_not_added_again(repo):
 
 def test_a_new_paper_lands_in_zotero_the_bib_and_the_paragraph(repo):
     lib = FakeLibrary()
-    plan = cite_plan(repo, library=lib)
+    plan = cite_plan(repo, library=lib, picked=PAPER["doi"])
     assert plan.ok, plan.blocked
     result = ins.apply(plan, root=repo / "latex", library=lib)
     assert result.ok, result.error
@@ -367,7 +384,7 @@ def test_a_new_paper_lands_in_zotero_the_bib_and_the_paragraph(repo):
 def test_the_citation_lands_at_the_caret_not_at_the_end(repo):
     b = para(repo)
     at = b.source_text.index(" in the treated")
-    plan = cite_plan(repo, caret=at)
+    plan = cite_plan(repo, caret=at, picked=PAPER["doi"])
     assert plan.ok, plan.blocked
     ins.apply(plan, root=repo / "latex", library=FakeLibrary())
     main = (repo / "latex" / "main.tex").read_text(encoding="utf-8")
@@ -382,7 +399,7 @@ def test_a_key_already_in_the_bib_is_not_duplicated(repo):
         BIB + "@article{%s,\n  doi = {%s},\n}\n" % (key, PAPER["doi"]), encoding="utf-8"
     )
     before = bib_path.read_text(encoding="utf-8")
-    plan = cite_plan(repo)
+    plan = cite_plan(repo, picked=PAPER["doi"])
     assert plan.ok, plan.blocked
     assert not any(w.kind == "append" and w.path == bib_path for w in plan.writes)
     ins.apply(plan, root=repo / "latex", library=FakeLibrary())
@@ -393,7 +410,7 @@ def test_a_zotero_import_that_fails_blocks_and_writes_nothing(repo):
     lib = FakeLibrary(fail_add=True)
     bib_before = (repo / "latex" / "references.bib").read_text(encoding="utf-8")
     main_before = (repo / "latex" / "main.tex").read_text(encoding="utf-8")
-    plan = cite_plan(repo, library=lib)
+    plan = cite_plan(repo, library=lib, picked=PAPER["doi"])
     result = ins.apply(plan, root=repo / "latex", library=lib)
     assert not result.ok
     assert "zotero" in result.error.lower()
@@ -406,7 +423,7 @@ def test_a_zotero_import_that_fails_blocks_and_writes_nothing(repo):
 
 def test_a_stale_block_rolls_back_the_bib_and_the_zotero_record(repo):
     lib = FakeLibrary()
-    plan = cite_plan(repo, library=lib)
+    plan = cite_plan(repo, library=lib, picked=PAPER["doi"])
     bib_before = (repo / "latex" / "references.bib").read_text(encoding="utf-8")
 
     # Somebody else rewrote the paragraph between the preview and the write.
@@ -433,7 +450,7 @@ def test_the_manuscript_is_never_touched_when_an_earlier_step_fails(repo):
     """
     main = repo / "latex" / "main.tex"
     bib = repo / "latex" / "references.bib"
-    plan = cite_plan(repo, library=FakeLibrary())
+    plan = cite_plan(repo, library=FakeLibrary(), picked=PAPER["doi"])
     assert [w.kind for w in plan.writes] == ["append", "splice"]
 
     before = main.stat().st_mtime_ns
@@ -610,7 +627,7 @@ def test_an_exhibit_mints_a_new_block_after_the_paragraph(repo):
 
 
 def test_every_write_previews_the_exact_text_it_will_add(repo):
-    plan = cite_plan(repo)
+    plan = cite_plan(repo, picked=PAPER["doi"])
     assert plan.writes
     for w in plan.writes:
         assert w.preview.strip(), w.label
@@ -679,7 +696,8 @@ def test_plan_then_apply_over_the_route_writes_the_files(repo):
     lib = FakeLibrary()
     planned = ins.handle(
         {"stage": "plan", "kind": "citation", "block": para(repo).id,
-         "query": "provider behaviour", "caret": 5, "base": para(repo).source_text},
+         "query": "provider behaviour", "caret": 5, "base": para(repo).source_text,
+         "picked": PAPER["doi"]},
         root=repo / "latex", build=a_build(repo), read_only=False,
         bib_path=repo / "latex" / "references.bib", net=agreeing_net(), library=lib,
     )
@@ -1017,7 +1035,7 @@ def test_a_citation_is_never_appended_to_a_generated_bib(repo):
 
 
 def test_a_hand_maintained_bib_still_accepts_a_citation(repo):
-    plan = cite_plan(repo)
+    plan = cite_plan(repo, picked=PAPER["doi"])
     assert plan.ok, plan.blocked
     assert any(w.kind == "append" for w in plan.writes)
 
@@ -1381,3 +1399,236 @@ def test_a_techreport_takes_an_institution():
     })
     assert entry.lstrip().startswith("@techreport{")
     assert "institution = {World Bank}" in entry
+
+
+# ================================================== the picker, for a new source
+#
+# Crossref answers every query with SOMETHING, and taking its first DOI-carrying
+# hit is winner-take-all on a ranking nobody sees. One query for Rogers'
+# *Diffusion of Innovations* produced three different wrong works in a week: a
+# Bloomsbury chapter, a three-page encyclopedia entry by a different author that
+# scored 1.000 because its whole title WAS the query, and a 1993 Springer
+# chapter. The scoring is not the fix -- a score that can be gamed by a short
+# title will always have another such title behind it. So the author picks, and
+# a wrong record cannot land silently.
+#
+# The picker is ONLY for the genuinely-new-source path. A typed DOI, a library
+# hit and an ISBN are identity already, and asking him to confirm what he just
+# identified would be ceremony.
+
+ENCYCLOPEDIA = {
+    "doi": "10.4337/enc.2020.03",
+    "title": "Diffusion of innovations",
+    "year": 2020,
+    "authors": ["Lee, Jung Woo"],
+    "journal": "Encyclopedia of Sport Management",
+    "publisher": "Edward Elgar",
+    "type": "book-chapter",
+}
+
+BLOOMSBURY = {
+    "doi": "10.5040/9781350045.ch-004",
+    "title": "Diffusion of innovations in the creative industries",
+    "year": 2016,
+    "authors": ["Kim, Somebody"],
+    "publisher": "Bloomsbury",
+    "type": "book-chapter",
+}
+
+
+def five_hits():
+    """What Crossref hands back for one title query: five plausible works."""
+    return FakeNet(
+        crossref={c["doi"]: dict(c) for c in (ENCYCLOPEDIA, BLOOMSBURY, WRONG, PAPER)},
+        openalex={c["doi"]: dict(c) for c in (ENCYCLOPEDIA, BLOOMSBURY, WRONG, PAPER)},
+        search=[dict(ENCYCLOPEDIA), dict(BLOOMSBURY), dict(WRONG), dict(PAPER),
+                {"title": "No identifier at all", "year": 1999}],
+    )
+
+
+def test_a_new_source_offers_candidates_rather_than_picking_one(repo):
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations")
+    assert len(plan.candidates) == 3, [c.get("title") for c in plan.candidates]
+    assert not plan.ok, "a plan awaiting a pick may never be applicable"
+    assert plan.writes == ()
+
+
+def test_a_candidate_carries_what_it_takes_to_tell_them_apart(repo):
+    """Four Crossref hits for one query differ by author, year and venue and not
+    by title. A picker showing titles alone is a coin toss with extra steps."""
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations")
+    for cand in plan.candidates:
+        for field in ("doi", "title", "authors", "year", "venue"):
+            assert cand.get(field), f"{field} missing from {cand}"
+
+
+def test_a_candidate_with_no_doi_is_not_offered(repo):
+    """It cannot be identity, so offering it is offering a dead end."""
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations")
+    assert all(c["doi"] for c in plan.candidates)
+    assert "No identifier at all" not in [c["title"] for c in plan.candidates]
+
+
+def test_one_candidate_is_still_offered_rather_than_accepted(repo):
+    """The silent-wrong-record failure exactly: the encyclopedia entry was the
+    ONLY hit that scored, and accepting a sole candidate is how it landed."""
+    net = FakeNet(crossref={ENCYCLOPEDIA["doi"]: dict(ENCYCLOPEDIA)},
+                  openalex={ENCYCLOPEDIA["doi"]: dict(ENCYCLOPEDIA)},
+                  search=[dict(ENCYCLOPEDIA)])
+    plan = cite_plan(repo, net=net, query="diffusion of innovations")
+    assert len(plan.candidates) == 1
+    assert not plan.ok
+    assert plan.writes == ()
+
+
+def test_the_picked_work_is_the_one_cited_and_not_the_first_hit(repo):
+    """The whole point. The encyclopedia entry ranks first and is wrong."""
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations",
+                     picked=PAPER["doi"])
+    assert plan.ok, plan.blocked
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert PAPER["doi"] in entry
+    assert ENCYCLOPEDIA["doi"] not in entry
+    assert "Persistence of provider behaviour" in entry
+
+
+def test_a_pick_is_identity_the_way_a_typed_doi_is(repo):
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations",
+                     picked=PAPER["doi"])
+    match = [c for c in plan.checks if c.name == "match"][0]
+    assert match.ok
+    assert "chose" in match.detail.lower()
+
+
+def test_a_pick_still_faces_every_other_check(repo):
+    """Identity is what he supplied. Whether the catalogues corroborate it is
+    still theirs to answer, and a pick may not wave that through."""
+    net = FakeNet(crossref={PAPER["doi"]: dict(PAPER)}, openalex={},
+                  search=[dict(PAPER)])
+    plan = cite_plan(repo, net=net, query="provider behaviour", picked=PAPER["doi"])
+    assert not plan.ok
+    assert plan.failed_check == "openalex"
+
+
+def test_nothing_can_be_written_while_a_pick_is_outstanding(repo):
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations")
+    result = ins.apply(plan, root=repo / "latex", library=FakeLibrary())
+    assert not result.ok
+    assert (repo / "latex" / "main.tex").read_text(encoding="utf-8") == BODY
+
+
+def test_no_candidates_is_a_refusal_and_not_an_empty_picker(repo):
+    plan = cite_plan(repo, net=FakeNet(search=[]), query="a book nobody indexed")
+    assert plan.candidates == ()
+    assert not plan.ok
+    assert plan.failed_check == "doi"
+    detail = [c for c in plan.checks if c.name == "doi"][0].detail
+    assert "zotero" in detail.lower()
+    assert "isbn" in detail.lower()
+
+
+def test_a_generated_bib_is_refused_before_any_picker(repo):
+    """The refusal is first and blocks everything. Choosing between three works
+    for a file that cannot be appended to is three decisions about nothing."""
+    (repo / "latex" / "references.bib").write_text(GENERATED_BIB, encoding="utf-8")
+    plan = cite_plan(repo, net=five_hits(), query="diffusion of innovations")
+    assert plan.candidates == ()
+    assert plan.failed_check == "bibliography"
+    assert "make-bib.py" in plan.blocked
+
+
+def test_a_typed_doi_raises_no_picker(repo):
+    plan = cite_plan(repo, net=agreeing_net(), query=PAPER["doi"])
+    assert plan.candidates == ()
+    assert plan.ok, plan.blocked
+
+
+def test_a_library_hit_raises_no_picker(repo):
+    plan = cite_plan(repo, net=rogers_net(), library=rogers_library(),
+                     query="Diffusion of Innovations, 5th Edition")
+    assert plan.candidates == ()
+    assert plan.ok, plan.blocked
+
+
+def test_an_isbn_raises_no_picker(repo):
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(), query=ROGERS_ISBN)
+    assert plan.candidates == ()
+    assert plan.ok, plan.blocked
+
+
+def test_the_candidates_are_ranked_but_never_chosen(repo):
+    """`_relevance` still ranks -- the top of a bad list should be the least bad
+    thing in it. It no longer DECIDES, which is the change."""
+    plan = cite_plan(repo, net=five_hits(), query="persistence of provider behaviour")
+    assert plan.candidates[0]["doi"] == PAPER["doi"]
+    assert not plan.ok
+
+
+def test_the_picker_travels_as_a_doi_and_not_as_metadata(repo):
+    """A pick posted back as a record would be the page supplying the
+    manuscript's bibliography, which is the door this module has none of. A DOI
+    is an identifier: the server looks it up again itself."""
+    out = ins.handle(
+        {"stage": "plan", "kind": "citation", "block": para(repo).id,
+         "query": "diffusion of innovations", "caret": 5,
+         "base": para(repo).source_text, "picked": PAPER["doi"]},
+        root=repo / "latex", build=a_build(repo), read_only=False,
+        bib_path=repo / "latex" / "references.bib", net=five_hits(),
+        library=FakeLibrary(),
+    )
+    assert out["ok"], out
+    assert PAPER["doi"] in "".join(w["preview"] for w in out["plan"]["writes"])
+
+
+def test_the_route_hands_back_candidates_and_no_token(repo):
+    out = ins.handle(
+        {"stage": "plan", "kind": "citation", "block": para(repo).id,
+         "query": "diffusion of innovations", "caret": 5,
+         "base": para(repo).source_text},
+        root=repo / "latex", build=a_build(repo), read_only=False,
+        bib_path=repo / "latex" / "references.bib", net=five_hits(),
+        library=FakeLibrary(),
+    )
+    assert not out["ok"]
+    assert out["token"] is None
+    assert len(out["plan"]["candidates"]) == 3
+    assert out["plan"]["candidates"][0]["title"]
+
+
+def test_a_read_only_session_is_never_offered_a_picker(repo):
+    out = ins.handle(
+        {"stage": "plan", "kind": "citation", "block": para(repo).id,
+         "query": "diffusion of innovations"},
+        root=repo / "latex", build=a_build(repo), read_only=True,
+    )
+    assert not out["ok"]
+    assert "read-only" in out["error"]
+
+
+# ------------------------------------------------------------ the picker's page
+
+
+def test_the_client_shows_every_field_that_tells_two_candidates_apart():
+    """A picker that shows titles alone is a coin toss with extra steps: the
+    encyclopedia entry and the book share a title exactly."""
+    js = EXT_JS.read_text(encoding="utf-8")
+    assert "plan.candidates" in js
+    for field in ("cand.title", "cand.authors", "cand.year", "cand.venue", "cand.doi"):
+        assert field in js, field
+
+
+def test_the_client_posts_back_only_the_picked_doi():
+    """The same rule as the plan: an identifier may travel, a record may not."""
+    js = EXT_JS.read_text(encoding="utf-8")
+    assert "payload.picked = picked" in js
+    assert "check(kind, ctx, cand.doi)" in js
+    assert "payload.candidate" not in js
+    assert "JSON.stringify(cand" not in js
+
+
+def test_the_client_offers_none_of_these_and_writes_nothing_for_it():
+    js = EXT_JS.read_text(encoding="utf-8")
+    assert "None of these" in js
+    none_of_them = js.split("""[data-role="none"]').onclick""")[1].split("};")[0]
+    assert "post(" not in none_of_them, "rejecting every candidate must reach no route"
+    assert "Zotero" in none_of_them and "ISBN" in none_of_them

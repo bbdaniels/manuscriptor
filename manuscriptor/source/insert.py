@@ -120,10 +120,21 @@ class Plan:
     cite_key: str = ""
     library_add: str | None = None      # a DOI to import, or None
     rerun: str = ""                     # what the author must run afterwards
+    # WORKS THE CATALOGUES OFFERED, none of them chosen. A plan carrying these
+    # is a question rather than an answer, and `ok` says so below.
+    candidates: tuple[dict, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return self.blocked is None and all(c.ok for c in self.checks if c.blocking)
+        """Applicable. A plan awaiting a pick is not, whatever its checks say.
+
+        `candidates` is tested here rather than by the caller because `ok` is
+        what gates `stash`, `apply` and the write button alike. A picker plan
+        has no checks yet, so without this clause it would be vacuously true --
+        an applicable plan with no writes and no identity behind it.
+        """
+        return (self.blocked is None and not self.candidates
+                and all(c.ok for c in self.checks if c.blocking))
 
     @property
     def failed_check(self) -> str | None:
@@ -142,6 +153,7 @@ class Plan:
             "cite_key": self.cite_key,
             "rerun": self.rerun,
             "library_add": self.library_add,
+            "candidates": [dict(c) for c in self.candidates],
             "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail,
                         "blocking": c.blocking, "state": c.state} for c in self.checks],
             "writes": [{"path": w.rel(root), "kind": w.kind, "label": w.label,
@@ -230,12 +242,16 @@ def plan_citation(
     key: str | None = None,
     beside: str | None = None,
     produced: dict | None = None,
+    picked: str | None = None,
 ) -> Plan:
     """Search the library first, then Crossref and OpenAlex, then gate.
 
     The author's standing rule is that every citation carries a canonical DOI on
     which Crossref and OpenAlex agree, and has a Zotero record. A key failing any
     of those is not inserted and the page is told which one failed.
+
+    `picked` is a DOI the author chose from the candidates a previous call
+    offered. See the picker below for why it is a DOI and not a record.
     """
     root = Path(root).resolve()
     net = net or HttpCatalogue()
@@ -279,19 +295,52 @@ def plan_citation(
         plan.summary = f"{meta.get('title') or cite_key} — {cite_key}, already in your bibliography."
         return plan
 
-    doi, seed, held_lib, ident = _candidate_doi(query, net, library)
-    from_library = held_lib is not None
-    from_isbn = bool(ident and ident.get("status") == "found")
-
-    checks: list[Check] = []
-
     # NOTHING MAY BE APPENDED TO A GENERATED BIBLIOGRAPHY, and the author is
     # told so before any of the identity work, because no answer to it can end
     # in a write to that file. covet-india's `sample.bib` is exported from
     # Zotero; an entry appended here dies at the next `make bib` while the
     # `\citep{...}` in main.tex survives, which is a broken build the author did
     # not cause and cannot see coming.
+    #
+    # It is COMPUTED before the lookup and the picker both, for the same reason
+    # it is reported first: choosing between three works for a file that cannot
+    # be appended to is three decisions about nothing.
     refusal = _generated_bib(bib_path, root, produced)
+
+    if picked:
+        # A PICK IS AN IDENTIFIER, NOT A RECORD, and it re-enters here exactly
+        # where a typed DOI does. The page sends back the DOI of the candidate
+        # the author chose and nothing else, so the metadata that reaches the
+        # bibliography is what this process looks up for itself -- the same
+        # discipline as the plan, which never travels either.
+        doi, seed, held_lib, ident, candidates = _norm_doi(picked), None, None, None, None
+    else:
+        doi, seed, held_lib, ident, candidates = _candidate_doi(query, net, library)
+
+    if candidates is not None:
+        # THE SEARCH PATH, AND THE ONE PLACE A PICKER BELONGS. Nothing here is
+        # identity yet: a title query resolved to whatever a live ranking put
+        # first, and that ranking produced three different wrong works for one
+        # query in a week -- a Bloomsbury chapter, a three-page encyclopedia
+        # entry by another author whose whole title WAS the query, and a 1993
+        # Springer chapter. Tightening the score was the alternative and was
+        # rejected: a score a short title can max out will always have another
+        # short title behind it. So the author chooses, and a wrong record
+        # cannot land silently.
+        if refusal:
+            return _blocked_by(Check("bibliography", False, refusal))
+        if not candidates:
+            return _blocked_by(Check("doi", False, _nothing_found(query)))
+        return Plan(
+            kind="citation", candidates=candidates,
+            summary=(f"{len(candidates)} work{'' if len(candidates) == 1 else 's'} in the "
+                     f"catalogues could be what you asked for. Nothing is looked up further, "
+                     f"and nothing is written, until you say which."))
+
+    from_library = held_lib is not None
+    from_isbn = bool(ident and ident.get("status") == "found")
+
+    checks: list[Check] = []
     if refusal:
         checks.append(Check("bibliography", False, refusal))
 
@@ -383,12 +432,22 @@ def plan_citation(
     # citation is worse than no citation, because nobody re-reads the ones that
     # look fine.
     typed_doi = bool(_DOI_RE.search(query or ""))
-    score = _relevance(query, meta)
-    matched = typed_doi or from_library or from_isbn or score >= 0.5
+    # A PICK IS THE SAME EPISTEMIC ACT AS TYPING THE DOI, and that is the whole
+    # of the reuse. He did not type this identifier, but he was shown the
+    # candidate's title, authors, year and venue and said that one -- a positive
+    # identification, which is what the typed-DOI carve-out has always stood
+    # for. What it is NOT is a corroboration: the catalogue rows below still
+    # run, and a pick that Crossref and OpenAlex disagree about still blocks.
+    #
+    # `_relevance` no longer decides anything here. It ranks the candidates the
+    # picker shows, and a threshold on it was what let a wrong record land.
+    matched = typed_doi or bool(picked) or from_library or from_isbn
     checks.append(Check(
         "match", matched,
         "you gave the DOI, so there is nothing to match against" if typed_doi else
-        ("you gave the ISBN, so there is nothing to match against" if from_isbn else
+        ("you chose this work from the candidates, so there is nothing to match against"
+         if picked else
+         "you gave the ISBN, so there is nothing to match against" if from_isbn else
          "it is the record already in your library" if from_library else
          (f"{meta.get('title') or 'the candidate'} answers what you asked for" if matched else
           f"the closest thing either catalogue offers is {meta.get('title')!r}, which is not what "
@@ -664,6 +723,13 @@ def apply(plan: Plan, *, root: Path, library=None) -> Result:
     """
     root = Path(root).resolve()
     if not plan.ok:
+        # A plan awaiting a pick has no failed check to name, and saying "the
+        # None check failed" about a question nobody has answered yet is the
+        # unhelpful shape of an honest refusal.
+        if plan.candidates and not plan.blocked:
+            return Result(False, error=(
+                "no work has been chosen yet, so there is nothing to write. "
+                "Pick one of the candidates, or none of them."))
         return Result(False, error=plan.blocked or f"the {plan.failed_check} check failed")
 
     created_key = None
@@ -851,6 +917,11 @@ def handle(data: dict, *, root: Path, build, read_only: bool,
                 # `beside` names a citation the author clicked, which is a target
                 # that needs no caret and cannot be measured wrong.
                 beside=str(data.get("beside") or "") or None,
+                # The DOI of a candidate offered by a previous call to this same
+                # stage. An identifier is all that comes back: were the record
+                # itself posted, the page would be supplying the manuscript's
+                # bibliography, which is the door this module has none of.
+                picked=str(data.get("picked") or "") or None,
                 bib_path=bib_path, net=net, library=library, produced=produced, **common)
         elif kind == "value":
             plan = plan_value(
@@ -909,6 +980,27 @@ def _stale(block, base) -> str | None:
                 "would land at an offset in text the file does not hold. Let the edit save "
                 "first -- it saves on a pause -- and insert again.")
     return None
+
+
+def _blocked_by(check: Check) -> Plan:
+    """A refusal that is the whole plan: one row, and the reason in `blocked`."""
+    return Plan(kind="citation", checks=(check,), blocked=_first_failure([check]))
+
+
+def _nothing_found(query: str) -> str:
+    """Nothing to pick from, said as a refusal rather than an empty picker.
+
+    Zero candidates is not a failure of the query so much as of the catalogues,
+    which are DOI-shaped and index books, chapters, grey literature and
+    non-English work poorly. So it names the two roads that do work rather than
+    inviting the author to retype the same words.
+    """
+    return (
+        f"nothing with a DOI matched {query!r} in your library, Crossref or OpenAlex. "
+        "The catalogues index books, chapters and grey literature poorly, so this is "
+        "as often a gap in them as in what you typed. Add the work to Zotero and cite "
+        "it from there, or give an ISBN or a DOI and it will be taken as identity."
+    )
 
 
 def _first_failure(checks) -> str:
@@ -1529,8 +1621,17 @@ def _norm_title(t) -> str:
 
 
 def _candidate_doi(query: str, net, library):
-    """The DOI to gate, the metadata that came with it, the library record, and
-    what Zotero's translators said about an identifier if one was typed.
+    """The DOI to gate, the metadata that came with it, the library record, what
+    Zotero's translators said about an identifier if one was typed, and the
+    candidates a catalogue search offered.
+
+    THE LAST ELEMENT IS A THREE-WAY ANSWER, not a list that may be empty.
+    `None` means the work was identified without a search and there is nothing
+    to choose between; a tuple means the search path was taken and NOTHING was
+    identified, so its contents -- however many, including none -- are for the
+    author to pick from. Folding the two together would make an unidentified
+    work with one hit indistinguishable from an identified one, which is the
+    silent-wrong-record failure this whole path exists to refuse.
 
     THE ORDER, and each step is where it is for a reason:
 
@@ -1559,7 +1660,7 @@ def _candidate_doi(query: str, net, library):
     q = (query or "").strip()
     m = _DOI_RE.search(q)
     if m:
-        return _norm_doi(m.group(0)), None, None, None
+        return _norm_doi(m.group(0)), None, None, None, None
 
     isbn = _isbn_in(q)
     held = None
@@ -1570,7 +1671,7 @@ def _candidate_doi(query: str, net, library):
             held = library.find(title=q)
     if held:
         doi = _norm_doi(held["doi"]) if held.get("doi") else None
-        return doi, _from_library(held), held, None
+        return doi, _from_library(held), held, None, None
 
     if isbn and hasattr(library, "lookup_isbn"):
         # A bare title cannot come here: Zotero's `extractIdentifiers` reads
@@ -1596,15 +1697,45 @@ def _candidate_doi(query: str, net, library):
             mine = library.find(title=record.get("title") or "")
             if mine and _same_isbn(mine.get("isbn"), isbn):
                 doi = _norm_doi(mine["doi"]) if mine.get("doi") else None
-                return doi, _from_library(mine), mine, None
-            return None, record, None, look
-        return None, None, None, look
+                return doi, _from_library(mine), mine, None, None
+            return None, record, None, look, None
+        return None, None, None, look, None
 
-    hits = list(net.crossref_search(q) or [])
-    for cand in hits:
-        if cand.get("doi"):
-            return _norm_doi(cand["doi"]), cand, None, None
-    return None, (hits or [None])[0], None, None
+    return None, None, None, None, _candidates(q, net)
+
+
+# How many works the author is asked to choose between. Three is a decision; a
+# page of five is a search results screen, which is the thing he already has and
+# does not want.
+_OFFERED = 3
+
+
+def _candidates(query: str, net) -> tuple[dict, ...]:
+    """The works a catalogue search offers, ranked, none of them chosen.
+
+    A hit with no DOI is dropped rather than shown: it cannot be identity, so
+    offering it is offering a dead end. What survives keeps its authors, year
+    and venue, because four hits for one query routinely differ by nothing else
+    -- the encyclopedia entry and the book share a title exactly -- and a picker
+    showing titles alone is a coin toss with extra steps.
+    """
+    hits = [h for h in (net.crossref_search(query) or []) if h and h.get("doi")]
+    ranked = sorted(hits, key=lambda h: -_relevance(query, h))
+    return tuple(_candidate(h) for h in ranked[:_OFFERED])
+
+
+def _candidate(hit: dict) -> dict:
+    """One row of the picker. Venue is whatever this kind of work is published
+    in: a journal for an article, a publisher for a book or a chapter."""
+    return {
+        "doi": _norm_doi(hit.get("doi")),
+        "title": str(hit.get("title") or "").strip() or "(untitled)",
+        "authors": [str(a) for a in (hit.get("authors") or [])] or ["(no author listed)"],
+        "year": hit.get("year") or "n.d.",
+        "venue": hit.get("journal") or hit.get("booktitle") or hit.get("publisher")
+        or "(no venue listed)",
+        "type": hit.get("type") or "",
+    }
 
 
 # An ISBN-10 or ISBN-13, hyphenated or not, standing on its own in the query.
