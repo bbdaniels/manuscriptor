@@ -26,6 +26,15 @@ that ships "Table SS19" when the document has already redefined `\\thetable`.
 all resolved, but the style does not declare `doi`, so BibTeX dropped them
 without a word.
 
+`bib-doi-links` — the mirror of that one. A style that KEEPS the doi and then
+breaks it. `naturemag-doi.bst` wrapped the bare `10.1016/S0140-6736(71)92410-X`
+in `\\url{}`, and the class loads hyperref with `colorlinks`, so all 53 entries
+became live `/URI` annotations with no scheme -- which a PDF viewer resolves
+against the directory the PDF is sitting in. Clicking one asked for
+`file:///Users/bbdaniels/Desktop/10.1016/...`. One check catches a style that
+throws the DOI away; this one catches a style that keeps it and breaks it, and
+neither is visible in a compile that exits 0.
+
 **Check zero, and it is the reason the module is shaped this way.** The sharpest
 finding in that memo is that three agents verifying the submission "finished
 their work and went idle without reporting anything", and the silence was read
@@ -52,7 +61,7 @@ from manuscriptor.server import gitcmd, paths
 from manuscriptor.source import flatten as flat_mod
 from manuscriptor.source import root as root_mod
 
-CHECKS = ("fragments", "exhibit-numbers", "bib-fields")
+CHECKS = ("fragments", "exhibit-numbers", "bib-fields", "bib-doi-links")
 
 # The scripts sweep belongs to `exhibit-numbers` but not to any one document:
 # an R file that prints "Table~S19" is a defect of the project, not of a `.tex`.
@@ -94,6 +103,22 @@ BIB_BUILTIN = {"crossref", "key"}
 # check does.
 BIB_LOCATORS = ("doi", "url", "eprint", "pmid", "pmcid", "arxiv",
                 "isbn", "issn", "note", "howpublished")
+
+# A BibTeX style builds a field's output by pushing a literal and concatenating
+# the field onto it: `"\bibdoi{" doi * "}" *`. The wrapper is in that literal,
+# and it is the whole question -- `\bibdoi{` is fine and `\doiprefix\url{` is
+# the defect, in styles that are otherwise the same file.
+DOI_EMIT_RE = re.compile(r'"([^"]*)"\s*doi\s+\*')
+WRAPPER_RE = re.compile(r"\\([A-Za-z@]+)\s*\{\s*$")
+DEFINES_RE = (r"\\(?:provide|renew|new)command\s*\*?\s*\{?\s*\\%s\s*\}?"
+              r"\s*(?:\[[^\]]*\]\s*)*\{", r"\\def\s*\\%s\s*(?:#\d)*\s*\{")
+LOADS_RE = re.compile(r"\\(?:usepackage|RequirePackage)\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}")
+
+# Commands that turn their argument into a link when hyperref is loaded. `\url`
+# is the one that did the damage; the others break identically.
+LINKING = {"url", "href", "nolinkurl", "path", "hyperref"}
+
+DOI_FIX = r"\providecommand{\bibdoi}[1]{\url{https://doi.org/#1}}"
 
 
 # --------------------------------------------------------------- the findings
@@ -243,6 +268,7 @@ def run(manuscript_dir: Path | str, main: str | None = None) -> list[Result]:
         results.append(check_fragments(d, doc, flat))
         results.append(check_exhibit_numbers(d, doc, flat))
         results.append(check_bib_fields(d, doc, flat))
+        results.append(check_bib_doi_links(d, doc, flat))
     results.append(check_scripts(d))
     return results
 
@@ -412,38 +438,10 @@ def check_bib_fields(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
     never hands it over. `apalike.bst` swallowed 39 DOIs that way, in a
     bibliography where every one of them was present and correct.
     """
-    text = _uncommented(flat.text)
-    styles = [s.strip() for m in STYLE_RE.finditer(text) for s in [m.group(1)] if s.strip()]
-    bibs = [b.strip() for m in BIBFILES_RE.finditer(text)
-            for b in m.group(1).split(",") if b.strip()]
-    bibs += [b.strip() for m in ADDRESOURCE_RE.finditer(text)
-             for b in m.group(1).split(",") if b.strip()]
-
-    via = doc
-    if not styles:
-        # A journal class routinely sets the style for you: estonia-qbs names no
-        # style at all in `main.tex` because `wlscirep.cls` says
-        # `\bibliographystyle{aer}` on its own line 53. Reading only the .tex
-        # tree reported that check as unrunnable, which is honest but wrong --
-        # the class is an input of the document like any other.
-        styles, via = _style_from_class(d, text)
-
-    if not styles and not bibs:
-        return Result("bib-fields", doc, "n/a",
-                      "the document declares no bibliography")
-    if not styles and (ADDRESOURCE_RE.search(text) or BIBLATEX_RE.search(text)):
-        return Result("bib-fields", doc, "n/a",
-                      "biblatex: field support is the .bbx's, not a .bst's")
-    if not styles:
-        return Result("bib-fields", doc, "skipped",
-                      "a bibliography is declared but no \\bibliographystyle is, "
-                      "here or in the class")
-
-    bst = _find_bst(d, styles[0])
-    if bst is None:
-        return Result("bib-fields", doc, "skipped",
-                      f"{styles[0]}.bst not beside the manuscript and kpsewhich "
-                      "could not find it")
+    style = _style_target(d, doc, "bib-fields", flat)
+    if isinstance(style, Result):
+        return style
+    bst, via, bibs = style.bst, style.via, style.bibs
     try:
         declared = _bst_fields(bst.read_text(encoding="utf-8", errors="replace"))
     except OSError as exc:
@@ -452,22 +450,10 @@ def check_bib_fields(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
         return Result("bib-fields", doc, "skipped",
                       f"{bst.name} has no readable ENTRY declaration")
 
-    present: dict[str, int] = {}
-    entries = 0
-    read: list[str] = []
-    for name in bibs:
-        path = _find_bib(d, name)
-        if path is None:
-            return Result("bib-fields", doc, "skipped",
-                          f"bibliography {name!r} is declared but no such .bib exists")
-        try:
-            n, fields = _bib_fields(path.read_text(encoding="utf-8", errors="replace"))
-        except OSError as exc:
-            return Result("bib-fields", doc, "skipped", f"could not read {path}: {exc}")
-        entries += n
-        for k, v in fields.items():
-            present[k] = present.get(k, 0) + v
-        read.append(path.name)
+    counted = _bib_counts(d, doc, "bib-fields", bibs)
+    if isinstance(counted, Result):
+        return counted
+    entries, present, read = counted
 
     dropped = [f for f in sorted(present)
                if f not in declared and f not in BIB_BUILTIN]
@@ -492,8 +478,92 @@ def check_bib_fields(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
     return _result("bib-fields", doc, findings, detail, entries)
 
 
-def _style_from_class(d: Path, text: str) -> tuple[list[str], str]:
-    """The style a document class or a local package sets on the author's behalf.
+@dataclass(frozen=True)
+class _Style:
+    """The `.bst` a document's bibliography actually goes through."""
+
+    bst: Path
+    via: str            # the file that named the style: the doc, or its class
+    name: str
+    bibs: tuple[str, ...]
+
+
+def _style_target(d: Path, doc: str, check: str,
+                  flat: flat_mod.FlatSource) -> _Style | Result:
+    """One resolver, for every check that needs to know the style.
+
+    `bib-fields` and `bib-doi-links` ask the same question of the same files and
+    must never answer it twice: the class path in particular is subtle and was
+    written for a real manuscript that names no style in its `.tex` at all, so a
+    second copy would sooner or later stop following it.
+
+    Returns the `Result` the caller should hand back when the question cannot be
+    reached -- `n/a` when there is positively nothing to check, `skipped` when
+    it could not be determined, and never `ok` for either.
+    """
+    text = _uncommented(flat.text)
+    styles = [s.strip() for m in STYLE_RE.finditer(text) for s in [m.group(1)] if s.strip()]
+    bibs = [b.strip() for m in BIBFILES_RE.finditer(text)
+            for b in m.group(1).split(",") if b.strip()]
+    bibs += [b.strip() for m in ADDRESOURCE_RE.finditer(text)
+             for b in m.group(1).split(",") if b.strip()]
+
+    via = doc
+    if not styles:
+        # A journal class routinely sets the style for you: estonia-qbs names no
+        # style at all in `main.tex` because `wlscirep.cls` says
+        # `\bibliographystyle{aer}` on its own line 53. Reading only the .tex
+        # tree reported that check as unrunnable, which is honest but wrong --
+        # the class is an input of the document like any other.
+        styles, via = _style_from_class(d, text)
+
+    if not bibs and not (ADDRESOURCE_RE.search(text) or BIBLATEX_RE.search(text)):
+        # Whether a style was found is beside the point: a document that never
+        # says `\bibliography` prints none, so there is nothing for a `.bst` to
+        # get right or wrong. covet-india's `supplement.tex` cites nothing, and
+        # because `wlscirep.cls` names the style anyway both checks reported on
+        # its non-existent bibliography -- one of them filing a finding about
+        # links that do not exist.
+        return Result(check, doc, "n/a", "the document declares no bibliography")
+    if not styles and (ADDRESOURCE_RE.search(text) or BIBLATEX_RE.search(text)):
+        return Result(check, doc, "n/a",
+                      "biblatex: this is the .bbx's business, not a .bst's")
+    if not styles:
+        return Result(check, doc, "skipped",
+                      "a bibliography is declared but no \\bibliographystyle is, "
+                      "here or in the class")
+
+    bst = _find_bst(d, styles[0])
+    if bst is None:
+        return Result(check, doc, "skipped",
+                      f"{styles[0]}.bst not beside the manuscript and kpsewhich "
+                      "could not find it")
+    return _Style(bst, via, styles[0], tuple(bibs))
+
+
+def _bib_counts(d: Path, doc: str, check: str, bibs: tuple[str, ...] | list[str]):
+    """How many entries the declared `.bib` files hold, and what fields they carry."""
+    present: dict[str, int] = {}
+    entries = 0
+    read: list[str] = []
+    for name in bibs:
+        path = _find_bib(d, name)
+        if path is None:
+            return Result(check, doc, "skipped",
+                          f"bibliography {name!r} is declared but no such .bib exists")
+        try:
+            n, fields = _bib_fields(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            return Result(check, doc, "skipped", f"could not read {path}: {exc}")
+        entries += n
+        for k, v in fields.items():
+            present[k] = present.get(k, 0) + v
+        read.append(path.name)
+    return entries, present, read
+
+
+def _local_inputs(d: Path, text: str) -> list[tuple[str, str]]:
+    """Every class and package beside the manuscript, as (name, body).
 
     Only files sitting beside the manuscript are read. A class installed in the
     TeX tree is not opened: guessing at a distribution's copy is how a check
@@ -502,19 +572,27 @@ def _style_from_class(d: Path, text: str) -> tuple[list[str], str]:
     names = [n.strip() for m in CLASS_RE.finditer(text) for n in [m.group(1)]]
     names += [n.strip() for m in PACKAGE_RE.finditer(text)
               for n in m.group(1).split(",")]
+    out: list[tuple[str, str]] = []
     for name in names:
         for suffix in (".cls", ".sty"):
             p = d / (name + suffix)
             if not p.is_file():
                 continue
             try:
-                body = _uncommented(p.read_text(encoding="utf-8", errors="replace"))
+                out.append((p.name, _uncommented(
+                    p.read_text(encoding="utf-8", errors="replace"))))
             except OSError:
                 continue
-            found = [m.group(1).strip() for m in STYLE_RE.finditer(body)
-                     if m.group(1).strip()]
-            if found:
-                return found, p.name
+    return out
+
+
+def _style_from_class(d: Path, text: str) -> tuple[list[str], str]:
+    """The style a document class or a local package sets on the author's behalf."""
+    for name, body in _local_inputs(d, text):
+        found = [m.group(1).strip() for m in STYLE_RE.finditer(body)
+                 if m.group(1).strip()]
+        if found:
+            return found, name
     return [], ""
 
 
@@ -603,6 +681,249 @@ def _bib_fields(text: str) -> tuple[int, dict[str, int]]:
         for f in seen:
             counts[f] = counts.get(f, 0) + 1
     return entries, counts
+
+
+# ------------------------------------------------------- check: bib doi links
+
+
+def check_bib_doi_links(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
+    """The DOI reaches a link, and the link carries a resolver.
+
+    `\\url{10.1016/S0140-6736(71)92410-X}` under hyperref is a `/URI` annotation
+    with no scheme, and a PDF viewer resolves that relative to the PDF's own
+    directory. Fifty-three of them shipped that way, blue and clickable and all
+    pointing at files that do not exist. Nothing in a compile says so.
+
+    The two styles that get it right both emit a semantic macro and define it
+    WITH the prefix, so the emission alone cannot be judged: `\\doi{}` is
+    correct in dsp-bias only because `main.tex:11` defines it as
+    `\\url{https://doi.org/#1}`, and the identical `.bst` in a document
+    defining it as `\\url{#1}` is the same defect under a nicer name. So the
+    macro is followed to its definition -- into the `.bbl` preamble the style
+    writes, into the document, into a class beside it -- and when no definition
+    can be found this reports `skipped`, because "I could not tell" said as
+    "ok" is the failure this module exists to prevent.
+    """
+    check = "bib-doi-links"
+    style = _style_target(d, doc, check, flat)
+    if isinstance(style, Result):
+        return style
+    bst, via = style.bst, style.via
+    try:
+        bst_text = bst.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return Result(check, doc, "skipped", f"could not read {bst}: {exc}")
+
+    declared = _bst_fields(bst_text)
+    if not declared:
+        return Result(check, doc, "skipped",
+                      f"{bst.name} has no readable ENTRY declaration")
+    if "doi" not in declared:
+        # estonia-ecm's `aea.bst`. BibTeX never hands the style a doi it did not
+        # ask for, so there is positively nothing here that could be linked.
+        return Result(check, doc, "n/a",
+                      f"{bst.name} does not declare the doi field, so it emits none")
+
+    sites = _doi_sites(bst_text)
+    if not sites:
+        # Declared but not emitted by any idiom this can read. That is not the
+        # same as not emitted, and answering n/a here would hand the clean
+        # verdict out for free to exactly the styles this cannot parse.
+        return Result(check, doc, "skipped",
+                      f"{bst.name} declares doi but emits it by no recognisable "
+                      "idiom; check by hand what wraps it")
+
+    counted = _bib_counts(d, doc, check, style.bibs)
+    if isinstance(counted, Result):
+        return counted
+    entries, present, read = counted
+    with_doi = present.get("doi", 0)
+    if style.bibs and not with_doi:
+        return Result(check, doc, "n/a",
+                      f"no entry in {', '.join(read) or 'the bibliography'} carries "
+                      f"a doi, of {entries}")
+
+    hyper = _loads_hyperref(d, flat)
+    verdicts = [(lit, line, _doi_verdict(lit, _defining(d, doc, flat, bst, bst_text)))
+                for lit, line in sites]
+    unknown = [(lit, v) for lit, _, v in verdicts if v[0] == "unknown"]
+    broken = [(lit, line, v) for lit, line, v in verdicts if v[0] == "broken"]
+
+    detail = f"{bst.name} links the doi as {sites[0][0]!r}"
+    if via != doc:
+        detail += f"; style named by {via}"
+    if with_doi:
+        detail += f"; {with_doi} of {entries} entries carry one"
+    if not hyper:
+        detail += "; no hyperref"
+
+    names = ", ".join(sorted({f"\\{v[1]}" for _, v in unknown}))
+    if unknown and not broken:
+        return Result(check, doc, "skipped",
+                      f"{bst.name} wraps the doi in {names}, and no definition of "
+                      f"it is beside the manuscript -- in {bst.name}, in {doc}, or "
+                      "in a class here. It may carry the resolver prefix or may "
+                      "not, and this cannot tell which")
+    if not broken:
+        ok_why = verdicts[0][2][1]
+        return Result(check, doc, "ok", f"{detail}; {ok_why}", entries)
+
+    # A definite defect outranks an undetermined one HERE, which is the reverse
+    # of the module's usual order, and only because nothing is hidden by it: a
+    # site this could not judge is named in the detail and in the finding, so
+    # the reader is told about it either way. Reporting `skipped` instead would
+    # produce no `Finding` at all, and a real broken bibliography would go
+    # unfiled because some other emission site was unreadable.
+    #
+    # One finding per document however many sites: `drain.comment` dedupes on
+    # (quote, author, doc), so two findings anchored on the same bibliography
+    # would silently swallow each other.
+    lit, line, (_, why) = broken[0]
+    more = (f" ({len(broken)} emission sites)" if len(broken) > 1 else "")
+    if unknown:
+        more += (f", and {len(unknown)} more wrapping it in {names}, which "
+                 "nothing beside the manuscript defines -- check those by hand")
+        detail += f"; {len(unknown)} site(s) could not be judged"
+    count = f"{with_doi} of {entries} entries" if entries else "every entry"
+    if hyper:
+        harm = (f"hyperref is loaded, so the doi link on {count} has no scheme, "
+                "and a PDF viewer resolves that against the directory the PDF "
+                "is sitting in (file:///.../10.1016/...) rather than against "
+                "doi.org")
+    else:
+        harm = (f"no hyperref is loaded here, so nothing is clickable on {count} "
+                "and the doi merely prints without a resolver -- but "
+                "the style is still "
+                "wrong, and loading hyperref, which a journal class routinely "
+                "does for you, arms every one of these silently")
+    body = (f"{bst.name} emits {lit!r}{more}: {why}, with no http scheme. "
+            f"{harm}. Emit a semantic macro and define it with the prefix, as "
+            f"aer-doi.bst does: {DOI_FIX}")
+    finding = Finding(check, doc, _rel(d, bst), line,
+                      _bib_quote(flat), body)
+    return Result(check, doc, "findings", detail, entries, (finding,))
+
+
+def _doi_sites(bst_text: str) -> list[tuple[str, int]]:
+    """Every distinct literal the style concatenates the doi onto, and its line."""
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    body = _uncommented(bst_text)
+    for m in DOI_EMIT_RE.finditer(body):
+        lit = m.group(1)
+        if lit in seen:
+            continue
+        seen.add(lit)
+        out.append((lit, body.count("\n", 0, m.start()) + 1))
+    return out
+
+
+def _doi_verdict(literal: str, sources: list[tuple[str, str]]) -> tuple[str, str]:
+    """Whether this emission reaches a link that a reader can follow.
+
+    ("ok" | "broken" | "unknown", the reason, or the macro name when unknown).
+    """
+    if "http" in literal.lower():
+        return ("ok", "the resolver prefix is in the style's own literal")
+    m = WRAPPER_RE.search(literal)
+    if not m:
+        return ("ok", "the doi is typeset as text and never linked")
+    name = m.group(1)
+    if name in LINKING:
+        return ("broken", f"\\{name} is applied to the bare doi")
+    for where, text in sources:
+        body = _macro_body(text, name)
+        if body is None:
+            continue
+        if "http" in body.lower():
+            return ("ok", f"\\{name} is defined in {where} with the resolver prefix")
+        if re.search(r"\\(?:%s)\b" % "|".join(sorted(LINKING)), body):
+            return ("broken",
+                    f"\\{name} is defined in {where} as {body!r}, which links the "
+                    "bare doi")
+        return ("ok", f"\\{name} is defined in {where} and links nothing")
+    return ("unknown", name)
+
+
+def _defining(d: Path, doc: str, flat: flat_mod.FlatSource, bst: Path,
+              bst_text: str) -> list[tuple[str, str]]:
+    """Where a definition of the style's DOI macro could be, nearest first.
+
+    The `.bst` first, because a style that writes its own `\\providecommand`
+    into the `.bbl` preamble carries its definition wherever it is used; then
+    the document, then a class or package beside it.
+    """
+    text = _uncommented(flat.text)
+    return ([(bst.name, bst_text), (doc, text)] + _local_inputs(d, text))
+
+
+def _macro_body(text: str, name: str) -> str | None:
+    """The replacement text of `\\name`, from whichever way it was defined."""
+    for pat in DEFINES_RE:
+        m = re.search(pat % re.escape(name), text)
+        if m:
+            return _braced(text, m.end() - 1)
+    return None
+
+
+def _braced(text: str, at: int) -> str | None:
+    """What sits inside the brace group opening at `at`."""
+    if at >= len(text) or text[at] != "{":
+        return None
+    depth, i = 0, at
+    while i < len(text):
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[at + 1:i]
+        i += 1
+    return None
+
+
+def _loads_hyperref(d: Path, flat: flat_mod.FlatSource) -> bool:
+    """Whether anything readable from here turns `\\url` into a link.
+
+    Best effort and deliberately local: covet-india loads it in `wlscirep.cls`
+    line 46 and never mentions it in `main.tex`, so the document alone is not
+    the question. A class in the TeX tree is not opened, so a false negative is
+    possible -- which is why the no-hyperref case is still reported and not
+    waved through.
+    """
+    text = _uncommented(flat.text)
+    for _, body in [("", text)] + _local_inputs(d, text):
+        for m in LOADS_RE.finditer(body):
+            if any(p.strip() == "hyperref" for p in m.group(1).split(",")):
+                return True
+    return False
+
+
+def _bib_quote(flat: flat_mod.FlatSource) -> str:
+    """Something from the document for the finding to anchor on.
+
+    The bytes to fix are in the `.bst`, which is not the document and not
+    addressable in it, so the comment anchors where the reader SEES the defect:
+    the bibliography. Non-empty by construction, because `drain.comment` dedupes
+    only on a non-empty quote and `bib-fields` findings, which carry none, get
+    filed again on every run.
+
+    The directive itself, NOT `_quote`'s stripped prose. `match_by_quote`
+    compares against block source, and the bibliography is a command rather
+    than a sentence, so stripping it leaves the bare `.bib` name -- "sample" for
+    covet-india, a word that manuscript uses on nearly every page. A quote that
+    matches nothing lands the comment unanchored; a quote that matches the wrong
+    paragraph lands it wrong.
+    """
+    for pattern in (BIBFILES_RE, ADDRESOURCE_RE, STYLE_RE):
+        m = pattern.search(flat.text)
+        if m:
+            return " ".join(m.group(0).split())
+    return "bibliography"
 
 
 # ------------------------------------------------------------------ shared bits

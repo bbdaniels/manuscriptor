@@ -20,12 +20,20 @@ from pathlib import Path
 
 from manuscriptor.server import preflight
 
-CLEAN_BST = """
+CLEAN_BST = r"""
 ENTRY
   { address author booktitle doi journal note number pages publisher
     title volume year url }
   {}
   { label }
+FUNCTION {format.doi}
+{ doi empty$
+    { "" }
+    { "\bibdoi{" doi * "}" * }
+  if$
+}
+FUNCTION {begin.bib}
+{ "\providecommand{\bibdoi}[1]{\url{https://doi.org/#1}}" write$ newline$ }
 FUNCTION {output} { }
 READ
 """
@@ -59,6 +67,7 @@ BIB = """
 """
 
 MAIN = r"""\documentclass{article}
+\usepackage{hyperref}
 \begin{document}
 We measured \input{frag_n} simulated conversations across the sample,
 which is reported in Table~\ref{tab:main} of this paper.
@@ -466,6 +475,250 @@ def test_the_fields_bibtex_supplies_itself_are_not_reported(tmp_path):
         "@article{one, author = {A}, crossref = {two}, key = {k}}\n",
         encoding="utf-8")
     assert by_check(preflight.run(d), "bib-fields").status == "ok"
+
+
+# ------------------------------------------------------- check: bib doi links
+
+# The defect, exactly as it stood in covet-india's `naturemag-doi.bst`: `\url`
+# applied to a BARE doi. With hyperref loaded that is a `/URI` annotation with
+# no scheme, and a PDF viewer resolves it against the PDF's own directory. All
+# 53 links in the compiled bibliography went to `file:///Users/.../10.1016/...`.
+BARE_URL = r'\doiprefix\url{'
+SEMANTIC = r'\bibdoi{'
+
+
+def doi_bst(literal: str = SEMANTIC, *, bbl_def: str | None = None,
+            entry_doi: bool = True) -> str:
+    """A `.bst` that emits its doi through `literal`, and maybe defines it."""
+    fields = "author doi journal title year" if entry_doi else "author journal title year"
+    body = "ENTRY\n  { %s }\n  {}\n  { label }\n" % fields
+    body += ('FUNCTION {format.doi}\n{ doi empty$\n    { "" }\n'
+             '    { "%s" doi * "}" * }\n  if$\n}\n' % literal)
+    if bbl_def is not None:
+        body += 'FUNCTION {begin.bib}\n{ "%s" write$ newline$ }\n' % bbl_def
+    return body + "READ\n"
+
+
+def doi_result(d, doc: str = "main.tex"):
+    return by_check(preflight.run(d), "bib-doi-links", doc)
+
+
+def test_a_style_that_carries_the_resolver_prefix_is_clean(tmp_path):
+    """`aer-doi.bst` emits `\\bibdoi{}` and writes the `\\providecommand` that
+    defines it with `https://doi.org/`. That is the shape that works."""
+    d = manuscript(tmp_path)
+    r = doi_result(d)
+    assert r.status == "ok", r.detail
+    assert "bibdoi" in r.detail
+
+
+def test_url_around_a_bare_doi_is_caught(tmp_path):
+    """The covet-india defect. Nothing about it fails a compile: the links are
+    there, they are blue, they are clickable, and every one of them resolves
+    against the directory the PDF happens to be sitting in."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL))
+    r = doi_result(d)
+
+    assert r.status == "findings"
+    body = bodies(r)
+    assert "\\url" in body and "scheme" in body
+    assert "https://doi.org/" in body          # it says what to do instead
+    assert "2 of 2" in body                    # and how many are affected
+
+
+def test_a_macro_defined_in_the_document_preamble_with_the_prefix_is_clean(tmp_path):
+    """dsp-bias's shape: `apalike-doi.bst` emits `\\doi{}`, and `main.tex:11`
+    defines it. The style alone cannot be judged -- the definition decides."""
+    d = manuscript(tmp_path, bst=doi_bst(r"\doi{"), main=MAIN.replace(
+        r"\usepackage{hyperref}",
+        "\\usepackage{hyperref}\n"
+        r"\providecommand{\doi}[1]{\url{https://doi.org/#1}}"))
+    r = doi_result(d)
+    assert r.status == "ok", r.detail
+    assert "main.tex" in r.detail
+
+
+def test_the_same_macro_defined_without_the_prefix_is_caught(tmp_path):
+    """`\\doi{}` is only correct BECAUSE something defines it with the prefix.
+    Defined as `\\url{#1}` it is the identical defect wearing a nicer name."""
+    d = manuscript(tmp_path, bst=doi_bst(r"\doi{"), main=MAIN.replace(
+        r"\usepackage{hyperref}",
+        "\\usepackage{hyperref}\n" + r"\providecommand{\doi}[1]{\url{#1}}"))
+    r = doi_result(d)
+
+    assert r.status == "findings"
+    assert "main.tex" in bodies(r) and "\\doi" in bodies(r)
+
+
+def test_a_definition_written_into_the_bbl_preamble_is_found(tmp_path):
+    """The definition need not be in the document at all: `aer-doi.bst:1218`
+    and the fixed `naturemag-doi.bst` both `write$` it into the `.bbl`."""
+    d = manuscript(tmp_path, bst=doi_bst(
+        r"\bibdoi{",
+        bbl_def=r"\providecommand{\bibdoi}[1]{\url{https://doi.org/#1}}"))
+    r = doi_result(d)
+    assert r.status == "ok" and "style.bst" in r.detail
+
+
+def test_a_macro_nothing_defines_cannot_be_judged_and_is_skipped(tmp_path):
+    """Honest, and not a pass. A `\\doi{}` whose definition lives in a class in
+    the TeX tree may be right or may be `\\url{#1}`; this cannot tell, and
+    saying "ok" here is how a check passes for the wrong reason."""
+    d = manuscript(tmp_path, bst=doi_bst(r"\doi{"))
+    planned, results = preflight.plan(d), preflight.run(d)
+    r = by_check(results, "bib-doi-links")
+
+    assert r.status == "skipped" and r.ran is False
+    assert "\\doi" in r.detail and "no definition" in r.detail
+    assert preflight.exit_code(planned, results) == 2
+
+
+def test_a_style_that_never_declares_a_doi_has_nothing_to_link(tmp_path):
+    """estonia-ecm: `aea.bst` does not name `doi` in its ENTRY block, so BibTeX
+    never hands it one. A positive determination, not an inability to tell."""
+    d = manuscript(tmp_path, bst=doi_bst(entry_doi=False))
+    r = doi_result(d)
+    assert r.status == "n/a" and "does not declare" in r.detail
+
+
+def test_a_style_that_declares_the_doi_but_emits_it_unrecognisably_is_skipped(tmp_path):
+    """The guard against the n/a above being handed out for free. `doi` is
+    declared, so it may well reach the page by an idiom this does not parse."""
+    d = manuscript(tmp_path, bst=CLEAN_BST.replace(
+        r'{ "\bibdoi{" doi * "}" * }', "{ doi bibinfo.check }"))
+    r = doi_result(d)
+    assert r.status == "skipped" and "recognis" in r.detail.lower()
+
+
+def test_a_bibliography_carrying_no_doi_at_all_is_not_applicable(tmp_path):
+    """No entry carries one, so the broken style prints nothing to break."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL))
+    (d / "refs.bib").write_text(
+        "@article{one, author = {A}, title = {T}, year = {2020}}\n",
+        encoding="utf-8")
+    r = doi_result(d)
+    assert r.status == "n/a" and "no entry" in r.detail
+
+
+def test_without_hyperref_the_same_style_is_a_lesser_finding(tmp_path):
+    """dsp-bias and qutub-india load no hyperref, so `\\url` typesets and links
+    nothing: no annotation exists to be broken, and reporting 53 broken links
+    would be a lie. The style is still wrong, and adding hyperref -- which a
+    journal class does for you -- arms every one of them silently, so this is
+    reported and not waved through."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL),
+                   main=MAIN.replace("\\usepackage{hyperref}\n", ""))
+    r = doi_result(d)
+
+    assert r.status == "findings"
+    assert "no hyperref" in bodies(r)
+    assert "nothing is clickable" in bodies(r)
+
+    (tmp_path / "b").mkdir()
+    armed = doi_result(manuscript(tmp_path / "b", bst=doi_bst(BARE_URL)))
+    assert "no hyperref" not in bodies(armed)
+
+
+def test_hyperref_loaded_by_the_class_arms_the_defect_too(tmp_path):
+    """covet-india's shape end to end: `wlscirep.cls` names the style on line 53
+    AND loads hyperref on line 46, and `main.tex` mentions neither."""
+    d = manuscript(tmp_path, main=MAIN.replace(
+        "\\bibliographystyle{style}\n", "").replace(
+        "\\usepackage{hyperref}\n", "").replace(
+        "\\documentclass{article}", "\\documentclass{journal}"))
+    (d / "journal.cls").write_text(
+        "\\ProvidesClass{journal}\n"
+        "\\RequirePackage[colorlinks=true, allcolors=blue]{hyperref}\n"
+        "\\bibliographystyle{style}\n", encoding="utf-8")
+    (d / "style.bst").write_text(doi_bst(BARE_URL), encoding="utf-8")
+
+    r = doi_result(d)
+    assert r.status == "findings"
+    assert "no hyperref" not in bodies(r)
+    assert "journal.cls" in r.detail
+
+
+def test_the_finding_names_the_bst_as_the_file_and_the_document_as_the_doc(tmp_path):
+    """The two are not the same question. The comment is filed against the
+    document a reader is looking at; the bytes to fix are in the `.bst`."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL))
+    f = doi_result(d).findings[0]
+
+    assert f.doc == "main.tex"
+    assert f.file == "style.bst"
+    assert f.line == 8                      # the emission, not the top of the file
+
+
+def test_the_finding_carries_a_quote_so_it_cannot_be_filed_twice(tmp_path):
+    """`drain.comment` dedupes only on a NON-EMPTY quote. `bib-fields` findings
+    carry none and would be filed again on every run; this one anchors on the
+    bibliography, which is the part of the page the broken links are on."""
+    from manuscriptor.server import chat, drain
+
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL))
+    finding = doi_result(d).findings[0]
+    assert finding.quote
+
+    first = drain.comment(d, author="preflight", **finding.as_comment())
+    again = drain.comment(d, author="preflight", **finding.as_comment())
+    assert first is not None and again is None
+    assert len(list(chat.read_chats(drain.paths.comments(d)))) == 1
+
+
+def test_one_finding_per_document_however_many_emission_sites(tmp_path):
+    """Two findings sharing a quote would dedupe each other away in `drain`."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL) + doi_bst(r"\href{"))
+    r = doi_result(d)
+
+    assert r.status == "findings" and len(r.findings) == 1
+    assert "2 emission sites" in bodies(r)
+
+
+def test_a_site_that_cannot_be_judged_does_not_bury_one_that_can(tmp_path):
+    """The reverse of this module's usual order, and deliberately so. Reporting
+    `skipped` for the unreadable site would produce no finding at all, and the
+    definitely-broken bibliography beside it would go unfiled. Nothing is lost:
+    the undetermined site is named in both the detail and the finding."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL) + doi_bst(r"\doi{"))
+    r = doi_result(d)
+
+    assert r.status == "findings"
+    assert "could not be judged" in r.detail
+    assert "\\doi" in bodies(r) and "by hand" in bodies(r)
+
+
+def test_a_document_whose_class_names_a_style_but_prints_no_bibliography(tmp_path):
+    """covet-india's `supplement.tex` cites nothing and prints nothing, but
+    `wlscirep.cls` still names the style, so the resolver found a `.bst` and
+    both bibliography checks reported on a bibliography that does not exist --
+    one of them filing a finding about 0 broken links. A style a document never
+    invokes is nothing to check, which is n/a and not ok."""
+    d = manuscript(tmp_path, main=MAIN.replace("\\bibliography{refs}\n", ""))
+    results = preflight.run(d)
+
+    for check in ("bib-doi-links", "bib-fields"):
+        r = by_check(results, check)
+        assert r.status == "n/a", f"{check}: {r.status} {r.detail}"
+        assert "no bibliography" in r.detail
+
+
+def test_the_quote_is_the_directive_itself_not_the_words_around_it(tmp_path):
+    """`match_by_quote` compares against block SOURCE, so the anchor is the
+    `\\bibliography` line. Stripped to prose it was the single word "sample",
+    which is a word this manuscript uses on nearly every page -- a quote that
+    matches nothing lands unanchored, but one that matches the wrong paragraph
+    lands the comment wrong."""
+    d = manuscript(tmp_path, bst=doi_bst(BARE_URL))
+    q = doi_result(d).findings[0].quote
+
+    assert q == r"\bibliography{refs}"
+
+
+def test_the_check_is_planned_for_every_document_and_reports(tmp_path):
+    d = manuscript(tmp_path)
+    planned = preflight.plan(d)
+    assert ("bib-doi-links", "main.tex") in planned
+    assert preflight.audit(planned, preflight.run(d)) == []
 
 
 # ---------------------------------------------- the shape a comment can take
