@@ -333,6 +333,48 @@ final class DocumentWindow: NSObject, WKNavigationDelegate, NSWindowDelegate {
         return String(arr.dropFirst().dropLast())
     }
 
+    /// Where a click is allowed to take this window: nowhere but the manuscript.
+    ///
+    /// This window is the only one the app has, and until now nothing decided
+    /// policy at all. Pandoc emits an anchor for every bibliography DOI, so a
+    /// click on one navigated the manuscript away and the only way back was
+    /// Cmd-R. That was live with no feature added; the evidence panel's links
+    /// would only have made it easier to hit.
+    ///
+    /// - the served `127.0.0.1` origin proceeds: that is the manuscript itself,
+    ///   and everything the page does to itself.
+    /// - `about:` proceeds, because `loadHTMLString` (the status and error
+    ///   pages this class shows) arrives here as one.
+    /// - `http`/`https` anywhere else is cancelled and handed to the default
+    ///   browser, which is where a DOI belongs.
+    /// - everything else is cancelled. `zotero://` included: the app opens
+    ///   Zotero through the server, the way Reveal in Finder works, because a
+    ///   scheme WebKit does not know is dropped in the content process with a
+    ///   flicker and no error.
+    func webView(_ webView: WKWebView,
+                 decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+        let scheme = (url.scheme ?? "").lowercased()
+        if scheme == "about" {
+            decisionHandler(.allow)
+            return
+        }
+        if scheme == "http" || scheme == "https" {
+            if let served = serverURL, url.host == served.host, url.port == served.port {
+                decisionHandler(.allow)
+                return
+            }
+            decisionHandler(.cancel)
+            NSWorkspace.shared.open(url)
+            return
+        }
+        decisionHandler(.cancel)
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         // The status page finishes loading too, and has no viewer to talk to.
         // Firing the jump there consumed it and the page never moved.

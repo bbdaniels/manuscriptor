@@ -160,9 +160,22 @@ paragraph. That constraint is what makes running it live acceptable.
 
 Two menus in the toolbar reach the skills you already use from the terminal.
 
-**Checks…** runs a review: the preflight (consistency-check's seven passes),
-the full manuscript review, the revision audit (across the paper, appendix,
-and response sharing this directory), or the bibliography. Picking one queues
+**Preflight now (no agent)** is the first entry and the only one that needs
+nobody: the built-in checks are code in Manuscriptor itself, so the server
+runs them where the manuscript is and the findings are pinned before the
+click finishes. It reads every document in the directory rather than only the
+one you are looking at -- a supplement built by a different rule is exactly
+where a stale exhibit hides -- and it files four kinds of finding: an `\input`
+that resolves to nothing or contributes nothing, a hand-typed exhibit number
+in prose or in an analysis script, a bibliography style that silently drops a
+field the `.bib` carries, and one that keeps the DOI and links it without a
+resolver. **A check that could not run is filed too, in its own words.** An
+empty margin has to mean "it ran and found nothing", never "it did not run".
+
+The rest of **Checks…** runs a review through a session: the preflight
+(consistency-check's seven passes), the full manuscript review, the revision
+audit (across the paper, appendix, and response sharing this directory), or
+the bibliography. Picking one queues
 a single comment; the session runs the skill and every finding comes back as
 a comment **pinned to the paragraph it concerns**, anchored by the sentence
 the finding quotes, so a preflight reads exactly like an imported referee
@@ -172,7 +185,14 @@ instructions, so an agent cannot end up working its own review. Each finding
 carries its triage: **Ask to fix** files an ordinary comment the queue works
 under the usual one-block rule; **Dismiss** closes it. Re-running a check
 skips findings already open; a dismissed finding that a later run raises
-again is the check telling you it still thinks so.
+again is the check telling you it still thinks so. A finding that concerns no
+paragraph -- a number hand-typed in an R script, say -- waits in the document
+chat rather than being attached to a paragraph it is not about, the same
+answer the tray gives an imported note it cannot place.
+
+The built-in preflight is also `manuscriptor preflight <dir>`, which reports
+and changes nothing, and `manuscriptor preflight <dir> --review`, which files
+what it found exactly as the menu does.
 
 **Produce…** is the generative half: the declaude rewrite (decomposed
 paragraph by paragraph, one block per write as always), drafting a section,

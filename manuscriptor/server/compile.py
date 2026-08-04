@@ -99,13 +99,20 @@ class Result:
     # this is what the author opens. None when the run failed or the copy did.
     delivered: Path | None = None
 
-    def as_frame(self, *, root: Path | None = None) -> dict:
-        """The websocket frame the page reads. Plain JSON, no Paths."""
+    def as_frame(self, *, root: Path | None = None, read_only: bool = False) -> dict:
+        """The websocket frame the page reads. Plain JSON, no Paths.
+
+        `url` is the output made relative to the cache the assets route serves,
+        so it follows the read-only redirect the same way that route does: read
+        against the hidden directory on a read-only serve, a PDF written into
+        the scratch cache is not relative to it and the page is handed no link
+        at all.
+        """
         url = None
         if self.output is not None and root is not None:
             try:
                 url = "/" + str(Path(self.output).resolve().relative_to(
-                    paths.cache(root)))
+                    paths.cache(root, read_only=read_only)))
             except ValueError:
                 url = None
         return {
@@ -130,16 +137,21 @@ class Result:
 # ------------------------------------------------------------- where it writes
 
 
-def out_dir(manuscript_dir) -> Path:
+def out_dir(manuscript_dir, *, read_only: bool = False) -> Path:
     """`<manuscript>/.manuscriptor/cache/compile`, created and out of git.
 
     Under the same hidden directory the render writes into, so one `.gitignore`
     covers both and serving or compiling a paper leaves `git status` alone. The
     PDF does not stay here: `deliver` copies it back beside the `.tex` on a
     successful run, because that one file is what the author actually wanted.
+
+    On a read-only serve it is under the system temp instead, for the same
+    reason the deliver is withheld: `.aux`, `.log`, `.bbl` and `.blg` are still
+    writes, and the hidden directory this would otherwise create is still a
+    directory inside the author's working tree.
     """
-    paths.ensure(manuscript_dir)
-    out = paths.compile_dir(manuscript_dir)
+    paths.ensure(manuscript_dir, read_only=read_only)
+    out = paths.compile_dir(manuscript_dir, read_only=read_only)
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -386,7 +398,8 @@ def _tex_env(manuscript_dir: Path, out: Path) -> dict:
 
 
 def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = None,
-                on_step=None, runner=None, deliver_out: bool = True) -> Result:
+                on_step=None, runner=None, deliver_out: bool = True,
+                read_only: bool = False) -> Result:
     """One pass, a bibtex, then passes until the `.aux` stops changing.
 
     THIS USED TO BE A FIXED THREE, AND THE REASONING FOR IT WAS WRONG. The old
@@ -429,7 +442,7 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
     root = Path(manuscript_dir).resolve()
     run = runner or _default_runner
     main_tex = build_mod.find_main_tex(root, main)
-    out = out_dir(root)
+    out = out_dir(root, read_only=read_only)
     mirror_tex_dirs(root, out)
 
     try:
@@ -564,7 +577,7 @@ def _read(path: Path) -> str:
 
 def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = None,
                  deliver_out: bool = True,
-                 on_step=None, runner=None) -> Result:
+                 on_step=None, runner=None, read_only: bool = False) -> Result:
     """LaTeX to a Word file that opens, by way of the `pandoc-docx` skill.
 
     THE SKILL HAS NO SINGLE ENTRY POINT. It is a recipe plus four bundled
@@ -615,7 +628,7 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
 
     main_tex = build_mod.find_main_tex(root, main)
     bib_path = build_mod.find_bib(root, bib)
-    out = out_dir(root)
+    out = out_dir(root, read_only=read_only)
     docx = out / (main_tex.stem + ".docx")
 
     def record(name, ok, t0, detail=""):
@@ -644,7 +657,7 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
         elif shutil.which("pdflatex") or shutil.which("xelatex"):
             t0 = time.monotonic()
             pre = compile_pdf(root, main=main, on_step=on_step, runner=runner,
-                              deliver_out=False)
+                              deliver_out=False, read_only=read_only)
             steps.extend(pre.steps)
             # A pre-compile that did not converge, or whose printed page totals
             # disagree with the document, leaves an `.aux` whose numbers are the
@@ -775,7 +788,7 @@ def _find_csl(directory: Path) -> Path | None:
 # ------------------------------------------------------------------ revealing
 
 
-def reveal(path, *, root, runner=None) -> Path:
+def reveal(path, *, root, runner=None, read_only: bool = False) -> Path:
     """Show the compiled file in the Finder.
 
     The page asks for this, and the page is not handed an arbitrary path just
@@ -783,7 +796,7 @@ def reveal(path, *, root, runner=None) -> Path:
     inside the build directory, can be revealed.
     """
     target = Path(path).resolve()
-    allowed = out_dir(root)
+    allowed = out_dir(root, read_only=read_only)
     if not _inside(target, allowed):
         raise ValueError(f"{target} is not something a compile produced")
     if not target.exists():
@@ -792,7 +805,7 @@ def reveal(path, *, root, runner=None) -> Path:
     return target
 
 
-def open_file(path, *, root, runner=None) -> Path:
+def open_file(path, *, root, runner=None, read_only: bool = False) -> Path:
     """Hand the compiled file to whatever owns its type, the way a double-click
     in the Finder would.
 
@@ -810,7 +823,7 @@ def open_file(path, *, root, runner=None) -> Path:
     the build directory would refuse the very file it is for.
     """
     target = Path(path).resolve()
-    if not _openable(target, Path(root).resolve()):
+    if not _openable(target, Path(root).resolve(), read_only=read_only):
         raise ValueError(f"{target} is not something a compile produced")
     if not target.exists():
         raise ValueError(f"{target} is not there any more")
@@ -818,8 +831,8 @@ def open_file(path, *, root, runner=None) -> Path:
     return target
 
 
-def _openable(target: Path, root: Path) -> bool:
-    if _inside(target, out_dir(root)):
+def _openable(target: Path, root: Path, *, read_only: bool = False) -> bool:
+    if _inside(target, out_dir(root, read_only=read_only)):
         return True
     return target.parent == root and target.suffix.lower() in (".pdf", ".docx")
 
@@ -857,14 +870,16 @@ def route(session):
 
         if action == "reveal":
             try:
-                shown = reveal(data.get("path", ""), root=session.root)
+                shown = reveal(data.get("path", ""), root=session.root,
+                               read_only=session.read_only)
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
             return web.json_response({"revealed": str(shown)})
 
         if action == "open":
             try:
-                opened = open_file(data.get("path", ""), root=session.root)
+                opened = open_file(data.get("path", ""), root=session.root,
+                                   read_only=session.read_only)
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=400)
             return web.json_response({"opened": str(opened)})
@@ -900,9 +915,10 @@ def route(session):
                 fn = compile_pdf if action == "pdf" else compile_docx
                 result = await asyncio.to_thread(
                     fn, session.root, main=session.doc, bib=session.bib, on_step=on_step,
-                    deliver_out=not session.read_only
+                    deliver_out=not session.read_only, read_only=session.read_only,
                 )
-                await session.broadcast(result.as_frame(root=session.root))
+                await session.broadcast(result.as_frame(root=session.root,
+                                                        read_only=session.read_only))
             except Exception as exc:  # a failed compile must not kill the server
                 await session.broadcast({
                     "type": "compile", "phase": "done", "kind": action, "ok": False,

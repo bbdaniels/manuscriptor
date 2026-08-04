@@ -12,7 +12,7 @@ since HTML has no pages and the number has to come from the .aux.
 """
 from __future__ import annotations
 
-from manuscriptor.render.refs import resolve_source
+from manuscriptor.render.refs import counter_map, resolve_source
 
 LABELS = {"tab:foo": "2", "sec:x": "3", "fig:y": "1", "tab:foo@@page": "14"}
 
@@ -144,3 +144,67 @@ def test_a_refstepcounter_without_a_label_binds_nothing():
     src = "\\refstepcounter{figure}\n\\subsection*{Figure \\thefigure.}"
     out = resolve_source(src, STEP_LABELS)[0]
     assert out == src
+
+
+# ---------------------------------------- the same number, one block at a time
+#
+# `resolve_source` answers for the whole buffer at once, which is all the
+# renderer needs. Naming a block cannot ask that way: the binding lives in the
+# PREVIOUS block, because `\refstepcounter{figure}\label{k}` is its own block
+# and the heading that prints `\thefigure` is the next one. So the number has to
+# be askable at an OFFSET -- and refs.py stays the only thing that answers "what
+# number did TeX give this", rather than a second scanner growing in blocks.py.
+
+DOC = ("\\refstepcounter{figure}\\label{s:fig-a}\n\n"
+       "\\subsection*{Figure \\thefigure. One}\n\n"
+       "\\refstepcounter{figure}\\label{s:fig-b}\n\n"
+       "\\subsection*{Figure \\thefigure. Two}\n")
+
+
+def _heading(n: int) -> tuple[str, int]:
+    """The n-th heading of DOC, and where it starts."""
+    at = -1
+    for _ in range(n):
+        at = DOC.index("\\subsection", at + 1)
+    return DOC[at:DOC.index("}", at) + 1], at
+
+
+def test_a_binding_in_an_earlier_block_reaches_a_later_one():
+    text, at = _heading(1)
+    out = counter_map(DOC, STEP_LABELS).render(text, at)
+    assert out == "\\subsection*{Figure S1. One}"
+
+
+def test_the_state_is_the_one_in_force_where_the_block_starts():
+    """Not the document's first binding, and not its last."""
+    cmap = counter_map(DOC, STEP_LABELS)
+    assert cmap.render(*_heading(2)) == "\\subsection*{Figure S2. Two}"
+    assert cmap.render(*_heading(1)) == "\\subsection*{Figure S1. One}"
+
+
+def test_a_block_carrying_its_own_step_needs_no_help():
+    src = "\\refstepcounter{figure}\\label{s:fig-b}\\subsection*{Figure \\thefigure.}"
+    out = counter_map(src, STEP_LABELS).render(src, 0)
+    assert out == "\\refstepcounter{figure}\\label{s:fig-b}\\subsection*{Figure S2.}"
+
+
+def test_a_float_between_the_binding_and_the_block_ends_it():
+    src = ("\\refstepcounter{figure}\\label{s:fig-a}\n\n"
+           "\\begin{figure}\\caption{A float}\\end{figure}\n\n"
+           "\\subsection*{Figure \\thefigure. After}")
+    at = src.index("\\subsection")
+    assert counter_map(src, STEP_LABELS).render(src[at:], at) == src[at:]
+
+
+def test_without_an_aux_the_macro_is_left_exactly_as_it_was():
+    """A name is not a rendering.
+
+    `resolve_source` prints `??` for a label the .aux does not carry, because
+    the reader has to see that a number failed. A NAME has no such duty and no
+    room to say it: `??` in the outline rail would be a worse answer than the
+    macro's own absence, and every block of a manuscript that has never been
+    compiled would carry one.
+    """
+    text, at = _heading(1)
+    assert counter_map(DOC, {}).render(text, at) == text
+    assert "??" not in counter_map(DOC, {}).render(DOC, 0)

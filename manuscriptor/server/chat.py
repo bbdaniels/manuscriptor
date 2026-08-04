@@ -49,6 +49,17 @@ TERMINAL = {"done", "orphaned"}
 # carry: this renames nobody's past, only what is appended next.
 AUTHOR = "Ben"
 
+# What the author was called BEFORE, and still is in every record written then.
+# `comments.jsonl` is append-only and git-tracked, so those 32 records keep the
+# name they carry forever; they are his messages and the page has to tint them
+# as his. The list lives here for the same reason `AUTHOR` does -- it was
+# spelled a second time in `viewer.js`, where no sweep of `*.py` could see it --
+# and the page is HANDED the names rather than knowing any of them.
+LEGACY_AUTHORS = ("bb",)
+
+# Every name a message of the author's own can be signed with, newest first.
+NAMES = (AUTHOR, *LEGACY_AUTHORS)
+
 
 @dataclass(frozen=True)
 class Chat:
@@ -69,6 +80,12 @@ class Chat:
     doc: str = ""
     # The skill a check request names, and the check a finding came from.
     check: str = ""
+    # What a check calls this finding, so a later run can tell "I found this
+    # again" from "I found something new". Never the quote: the quote says
+    # where a comment ANCHORS, and several findings legitimately share one
+    # while one finding can move between runs. Empty on everything a person
+    # wrote, which has no identity beyond itself.
+    key: str = ""
 
 
 def now() -> str:
@@ -152,6 +169,7 @@ def read_chats(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
             ts=rec.get("ts", ""),
             doc=str(rec.get("doc", "")),
             check=str(rec.get("check", "")),
+            key=str(rec.get("key", "")),
         )
         for cid, rec in base.items()
         if doc is None or rec.get("doc", "") in ("", doc)

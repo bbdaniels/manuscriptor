@@ -13,7 +13,7 @@ from __future__ import annotations
 import difflib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,13 +96,31 @@ def build(
     main: str | None = None,
     bib: str | None = None,
     output_dir: Path | None = None,
+    read_only: bool = False,
 ) -> Build:
     manuscript_dir = Path(manuscript_dir).resolve()
     main_tex = find_main_tex(manuscript_dir, main)
     bib_path = find_bib(manuscript_dir, bib)
-    out = Path(output_dir).resolve() if output_dir else paths.cache(manuscript_dir)
+    # WHERE THIS RENDER LANDS IS A QUESTION FOR `paths`, and a read-only serve
+    # is that question with a different answer: a scratch directory under the
+    # system temp, cleaned at exit. Before the flag reached here, `--read-only`
+    # created `.manuscriptor/` inside the author's working tree and rendered
+    # into it, which is the one thing the mode promises not to do.
+    out = (Path(output_dir).resolve() if output_dir
+           else paths.cache(manuscript_dir, read_only=read_only))
     out.mkdir(parents=True, exist_ok=True)
-    paths.ensure(manuscript_dir)
+    paths.ensure(manuscript_dir, read_only=read_only)
+    # What the EVIDENCE PASS left, which is read and never written here.
+    #
+    # A caller that says where this build lands has said where its records live,
+    # so an explicit `output_dir` is honoured -- pointing the read at
+    # `.manuscriptor/` regardless would make the argument a lie for half of what
+    # the build reads, and reach into a directory the caller may be avoiding on
+    # purpose. The redirect is for the read-only case, which passes no
+    # `output_dir` at all: that render lands in a scratch directory no evidence
+    # pass has ever written into, and reading the verdicts from there would
+    # blank every underline the author has already earned.
+    records = Path(output_dir).resolve() if output_dir else paths.cache(manuscript_dir)
 
     flat = flatten(main_tex)
     produced = producers.scan(manuscript_dir)
@@ -110,6 +128,11 @@ def build(
 
     aux = main_tex.with_suffix(".aux")
     labels = refs.load_labels(aux) if aux.exists() else {}
+    # The names, before anything is drawn. A free-standing exhibit prints its
+    # own number through `\thefigure`, bound by a `\refstepcounter` in the block
+    # ABOVE it, so no block can resolve its own name and every namer read
+    # "Figure ." while the page beside it read "Figure S1.".
+    bl = _named_by_counters(bl, flat.text, labels)
 
     anchored = anchors.inject(flat.text, bl)
     # Before pandoc, not after. Pandoc drops an unresolved reference outright
@@ -138,13 +161,24 @@ def build(
     blob = {
         "title": _title(main_tex, post["html"]),
         "path": str(main_tex),
+        # Whose messages are the author's own, so the page can tint his side of
+        # a chat. It had only the client-local placeholder to go on, which the
+        # server's echo replaces within the second, so the tint was never seen.
+        "author": chat.AUTHOR,
+        # And every name his own messages can be signed with, including the one
+        # the records written before the rename carry. The page compares against
+        # this rather than knowing any of them: a name spelled in `viewer.js` is
+        # a second home for a string `server/chat.py` owns, and it was one.
+        "authors": list(chat.NAMES),
         # The document being served, and the others this directory could
         # serve: every .tex declaring a document class, Overleaf-style. The
         # page's switcher is this list; chats, queue and ticker are scoped to
         # `main` so the appendix's comments never queue against the paper.
         "main": doc,
         "docs": root.candidates(manuscript_dir),
-        "read_only": False,
+        # The build's own report of the mode it ran in, so the page and the
+        # tray agree with the render rather than with a constant.
+        "read_only": read_only,
         "html": post["html"],
         "blocks": {b.id: _block_record(b, post["html"], produced, manuscript_dir, values)
                    for b in bl},
@@ -155,12 +189,12 @@ def build(
         # command (it calls a model, which the server never may); the server
         # only reads the files it wrote into the build directory. No files
         # means every underline stays neutral, claiming nothing.
-        "cites": evidence_cites(out),
+        "cites": evidence_cites(records),
         # How many pairs the last evidence run could not find fulltext for.
         # Non-zero is what makes the page offer the repair, which is the one
         # step allowed to write the author's Zotero library and therefore a
         # deliberate second click, never a side effect of a run.
-        "missing_fulltexts": missing_fulltexts(out),
+        "missing_fulltexts": missing_fulltexts(records),
         # The standing agent state, so a page loading mid-run does not open on
         # "idle" while a session is halfway through the author's third comment.
         "queue": queue_view(log, bl, root=manuscript_dir, doc=doc),
@@ -444,6 +478,24 @@ def evidence_cites(out: Path) -> dict:
             "fulltext": bool(c.get("has_fulltext")),
             "fulltext_chars": int(c.get("fulltext_chars") or 0),
             "fulltext_source": c.get("fulltext_source") or "",
+            # WHAT IT WAS FOUND IN, which is the question the panel exists to
+            # answer and could not: `resolve.py` has written all of this into
+            # citations.json from the beginning and every field was dropped
+            # here, so the page could report a verdict about a paper it could
+            # not name and offered no way to go and look at it. Carried as
+            # empty rather than omitted, so "absent" is a value the panel can
+            # test rather than a key it has to guess the age of the payload by.
+            "authors": [a for a in (c.get("authors") or []) if a],
+            "year": c.get("year") or None,
+            "journal": c.get("journal") or "",
+            "doi": c.get("doi") or "",
+            "zotero_key": c.get("zotero_key") or "",
+            # The one build-time fact that says an Open PDF button would do
+            # nothing: `matched_but_no_attachment` means the library holds the
+            # item with no PDF on it. Path resolution still happens on click --
+            # this decides only whether to OFFER the click, and a button that
+            # cannot work is worse than no button.
+            "fulltext_reason": c.get("fulltext_reason") or "",
         }
     for r in evidence:
         rec = cites.get(r.get("cite_key"))
@@ -900,19 +952,69 @@ _LEVELS = {
 _SECTION_CMD_RE = re.compile(r"\\(part|chapter|section|subsection|subsubsection|paragraph|subparagraph)\*?")
 
 
+def _named_by_counters(bl, flat_text: str, labels: dict) -> tuple:
+    """Give each block the text its NAME should be read off.
+
+    A block cannot answer this for itself. `\\refstepcounter{figure}\\label{k}`
+    is its own block and the `\\subsection*{Figure \\thefigure. ...}` that prints
+    the number is the next one, so the binding is never in the block that needs
+    it -- which is why this is a pass over the document and not a call inside
+    `blocks.label`. The state at an offset comes from `render/refs`, the one
+    module that reads what number TeX gave a label; nothing here counts
+    anything.
+
+    `parent_heading` is carried through the same pass, because a block with no
+    words of its own is named by the heading above it -- covet-india's exhibits
+    are a heading, an `\\includegraphics` and a note, and the image and the note
+    both answer to the heading's number.
+
+    Blocks whose text does not move are returned untouched, so a manuscript
+    using no counters (or one never compiled, which has no numbers to read) is
+    the same tuple of the same objects it was before.
+    """
+    if not labels:
+        return bl
+    cmap = refs.counter_map(flat_text, labels)
+    out = []
+    for b in bl:
+        text = cmap.render(b.source_text, b.flat_start)
+        # AT THE HEADING'S OWN OFFSET, which the block carries for exactly this
+        # reason. At the child's offset a `\refstepcounter` standing between the
+        # heading and the child is already in force, and the child answers to
+        # the NEXT exhibit's number under the previous exhibit's words.
+        head = (cmap.render(b.parent_heading,
+                            b.flat_start if b.parent_start is None else b.parent_start)
+                if b.parent_heading else None)
+        if text == b.source_text and head == b.parent_heading:
+            out.append(b)
+            continue
+        out.append(replace(
+            b,
+            display_text=text if text != b.source_text else None,
+            parent_heading=head,
+        ))
+    return tuple(out)
+
+
 def _outline(bl) -> list[dict]:
     """The rail's nav. Depth comes from the sectioning command, not a guess.
 
     Every entry was previously emitted at level 1, which flattened a paper with
     three levels of heading into an undifferentiated list.
+
+    Read off `display_text` where the build resolved one, or an exhibit that
+    prints its own number reads "Figure ." in the rail: this strips the macro it
+    could not expand, and stripping `\\thefigure` leaves the space where the
+    number was.
     """
     out = []
     for b in bl:
         if b.kind != "heading":
             continue
-        cmd = _SECTION_CMD_RE.search(b.source_text)
+        source = b.display_text or b.source_text
+        cmd = _SECTION_CMD_RE.search(source)
         level = _LEVELS.get(cmd.group(1), 1) if cmd else 1
-        text = re.sub(r"\\[a-zA-Z]+\*?", "", b.source_text)
+        text = re.sub(r"\\[a-zA-Z]+\*?", "", source)
         text = text.replace("{", "").replace("}", "").strip()
         if text:
             out.append({"level": level, "text": re.sub(r"\s+", " ", text)[:70], "id": b.id})

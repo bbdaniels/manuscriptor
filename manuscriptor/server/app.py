@@ -21,7 +21,9 @@ session edits files with its ordinary tools and the watcher below notices.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import mimetypes
 import re
 import webbrowser
 from importlib import resources
@@ -32,10 +34,16 @@ from jinja2 import Template
 
 from manuscriptor.templates.ext import load as _extensions
 
+# The assets route re-stages one file at a time through the SAME pass the build
+# stages them with; see `refresh_asset`. A build only ever refreshes the figures
+# of the document it rendered, so the route is where the question gets asked for
+# every other document sharing the cache.
+from manuscriptor.render import postprocess
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 from manuscriptor.server import compile as compile_mod
 from manuscriptor.server import drafts as drafts_mod
+from manuscriptor.server import links as links_mod
 from manuscriptor.server import migrate as migrate_mod
 from manuscriptor.server import paths
 from manuscriptor.server import ports
@@ -94,6 +102,14 @@ class Session:
         # running account of what was moved, for the terminal and the page.
         self._migrated: set[Path] = set()
         self.notices: list[str] = []
+        # Assets the page asked for that this build's cache does not hold, in
+        # the order they were first asked for. Serve time, not build time: the
+        # build that produced the open page was self-consistent when it ran.
+        self.asset_misses: list[str] = []
+        # Assets the page asked for whose SOURCE is still in the manuscript --
+        # nothing staged them here, which is a different fact and a different
+        # instruction. See `note_asset_miss`.
+        self.unstageable_assets: list[str] = []
         self.rebuild()
         self.seen_derived = self._derived()
         # A page is BORN holding the history, the same way it is born holding
@@ -170,6 +186,17 @@ class Session:
         return feed_mod.progress_path(paths.agent_dir(self.root))
 
     @property
+    def asset_root(self) -> Path:
+        """The cache this session's build wrote, and the assets route serves.
+
+        Follows the read-only redirect, because that is where the rasters ARE:
+        a read-only serve renders into a scratch directory under the system
+        temp, and a route pointed at the hidden directory instead would 404
+        every figure on a manuscript whose page renders perfectly.
+        """
+        return paths.cache(self.root, read_only=self.read_only)
+
+    @property
     def current_ref(self) -> str:
         """The current document's tree identifier (its `rel_main`)."""
         return self.current.rel_main if self.current is not None else self.doc
@@ -192,13 +219,20 @@ class Session:
 
     def rebuild(self):
         previous = self.build
+        # Whatever was missing belonged to the build being replaced. This one
+        # re-rasterizes and re-copies, so the account starts empty and refills
+        # only if the page asks for something this cache still does not hold.
+        self.asset_misses = []
+        self.unstageable_assets = []
         target = self.dir if self.current is None else Path(self.current.root_dir)
         self._migrate(target)
         if self.current is None:
-            self.build = build_mod.build(self.dir, main=None, bib=self.bib)
+            self.build = build_mod.build(self.dir, main=None, bib=self.bib,
+                                         read_only=self.read_only)
         else:
             self.build = build_mod.build(
-                target, main=self.current.main, bib=self.bib)
+                target, main=self.current.main, bib=self.bib,
+                read_only=self.read_only)
         self._overlay_tree_docs()
         return previous
 
@@ -276,12 +310,58 @@ class Session:
     # underline kept the colour it was born with whatever the records said. One
     # place decides when they move, so the evidence route and the watcher cannot
     # come to disagree about it.
-    DERIVED = ("cites", "stats")
+    #
+    # `diagnostics` joined them for the same reason and one more: an asset miss
+    # is recorded while the page is already open, so no boot-time render can
+    # carry it. Routing it through here rather than broadcasting from the route
+    # keeps the "what changed" comparison in one place.
+    DERIVED = ("cites", "stats", "diagnostics")
 
     def _derived(self) -> dict[str, dict]:
+        # COPIES, ALL THE WAY DOWN. `seen_derived` is what was last pushed, and
+        # holding a reference to the live object makes that record follow every
+        # change made to it: the comparison in `push_derived` then finds one
+        # dict equal to itself and pushes nothing, forever. A rebuild replaces
+        # these wholesale so it never bit, and the first thing to change one IN
+        # PLACE -- an asset miss -- was silent.
+        #
+        # `dict(...)` alone fixes only the outer layer. `cites` is a dict of
+        # per-key records, so a verdict changed in place moves on both sides of
+        # the comparison at once and the page is told nothing -- the same
+        # failure, one level further in. Serialized rather than `deepcopy`d
+        # because every one of these is JSON on its way to the socket: what is
+        # compared is exactly what would be sent.
         if self.build is None:
             return {}
-        return {k: self.blob.get(k) or {} for k in self.DERIVED}
+        return {k: json.loads(json.dumps(self.blob.get(k) or {}))
+                for k in self.DERIVED}
+
+    def note_asset_miss(self, rel: str, *, stageable: bool = True) -> bool:
+        """Record an asset the page asked for and the cache does not hold.
+
+        True when this is news. A page holding twenty broken images asks for all
+        twenty on every reload, and one fact stated twenty times is noise.
+
+        TWO ACCOUNTS, because they are two different pieces of news with two
+        different instructions. A miss whose source is GONE from the manuscript
+        is a figure renamed under a running server, and a restart fixes it. A
+        miss whose source is still sitting on disk was never staged here at all:
+        a PDF figure reaches the page as its raster, nothing rasterizes without
+        poppler, and the author was being told nine assets were missing and to
+        restart the server -- about nine files in his own figures directory,
+        where the fix was installing poppler. Both are recorded; neither is
+        allowed to speak in the other's words.
+        """
+        if self.build is None:
+            return False
+        seen = self.asset_misses if stageable else self.unstageable_assets
+        if rel in seen:
+            return False
+        seen.append(rel)
+        diag = self.blob.setdefault("diagnostics", {})
+        diag["missing_assets"] = list(self.asset_misses)
+        diag["unstageable_assets"] = list(self.unstageable_assets)
+        return True
 
     async def push_derived(self) -> None:
         """Tell the clients about derived state that moved, and only that."""
@@ -332,10 +412,17 @@ class Session:
 
         The block diff cannot carry this: the LaTeX is untouched, so ids and
         sources match and the patch is empty, while the rasterized PNG in the
-        build directory has silently gone stale. Rebuild (the mtime check
-        re-rasterizes exactly the changed figures, `copy2` refreshes direct
-        images) and tell every client to refetch its images past the browser
-        cache. This is how a regenerated figure reaches an open page.
+        build directory has silently gone stale. Rebuild (the `.sha` sidecar --
+        NOT an mtime, as this said until 2026-08-05 -- re-rasterizes exactly the
+        changed figures, and the copier refreshes direct images) and tell every
+        client to refetch its images past the browser cache. This is how a
+        regenerated figure reaches an open page.
+
+        It reaches an open page on ANOTHER document by a different road: this
+        rebuild renders the current document only, so it re-stages that
+        document's figures and no others. Everything else in the shared cache is
+        brought up to date by the assets route, one file at a time, as it is
+        asked for.
         """
         async with self.lock:
             try:
@@ -938,6 +1025,40 @@ def _diff(old, new) -> dict | None:
 # --------------------------------------------------------------- the app
 
 
+def _asset_identity(target: Path) -> tuple[str, bytes]:
+    """A strong ETag for a staged asset, and the bytes it identifies.
+
+    Derived from the CONTENT, because none of the other candidates says what the
+    browser is holding. The filename carries no version, and the mtime is the
+    source's own -- `mirror` copies with `copy2` on purpose, so the cache can
+    tell staleness from a stat -- which makes new bytes under an older timestamp
+    indistinguishable from no change at all.
+
+    The raster's `.sha` sidecar answers it for free where it exists: it holds
+    the digest of the PDF the picture was made from, and the picture is a
+    deterministic function of those bytes. Everything else is hashed here, over
+    the bytes already being read to answer the request, which is the same order
+    of cost as the source hash `refresh_asset` takes on every request anyway.
+    """
+    body = target.read_bytes()
+    sidecar = target.with_name(target.name + ".sha")
+    try:
+        digest = sidecar.read_text(encoding="utf-8").strip()
+    except OSError:
+        digest = ""
+    if not digest:
+        digest = hashlib.sha256(body).hexdigest()
+    return f'"{len(body):x}-{digest}"', body
+
+
+def _etag_matches(header: str, etag: str) -> bool:
+    """RFC 7232 `If-None-Match`, strong comparison. `*` matches anything held."""
+    candidates = [c.strip() for c in header.split(",") if c.strip()]
+    if not candidates:
+        return False
+    return "*" in candidates or etag in candidates
+
+
 def _page(session: Session) -> str:
     tpl = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
     css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
@@ -1169,11 +1290,77 @@ def make_app(session: Session) -> web.Application:
         )
         return web.json_response({"started": True})
 
+    # One run at a time. Dedupe is decided by reading the log, so two runs
+    # overlapping each other both read it before either has written, and every
+    # finding is filed twice into a file that cannot be rewritten. A double
+    # click is not an unusual way to use a menu.
+    preflight_lock = asyncio.Lock()
+
+    async def preflight_handler(_request):
+        """The built-in preflight, filed as review comments on the open page.
+
+        Unlike the evidence pass this spawns nothing and streams nothing: the
+        checks are deterministic Python in this package, they call no model, and
+        they finish in a tenth of a second on a real manuscript, so the click
+        answers with the count rather than with a promise. In a thread all the
+        same, because the scripts sweep walks the whole repository and the event
+        loop is also serving the page.
+
+        Every document in the directory, not only the one being served: the
+        submission this module was written off had a supplement built by a
+        different rule, and checking the paper alone reported it healthy. A
+        finding is filed against its own document, so it surfaces when that
+        document is.
+
+        The findings go into `comments.jsonl` and the page learns through
+        `on_log_change`, the same path the drain's own records travel. Nothing
+        here knows what a check found; it only says how many were new, and it
+        SAYS SO EVEN WHEN THERE WERE NONE, because silence read as success is
+        the failure the whole module exists to prevent.
+        """
+        if session.read_only:
+            # Says what did NOT happen. The refusal used to read "findings are
+            # written to the comment log", which is a description of the thing
+            # it is refusing to do and reads on the page as a report of success.
+            return web.json_response(
+                {"error": "not run: this manuscript is open read-only, and the "
+                          "findings would have to be written to the comment log."},
+                status=403)
+        from manuscriptor.server import preflight as preflight_mod
+
+        def work():
+            planned = preflight_mod.plan(session.root)
+            results = preflight_mod.run(session.root)
+            owed = preflight_mod.deliverable(planned, results)
+            filed = preflight_mod.deliver(session.root, planned=planned,
+                                          results=results)
+            return planned, results, owed, filed
+
+        async with preflight_lock:
+            planned, results, owed, filed = await asyncio.to_thread(work)
+        await session.on_log_change()
+        return web.json_response({
+            "filed": len(filed),
+            "already": len(owed) - len(filed),
+            "findings": sum(len(r.findings) for r in results),
+            "not_run": sum(1 for r in results if r.status == "skipped")
+            + len(preflight_mod.missing(planned, results)),
+            "checks": len(planned),
+        })
+
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/import", import_handler)
     app.router.add_post("/evidence", evidence_handler)
     app.router.add_post("/repair", repair_handler)
+    app.router.add_post("/preflight", preflight_handler)
+    # The evidence panel's two ways out: the PDF, and the Zotero item record.
+    # Both run `open` server-side, the way Reveal in Finder does, because the
+    # shell installs no `WKUIDelegate` and a `zotero://` link is dropped inside
+    # the content process with no error. The path a PDF resolves to is gated to
+    # Zotero's storage in `links`, since a cite key is author-controlled input.
+    app.router.add_post("/evidence/open-pdf", links_mod.route(session, "pdf"))
+    app.router.add_post("/evidence/open-zotero", links_mod.route(session, "zotero"))
     # A compile is a subprocess, so it is the server's to run. Progress goes
     # back over the websocket above, not down a second channel.
     app.router.add_post("/compile", compile_mod.route(session))
@@ -1191,13 +1378,91 @@ def make_app(session: Session) -> web.Application:
     # Registered last so the explicit routes above always win.
     async def assets(request):
         rel = request.match_info.get("path", "")
-        base = paths.cache(session.root)
+        base = session.asset_root
         target = (base / rel).resolve()
         if base not in target.parents and target != base:
+            # A path climbing out of the build directory is an attack or a bug,
+            # never a stale cache, so it is refused WITHOUT being recorded --
+            # anything that can reach the port would otherwise be able to write
+            # lines into the author's diagnostics.
             raise web.HTTPNotFound()
+        # Only what the watcher already calls an asset. This route is the
+        # catch-all, so every stray GET lands here -- a browser asks for
+        # `/favicon.ico` on its own, unprompted, and neither refreshing nor
+        # counting one of those means anything. The set is imported rather than
+        # restated so the halves cannot come to disagree about what an asset is.
+        from manuscriptor.server.watch import ASSET_SUFFIXES
+
+        is_asset = Path(rel).suffix.lower() in ASSET_SUFFIXES
+        if is_asset:
+            # A REBUILD REFRESHES THE FIGURES OF THE DOCUMENT IT RENDERED AND OF
+            # NO OTHER, and one directory holding `main.tex` and `supplement.tex`
+            # has one cache. Serving main, the session re-stages `f1..f3` on
+            # every change and never looks at an `sf*` again -- covet-india on
+            # 2026-08-04 had `f1..f3` rewritten at 20:16 and every `sf*` still at
+            # 20:10, with no scheduling of rebuilds that would ever have caught
+            # up, because the document that would do it is the one nobody is
+            # rebuilding. Asking here makes staleness impossible instead: the
+            # only file that can be served is one that agrees with the source it
+            # came from. The no-news case is a stat and a sha256 of the source,
+            # measured over covet-india's nine exhibits at 0.13ms per figure --
+            # 1.2ms for a page holding all of them -- so nothing here needs an
+            # mtime gate in front of the hash, which would only reintroduce the
+            # key the sidecar exists to replace. `pdftoppm` is forked only when
+            # the answer is no, and that fork is the one branch that is not
+            # instant (89ms on a real exhibit), which is why this is off the loop.
+            await asyncio.to_thread(
+                postprocess.refresh_asset, rel, session.root, base)
         if not target.is_file():
+            # The page names an artifact this cache no longer holds AND the
+            # manuscript no longer holds its source either -- a figure deleted or
+            # renamed under a server still serving the old page. The browser
+            # reports that to nobody, so it goes blank in silence and reads as
+            # the figure being gone. Record it and let `push_derived` decide
+            # whether the clients need telling.
+            #
+            # WHICH miss it is depends on the manuscript, not on the cache. A
+            # source still on disk means nothing staged this file rather than
+            # that the author lost it -- a PDF figure on a machine with no
+            # poppler is the live case -- and telling him to restart the server
+            # about a file in his own figures directory sends him looking in the
+            # wrong place. Asked through `postprocess`, which already owns the
+            # arithmetic that turns a request path into a manuscript path.
+            if is_asset:
+                source = postprocess.manuscript_source(rel, session.root)
+                if session.note_asset_miss(rel, stageable=source is None):
+                    await session.push_derived()
             raise web.HTTPNotFound()
-        return web.FileResponse(target)
+        # A raster's name is not derived from its content -- `fig.pdf.png` is
+        # the same string before and after the figure is regenerated, and only
+        # the `.sha` sidecar knows the difference. `viewer.js` busts the cache
+        # with `?v=` on the frame that announces a rebuild, but a later source
+        # patch re-renders the block from the server's HTML with a plain `src`
+        # and the bust is dropped. With only `Last-Modified`, the browser then
+        # applies heuristic freshness and never asks again, so a stale figure
+        # can survive even a reload. `no-cache` keeps the copy and always
+        # revalidates; the answer is a 304 with no body, so it costs a round
+        # trip rather than a transfer. A long `max-age` would be a promise
+        # about a filename that carries no version.
+        #
+        # AND THE VALIDATOR IS THE CONTENT, NOT THE CLOCK, which is why this is
+        # not `web.FileResponse`: that answers a conditional request from the
+        # file's mtime, and a staged image carries its SOURCE's mtime because
+        # `mirror` copies with `copy2`. New bytes under an older timestamp --
+        # a figure restored from a backup, a `cp -p`, an `rsync -a` -- then
+        # refresh the cache correctly and 304 to every browser holding the old
+        # picture, for as long as that timestamp stays where it is. A strong
+        # ETag derived from the bytes cannot say that.
+        etag, body = await asyncio.to_thread(_asset_identity, target)
+        if _etag_matches(request.headers.get("If-None-Match", ""), etag):
+            return web.Response(status=304,
+                                headers={"Cache-Control": "no-cache", "ETag": etag})
+        ctype, _enc = mimetypes.guess_type(target.name)
+        return web.Response(
+            body=body,
+            headers={"Cache-Control": "no-cache", "ETag": etag},
+            content_type=ctype or "application/octet-stream",
+        )
 
     app.router.add_get("/{path:.*}", assets)
     return app
@@ -1257,9 +1522,14 @@ def serve(
         # itself names -- never a path spelled out here, which is how this came
         # to watch `build/manuscriptor` for months after the drain stopped
         # writing there.
+        # `create=` follows the mode: arming a watch makes the directory it
+        # watches, and on a read-only serve that directory is inside the
+        # author's tree. A read-only serve starts no drain, so there is nothing
+        # to watch until some other process makes the directory itself.
         stop_feed = watch_file(
             session.feed_file,
-            lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop))
+            lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop),
+            create=not read_only)
         # And the ledger by its own name. The two files move at different
         # moments -- the ring is coalesced to at most one write every 0.4s while
         # every entry is appended to the ledger at once -- so watching only the
@@ -1267,7 +1537,8 @@ def serve(
         # something else happened to shift the envelope.
         stop_history = watch_file(
             session.history_file,
-            lambda: asyncio.run_coroutine_threadsafe(session.push_history(), loop))
+            lambda: asyncio.run_coroutine_threadsafe(session.push_history(), loop),
+            create=not read_only)
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
         print(f"  {len(b['blocks'])} blocks · {b['stats']['files']} files · "

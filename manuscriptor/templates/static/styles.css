@@ -131,6 +131,20 @@ body {
   mask-image: linear-gradient(90deg, #000 82%, transparent 100%);
 }
 .ticker[hidden] { display: none; }
+
+/* The build's own complaint, and the only one the browser will not make on its
+   own: a 404 on an image is silent in the page and loud nowhere. Warm rather
+   than red -- it reports a server that has fallen behind its cache, which is a
+   restart, not a lost manuscript. */
+.diagbar {
+  flex: none; padding: .34rem .9rem; font-size: .74rem;
+  color: hsl(28 68% 26%); background: hsl(44 92% 90%);
+  border-bottom: 1px solid hsl(38 60% 76%);
+}
+.diagbar[hidden] { display: none; }
+@media (prefers-color-scheme: dark) {
+  .diagbar { color: hsl(42 86% 78%); background: hsl(32 34% 18%); border-bottom-color: hsl(32 30% 28%); }
+}
 .tk { display: inline-flex; align-items: baseline; gap: .4rem; white-space: nowrap; font-size: .72rem; color: var(--faint); }
 .tk time { font-family: var(--mono); font-size: .66rem; color: var(--faint); opacity: .75; }
 .tk.now { color: var(--muted); }
@@ -378,7 +392,11 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .chat { display: flex; flex-direction: column; gap: .5rem; }
 .msg { border: 1px solid var(--rule); border-radius: 6px; padding: .55rem .7rem; font-size: .8rem; white-space: pre-wrap; }
 .msg .who { font-size: .66rem; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 600; margin-bottom: .2rem; }
-.msg.bb { background: var(--accent-soft); border-color: transparent; }
+/* The author's own bubble. Named for what decides it -- whose message it is --
+   and not for the name he happened to be recorded under, which has already
+   changed once ("bb" -> "Ben") and left this class looking related to that
+   change when it never was. */
+.msg.mine { background: var(--accent-soft); border-color: transparent; }
 .composer { display: flex; flex-direction: column; gap: .4rem; }
 .composer textarea { font: inherit; font-size: .8rem; padding: .5rem .6rem; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); color: var(--ink); resize: vertical; min-height: 3.6rem; }
 .row { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }

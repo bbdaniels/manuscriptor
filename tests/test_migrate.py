@@ -225,30 +225,37 @@ def test_opening_a_manuscript_moves_it_and_says_so(tmp_path):
 
 
 def test_a_read_only_serve_moves_nothing_of_the_authors(tmp_path):
-    """`--read-only` must not relocate a file the author owns.
+    """`--read-only` must not relocate a file the author owns, or add one.
 
     A migration is the most well-intentioned write there is, and it is still a
-    write to a manuscript somebody opened to read. Note what this does NOT
-    claim: `build()` still creates the hidden directory and renders into it,
-    because it cannot see the read-only flag. That gap predates this change --
-    the same build used to create `build/manuscriptor/` on a read-only serve --
-    and it is recorded here rather than papered over.
+    write to a manuscript somebody opened to read.
+
+    This used to exclude `.manuscriptor/` from both snapshots and say so: the
+    build could not see the read-only flag, so it created the hidden directory
+    and rendered into it on every read-only serve, and the test recorded that
+    gap rather than asserting the promise. It asserts the promise now -- the
+    whole directory, `.manuscriptor` included -- because `build()` takes the
+    flag and `paths` answers it with a scratch directory under the system temp.
     """
     d = repo(tmp_path)
     old_layout(d)
     mine = {p.relative_to(d): p.read_bytes()
-            for p in d.rglob("*")
-            if p.is_file() and ".git/" not in str(p) and paths.HOME not in p.parts}
+            for p in d.rglob("*") if p.is_file() and ".git/" not in str(p)}
 
     s = served(d, read_only=True)
 
     still = {p.relative_to(d): p.read_bytes()
-             for p in d.rglob("*")
-             if p.is_file() and ".git/" not in str(p) and paths.HOME not in p.parts}
-    assert still == mine, "a read-only serve must not move or change the author's files"
+             for p in d.rglob("*") if p.is_file() and ".git/" not in str(p)}
+    assert still == mine, "a read-only serve must not move, change or add a file"
+    assert not paths.home(d).exists(), "nor create the hidden directory"
     assert (d / "comments.jsonl").exists(), "the record stays where it was"
     assert (d / "build" / "manuscriptor" / "drafts.json").exists()
     assert s.notices == []
+    # And the author's repository is exactly as they left it. Weaker than the
+    # snapshot above on its own -- the hidden directory ignores itself, so
+    # `git status` stayed clean throughout the years this gap existed -- but it
+    # is the thing the author actually looks at.
+    assert git(d, "status", "--porcelain") == ""
 
 
 def test_a_second_open_announces_nothing(tmp_path):

@@ -70,6 +70,8 @@ def drive(page_html: str, frames, *, source=None, steps=None, replies=None,
         unfold:<comment id> open that history row
         tab:<n>             click the nth tab of the panel
         act:<name>          click the control carrying that data-act
+        pick:<id>:<value>   choose that entry in that toolbar menu, which is
+                            a change on a <select> and not a click
         focus / blur        the source editor gains or loses focus
         type:<text>         type that into the source editor
         compose:<text>      type that into the chat composer

@@ -89,11 +89,20 @@ const dom = new JSDOM(html, {
         if (String(url).indexOf(replies[i].url) !== -1) { reply = replies.splice(i, 1)[0]; break; }
       }
       const status = reply ? reply.status : 200;
+      /* A real answer has a BODY and a content type whatever its status, and a
+       * caller that reads either has to be drivable here: an error body is the
+       * only thing a page can say about a failure beyond its number. */
+      const payload = reply && reply.body !== undefined ? reply.body : {};
+      const type = (reply && reply.contentType) || 'application/json';
       return Promise.resolve({
         ok: status >= 200 && status < 300,
         status: status,
-        json: () => Promise.resolve((reply && reply.body) || {}),
-        text: () => Promise.resolve(''),
+        headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? type : null) },
+        json: () => (type.indexOf('json') === -1
+          ? Promise.reject(new Error('not json'))
+          : Promise.resolve(payload)),
+        text: () => Promise.resolve(
+          typeof payload === 'string' ? payload : JSON.stringify(payload)),
       });
     };
     window.addEventListener('error', (e) => {
@@ -222,6 +231,25 @@ function step(V, name) {
     const el = document.querySelector('[data-open="' + name.slice('open:'.length) + '"]');
     if (!el) throw new Error('nothing opens ' + name);
     el.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    return;
+  }
+  /* Choose an entry from one of the toolbar menus, which is a `change` on a
+   * `<select>` and not a click on anything. The menus are the author's only
+   * route to the skills and to the built-in preflight, and until this existed
+   * the wiring behind them could only be asserted by looking for a string in
+   * the source -- which a comment satisfies. */
+  if (name.startsWith('pick:')) {
+    const rest = name.slice('pick:'.length);
+    const cut = rest.indexOf(':');
+    if (cut < 0) throw new Error('pick:<select id>:<value>, got ' + name);
+    const sel = document.getElementById(rest.slice(0, cut));
+    if (!sel) throw new Error('no menu ' + rest.slice(0, cut));
+    const value = rest.slice(cut + 1);
+    if (!sel.querySelector('option[value="' + value + '"]')) {
+      throw new Error('the menu offers no ' + value);
+    }
+    sel.value = value;
+    sel.dispatchEvent(new window.Event('change', { bubbles: true }));
     return;
   }
   if (name.startsWith('act:')) {
@@ -383,6 +411,13 @@ function report(V, trail) {
     tickerLines,
     history,
     meta: text('#toolbar-meta'),
+    /* The build's complaint bar as the author reads it: the rendered line, not
+       the field behind it. An empty string when the bar is hidden, because a
+       warning nobody can see is the failure this reports on. */
+    diagnostics: (function () {
+      const bar = document.querySelector('#diagbar');
+      return bar && !bar.hidden ? bar.textContent : '';
+    })(),
     agentTitle: attr(document.querySelector('#agent-status'), 'title'),
     docHtml: document.querySelector('#doc-inner').innerHTML,
     refsHtml: refs ? refs.outerHTML : null,

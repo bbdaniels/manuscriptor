@@ -14,14 +14,18 @@ blocks were supposed to be there.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from manuscriptor.source import anchors
+from manuscriptor.render import postprocess as pp_mod
 from manuscriptor.render.postprocess import postprocess
 
 
@@ -768,6 +772,204 @@ def test_a_pdf_outside_the_manuscript_is_left_alone(tmp_path, harvester):
     out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path / "ms",
                       output_dir=tmp_path / "ms" / "out", labels={})
     assert '<embed src="../secret.pdf" />' in out["html"]
+
+
+# The two rules the raster cache lives by, asserted on `ensure_raster` itself
+# because the assets route now calls it on the request path -- a rasterization
+# that used to happen only inside a build now happens while a browser is reading
+# the same file, and both of these become live rather than theoretical.
+
+
+def test_a_failed_rasterization_does_not_stamp_the_raster_it_did_not_make(tmp_path):
+    """The sidecar says which bytes the cached picture was made FROM. Writing it
+    after a run that failed says the old picture came from the new PDF, which is
+    the one state this cache must never reach: it reports fresh forever, and no
+    later build or request can ever tell the difference."""
+    pdf = tmp_path / "fig.pdf"
+    pdf.write_bytes(MINI_PDF)
+    dest = tmp_path / "out" / "fig.pdf.png"
+    assert pp_mod.ensure_raster(pdf, dest)
+    first = dest.read_bytes()
+    stamped = dest.with_name(dest.name + ".sha").read_text()
+
+    pdf.write_bytes(MINI_PDF.replace(b"[0 0 24 24]", b"[0 0 96 48]"))
+    failed = subprocess.CompletedProcess([], returncode=1, stdout=b"", stderr=b"boom")
+    with mock.patch.object(pp_mod.subprocess, "run", return_value=failed):
+        assert pp_mod.ensure_raster(pdf, dest) is True, "the old picture still serves"
+    assert dest.read_bytes() == first
+    assert dest.with_name(dest.name + ".sha").read_text() == stamped, (
+        "a failed run claimed the old raster was made from the new PDF")
+
+    # And the next attempt still sees work to do, which is the whole point.
+    assert pp_mod.ensure_raster(pdf, dest) is True
+    assert dest.read_bytes() != first
+
+
+def test_the_raster_is_swapped_in_rather_than_written_where_it_is_served_from(tmp_path):
+    """`pdftoppm` writes progressively and the assets route reads the same path,
+    so an in-place write hands a browser a half-drawn PNG whenever a refresh and
+    a request coincide. The rasterizer is never pointed at the served name."""
+    pdf = tmp_path / "fig.pdf"
+    pdf.write_bytes(MINI_PDF)
+    dest = tmp_path / "out" / "fig.pdf.png"
+    seen: list[list[str]] = []
+    real = pp_mod.subprocess.run
+
+    def spy(cmd, *a, **k):
+        seen.append([str(c) for c in cmd])
+        return real(cmd, *a, **k)
+
+    with mock.patch.object(pp_mod.subprocess, "run", spy):
+        assert pp_mod.ensure_raster(pdf, dest)
+    assert seen, "nothing was rasterized"
+    assert str(dest)[: -len(".png")] not in seen[0], (
+        f"pdftoppm was pointed at the file being served: {seen[0]}")
+    assert dest.is_file() and not list(dest.parent.glob("*.new*"))
+
+
+def test_the_swap_is_a_rename_and_not_a_copy_into_the_served_name(tmp_path):
+    """`os.replace` is what makes the swap atomic; a copy into `dest` is exactly
+    the progressive write the temp file exists to avoid. Mutating the mover to
+    `shutil.copyfile` left the suite green, so the mover itself is asserted."""
+    pdf = tmp_path / "fig.pdf"
+    pdf.write_bytes(MINI_PDF)
+    dest = tmp_path / "out" / "fig.pdf.png"
+    moves: list[tuple[str, str]] = []
+    real = pp_mod.os.replace
+
+    def spy(src, dst, *a, **k):
+        moves.append((str(src), str(dst)))
+        return real(src, dst, *a, **k)
+
+    with mock.patch.object(pp_mod.os, "replace", spy):
+        assert pp_mod.ensure_raster(pdf, dest)
+    assert [d for _, d in moves] == [str(dest)], (
+        f"the raster reached the served name by something other than os.replace: {moves}")
+    assert moves[0][0] != str(dest)
+
+    src = tmp_path / "pic.png"
+    src.write_bytes(b"\x89PNG" + b"a" * 64)
+    copy_dest = tmp_path / "out" / "pic.png"
+    moves.clear()
+    with mock.patch.object(pp_mod.os, "replace", spy):
+        assert pp_mod.mirror(src, copy_dest)
+    assert [d for _, d in moves] == [str(copy_dest)], (
+        f"the mirrored image reached the served name by something else: {moves}")
+
+
+# Two writers, one destination. At build time there was one lock-serialized
+# writer; the assets route now calls both of these from `asyncio.to_thread` on
+# the request path, so two browsers asking for the same stale figure at the same
+# moment are two threads inside the same function.
+
+
+def _slow_pdftoppm(marks, prefixes, delay=0.01):
+    """Stand in for `pdftoppm`: writes its prefix + `.png` progressively.
+
+    The real one writes the file in chunks over ~90ms, which is the window the
+    race lives in. `marks` hands each caller a distinct body so the served file
+    can be attributed to one writer or shown to be two.
+    """
+    import itertools
+    import threading
+    import time
+
+    counter = itertools.count()
+    seen_lock = threading.Lock()
+
+    def run(cmd, *a, **k):
+        prefix = Path(str(cmd[-1]))
+        with seen_lock:
+            mark = marks[next(counter) % len(marks)]
+            prefixes.append(str(prefix))
+        made = prefix.with_name(prefix.name + ".png")
+        made.parent.mkdir(parents=True, exist_ok=True)
+        with open(made, "wb") as fh:
+            for i in range(10):
+                fh.write(f"CHUNK-{mark}-{i}\n".encode())
+                fh.flush()
+                time.sleep(delay)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout=b"", stderr=b"")
+
+    return run
+
+
+def test_two_requests_for_one_stale_raster_do_not_write_each_others_bytes(tmp_path):
+    """Both callers used to build the temp from the destination's own name, so
+    they wrote the SAME file, `os.replace`d the interleaving into the served
+    path, stamped it fresh, and each `finally` could unlink the other's output.
+    Reproduced against the route as 20 lines in a raster one clean run writes 10
+    into."""
+    import threading
+
+    pdf = tmp_path / "fig.pdf"
+    pdf.write_bytes(MINI_PDF)
+    dest = tmp_path / "out" / "fig.pdf.png"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"OLD-RASTER\n")
+    dest.with_name(dest.name + ".sha").write_text("stale")
+
+    prefixes: list[str] = []
+    fake = _slow_pdftoppm(["A", "B"], prefixes)
+    with mock.patch.object(pp_mod.subprocess, "run", fake):
+        threads = [threading.Thread(target=pp_mod.ensure_raster, args=(pdf, dest))
+                   for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    body = dest.read_bytes().decode()
+    lines = [ln for ln in body.splitlines() if ln]
+    assert len(lines) == 10, (
+        f"the served raster holds {len(lines)} lines of the 10 one writer produces: {body!r}")
+    assert len({ln.split('-')[1] for ln in lines}) == 1, (
+        f"the served raster is two writers interleaved: {body!r}")
+    assert len(set(prefixes)) == len(prefixes), (
+        f"both callers rasterized into the same temp file: {prefixes}")
+    assert not list(dest.parent.glob("*.new*")), "a temp file survived"
+    # And the sidecar describes the bytes actually being served.
+    assert dest.with_name(dest.name + ".sha").read_text().strip() == \
+        hashlib.sha256(pdf.read_bytes()).hexdigest()
+
+
+def test_two_requests_for_one_stale_image_do_not_write_each_others_bytes(tmp_path):
+    """`mirror` had the identical shape: one deterministic `dest.name + '.new'`,
+    two callers, and `copy2` is not atomic."""
+    import threading
+    import time
+
+    src = tmp_path / "pic.png"
+    src.write_bytes(b"\x89PNG" + b"N" * 200)
+    dest = tmp_path / "out" / "pic.png"
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(b"\x89PNG" + b"O" * 8)
+
+    temps: list[str] = []
+    real_copy = pp_mod.shutil.copy2
+
+    def slow_copy(a, b, *args, **kw):
+        temps.append(str(b))
+        data = Path(a).read_bytes()
+        with open(b, "wb") as fh:
+            for i in range(0, len(data), 16):
+                fh.write(data[i:i + 16])
+                fh.flush()
+                time.sleep(0.005)
+        return real_copy and b
+
+    with mock.patch.object(pp_mod.shutil, "copy2", slow_copy):
+        threads = [threading.Thread(target=pp_mod.mirror, args=(src, dest))
+                   for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert dest.read_bytes() == src.read_bytes(), (
+        f"the served copy is not what the source holds: {dest.read_bytes()[:40]!r}")
+    assert len(set(temps)) == len(temps), f"both callers staged into one temp: {temps}"
+    assert not list(dest.parent.glob("*.new*")), "a temp file survived"
 
 
 # ------------------------------------------------------- a table and its notes

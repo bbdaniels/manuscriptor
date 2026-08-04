@@ -260,14 +260,29 @@ def test_a_fragment_of_nothing_but_empty_fragments_contributes_nothing(tmp_path)
     assert "frag_n" in bodies(r), r.line()
 
 
-def test_the_finding_quotes_the_sentence_the_hole_is_in(tmp_path):
-    """So the finding can be filed as a comment anchored where the reader is."""
+def test_the_finding_quotes_the_block_the_hole_is_in(tmp_path):
+    """So the finding can be filed as a comment anchored where the reader is.
+
+    The quote is the block's SOURCE, markup and all. It used to be the prose a
+    reader sees, with the LaTeX stripped out, and that was wrong in the only
+    way that matters: `match_by_quote` -- the one rule that places every comment
+    in this program -- compares against block source, so a stripped quote
+    matched only when the paragraph happened to open with plain words, and a
+    paragraph sitting under a `\\section` had the heading folded into its quote
+    and anchored nowhere at all. Asserted here by placing it, not by inspecting
+    it, because the shape of the string is not the claim.
+    """
+    from manuscriptor.server import build as build_mod
+
     d = manuscript(tmp_path, frag="")
     r = by_check(preflight.run(d), "fragments")
     quote = r.findings[0].quote
-
     assert "We measured" in quote and "simulated conversations" in quote
-    assert "\\" not in quote and "{" not in quote
+
+    b = build_mod.build(d)
+    hit = build_mod.match_by_quote(quote, b.blocks)
+    assert hit is not None, f"the quote places nothing: {quote!r}"
+    assert "We measured" in b.by_id[hit].source_text
 
 
 # ------------------------------------------------------ check: exhibit numbers

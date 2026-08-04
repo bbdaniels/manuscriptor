@@ -156,7 +156,7 @@ def mark(manuscript_dir: Path, chat_id: str, state: str, *, edit: dict | None = 
 def comment(manuscript_dir: Path, *, body: str, quote: str = "",
             author: str = chat.AUTHOR,
             doc: str = "", check: str = "", block: str = "",
-            review: bool = False) -> dict | None:
+            key: str = "", review: bool = False) -> dict | None:
     """Append a comment from outside the page: a check's finding, usually.
 
     The quote is what anchors it: the server's re-anchoring machinery places
@@ -164,21 +164,35 @@ def comment(manuscript_dir: Path, *, body: str, quote: str = "",
     comment or a drifted chat is placed. `review=True` files it as a finding,
     which is pinned and readable at once but never drained as work.
 
-    Deduped against OPEN comments with the same quote, author and doc, so
-    running a check twice does not raise every finding twice. A dismissed
-    finding re-found by a later run is a new comment, deliberately: the check
-    is telling the author it still thinks so.
+    Deduped against OPEN comments, so running a check twice does not raise
+    every finding twice. A dismissed finding re-found by a later run is a new
+    comment, deliberately: the check is telling the author it still thinks so.
+
+    `key` IS THE IDENTITY AND THE QUOTE IS ONLY THE ANCHOR, and the two must not
+    be confused again. Dedupe used to be on the quote alone, which fails in both
+    directions on one real run: a finding with no quotable site -- `bib-fields`
+    names a `.bst`, which is nowhere on the page -- deduped against nothing and
+    was filed again on every run into an append-only log, while two findings
+    about the same bibliography share an anchor and silently swallowed each
+    other. A caller that knows what to call its finding passes a key and the
+    quote is then free to be whatever places the comment best; the fallback for
+    a caller with no key is the old quote comparison, which is right for
+    anything a person wrote, since a person's comment has no identity but
+    itself. One rule for every check, here, rather than one invented per check.
     """
     log = paths.comments(manuscript_dir)
-    if quote:
+    if key or quote:
         for c in chat.read_chats(log):
-            if (c.quote == quote and c.author == author
-                    and c.doc == doc and c.state not in chat.TERMINAL):
+            if c.author != author or c.doc != doc or c.state in chat.TERMINAL:
+                continue
+            same = (c.key == key) if key else (c.quote == quote and not c.key)
+            if same:
                 return None
     rec = chat.append(log, {
         "id": chat.next_id(log), "kind": "comment", "block": block, "doc": doc,
         "quote": quote, "body": str(body), "author": author,
         **({"check": check} if check else {}),
+        **({"key": key} if key else {}),
     })
     if review:
         chat.append(log, {"id": rec["id"], "kind": "state", "state": "review"})

@@ -58,6 +58,39 @@ def test_only_chat_names_the_author():
     )
 
 
+def _strip_js_comments(text: str) -> str:
+    text = re.sub(r"/\*(?:.|\n)*?\*/", "", text)
+    return "\n".join(re.sub(r"//.*$", "", line) for line in text.splitlines())
+
+
+def test_no_script_on_the_page_spells_either_name():
+    """The same rule, in the language the other half of this program is written in.
+
+    The guard above only ever read `*.py`, so `isMine` in `viewer.js` carried a
+    hard-coded `'bb'` -- a second home for the legacy name, in the one place a
+    Python sweep would never look. Both spellings belong to `server/chat.py`,
+    and the page is told what they are: they ride in the payload, and the client
+    compares against what it was handed.
+    """
+    scripts = sorted((SRC / "templates").rglob("*.js"))
+    assert scripts, "no page scripts were scanned, so this guard proves nothing"
+    offenders = []
+    for path in scripts:
+        body = _strip_js_comments(path.read_text(encoding="utf-8"))
+        for name in (chat.AUTHOR, *chat.LEGACY_AUTHORS):
+            if re.search(r"""(?<![\w.])['"]%s['"]""" % re.escape(name), body):
+                offenders.append(f"{path.relative_to(SRC.parent)}: {name!r}")
+    assert offenders == [], (
+        "the author's name is spelled in a page script instead of arriving in "
+        f"the payload: {offenders}")
+
+
+def test_the_page_is_handed_every_name_the_author_answers_to():
+    """The payload is how the client learns them, so it carries all of them."""
+    assert list(chat.NAMES) == [chat.AUTHOR, *chat.LEGACY_AUTHORS]
+    assert "bb" in chat.NAMES, "the legacy name has to keep tinting its own bubbles"
+
+
 def test_the_name_is_the_one_the_author_asked_for():
     assert chat.AUTHOR == "Ben"
 

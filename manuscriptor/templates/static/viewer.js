@@ -1398,6 +1398,21 @@
     return false;
   }
 
+  /* Whether a message is the author's own, which is what the tint means.
+     `'you'` is the composer's client-local placeholder and lives for under a
+     second before the server echoes the record back under the real name, so a
+     page that only knew `'you'` tinted nothing anyone could see. Every other
+     name the author answers to ARRIVES IN THE PAYLOAD (`ms.authors`, which
+     includes the one records written before the rename carry). This used to
+     spell the legacy name here, which put a second home for a string
+     `server/chat.py` owns in the one file a sweep of `*.py` cannot see. */
+  function isMine(who) {
+    if (who === 'you') return true;
+    var names = (S.ms && S.ms.authors) || (S.ms && S.ms.author ? [S.ms.author] : []);
+    for (var i = 0; i < names.length; i++) { if (who === names[i]) return true; }
+    return false;
+  }
+
   function chatMsgs(msgs) {
     return '<div class="chat">' + newestFirst(msgs).map(function (m) {
       // A review finding carries its triage: dismissing closes it, asking
@@ -1407,7 +1422,7 @@
           '<button class="btn" data-act="finding:fix:' + esc(m.id) + '">Ask to fix</button>' +
           '<button class="btn" data-act="finding:dismiss:' + esc(m.id) + '">Dismiss</button></div>'
         : '';
-      return '<div class="msg' + (m.who === 'you' ? ' bb' : '') + '">' +
+      return '<div class="msg' + (isMine(m.who) ? ' mine' : '') + '">' +
         '<div class="who">' + esc(m.who) + (m.ts ? ' · ' + esc(ago(m.ts)) : '') +
         (m.state ? ' · ' + esc(m.state) : '') + '</div>' + esc(m.body) + triage + '</div>';
     }).join('') + '</div>';
@@ -1635,16 +1650,83 @@
     'em-submission': 'Build the Elsevier submission zip with the em-submission skill, and reply with where it landed.'
   };
 
+  /* The entries the SERVER answers itself. The built-in preflight calls no
+     model, so it needs no session: it runs where the manuscript is, files what
+     it found as review comments, and the findings arrive on the socket like
+     any other comment. Everything else in these menus is work for the drain. */
+  var SERVER_CHECKS = { 'preflight': '/preflight' };
+
   function wireSkillMenu(id) {
     var menu = document.getElementById(id);
     if (!menu) return;
     menu.addEventListener('change', function () {
       var skill = menu.value;
       menu.selectedIndex = 0;
+      if (SERVER_CHECKS[skill]) { runServerCheck(skill); return; }
       if (!skill || !SKILL_ASKS[skill]) return;
       if (!send({ type: 'chat', block: '', body: SKILL_ASKS[skill], check: skill })) return;
       pushTicker({ text: 'asked for ' + skill, when: new Date().toISOString() });
     });
+  }
+
+  /* A run that found nothing still SAYS what it ran. Reporting only the
+     findings would render a check that could not run as a clean bill, which is
+     the one failure the preflight exists to prevent. */
+  function checkLine(out) {
+    var bits = [];
+    if (out.filed) bits.push(out.filed + ' new finding' + (out.filed === 1 ? '' : 's'));
+    if (out.already) bits.push(out.already + ' already open');
+    if (out.not_run) bits.push(out.not_run + ' check' + (out.not_run === 1 ? '' : 's') +
+      ' did not run');
+    if (!bits.length) bits.push((out.checks || 0) + ' checks ran, nothing found');
+    return 'preflight: ' + bits.join(', ');
+  }
+
+  /* AN HTTP ERROR IS NOT AN ANSWER, and `fetch` does not treat it as a failure:
+     it rejects only when the request never completed, so a 500 or a 405 arrives
+     down the success path. The body of one is not JSON, `r.json()` throws on it,
+     and a `catch` handing back `{}` made `checkLine({})` print "0 checks ran,
+     nothing found" -- a clean bill for a check that never ran, which is the one
+     failure a preflight exists to prevent. Reachable without any of this being
+     hypothetical: an old server process still holding the port answers the
+     route with 405, the author reloads onto it, and the page tells him his
+     manuscript is clean. The status is named, and so is whatever the body
+     began with, because "500" alone does not say which end broke. */
+  function runServerCheck(skill) {
+    pushTicker({ text: 'running the ' + skill + '…', when: new Date().toISOString() });
+    fetch(SERVER_CHECKS[skill], { method: 'POST' })
+      .then(function (r) {
+        if (!r.ok) {
+          return r.text().then(function (t) { return { __http: r.status, __body: t }; },
+                               function () { return { __http: r.status, __body: '' }; });
+        }
+        var type = (r.headers && r.headers.get && r.headers.get('Content-Type')) || '';
+        if (type && type.indexOf('json') === -1) {
+          return { __http: r.status, __body: 'the server answered ' + type };
+        }
+        return r.json().then(function (j) { return j || {}; },
+                             function () { return { __http: r.status, __body: 'the answer was not JSON' }; });
+      })
+      .then(function (out) {
+        out = out || {};
+        var text;
+        if (out.__http) {
+          var body = String(out.__body || '');
+          /* A refusal that says why says it in `error`, which is worth more to
+             the author than the first 120 characters of a JSON blob. */
+          try { var parsed = JSON.parse(body); if (parsed && parsed.error) body = parsed.error; }
+          catch (e) { /* not JSON: the raw prefix is all there is */ }
+          body = body.replace(/\s+/g, ' ').trim().slice(0, 120);
+          text = skill + ' failed: the server answered ' + out.__http
+               + (body ? ' — ' + body : '');
+        } else {
+          text = out.error ? out.error : checkLine(out);
+        }
+        pushTicker({ text: text, when: new Date().toISOString() });
+      })
+      .catch(function () {
+        pushTicker({ text: 'could not run the ' + skill, when: new Date().toISOString() });
+      });
   }
 
   function showRepair(missing) {
@@ -1787,6 +1869,83 @@
     };
   }
 
+  /* WHAT THE QUOTE WAS FOUND IN, and the two ways to go and look at it.
+     The panel could report a verdict and could not name the paper: the authors,
+     journal, year, DOI and Zotero key have been in citations.json all along and
+     the page payload dropped every one of them.
+
+     The DOI is rendered as a VISIBLE URL, its href equal to its text. The
+     bibliography two inches to the left already renders every DOI that way, so
+     a panel hiding them behind friendly text would be visibly inconsistent with
+     the page it annotates.
+
+     Neither button is offered when it could not work. Open in Zotero needs an
+     item key; Open PDF needs one and needs the item to have a PDF on it, which
+     `matched_but_no_attachment` says outright. Where the PDF IS gets resolved on
+     the click, by the server, never here and never at build time. */
+  function citeIdentity(key, rec) {
+    var rows = '';
+    var authors = rec.authors || [];
+    if (authors.length) rows += '<dt>Authors</dt><dd>' + esc(authors.join(', ')) + '</dd>';
+    if (rec.journal) rows += '<dt>Journal</dt><dd>' + esc(rec.journal) + '</dd>';
+    if (rec.year) rows += '<dt>Year</dt><dd>' + esc(String(rec.year)) + '</dd>';
+    if (rec.doi) {
+      var url = /^https?:\/\//i.test(rec.doi) ? rec.doi : 'https://doi.org/' + rec.doi;
+      rows += '<dt>DOI</dt><dd><a href="' + esc(url) + '" rel="noreferrer">' +
+        esc(url) + '</a></dd>';
+    }
+    var zkey = rec.zotero_key || '';
+    var noPdf = rec.fulltext_reason === 'matched_but_no_attachment';
+    var buttons = '';
+    if (zkey && !noPdf) {
+      buttons += '<button class="btn pri" type="button" data-act="cite:pdf:' + esc(key) +
+        '">Open PDF</button>';
+    }
+    if (zkey) {
+      buttons += '<button class="btn" type="button" data-act="cite:zotero:' + esc(key) +
+        '">Open in Zotero</button>';
+    }
+    var body = rows ? '<dl class="stat">' + rows + '</dl>'
+      : '<p class="meta">The evidence pass recorded no author, journal, year or ' +
+        'DOI for this key, which usually means the .bib entry is thin and the ' +
+        'library holds no matching item.</p>';
+    if (buttons) body += '<div class="row" style="margin-top:.6rem">' + buttons + '</div>';
+    else if (rows) {
+      body += '<p class="meta" style="margin-top:.5rem">No Zotero item matched this ' +
+        'key, so there is nothing local to open; the DOI above is the way in.</p>';
+    }
+    /* Where a refusal lands. The server answers with a reason -- "Zotero is not
+       running" is a different sentence from "no PDF is attached" -- and a button
+       that says nothing when it fails is indistinguishable from one that worked. */
+    body += '<p class="meta" data-role="cite-open-msg" hidden></p>';
+    return card('The source', rec.fulltext_source || '', body);
+  }
+
+  /* One of the two opens, asked of the server. The page never navigates to
+     either: a `zotero://` URL is dropped inside WebKit's content process with a
+     flicker and no Zotero, and an http link would take the app's only window
+     away from the manuscript. `open` runs server-side, the way Reveal in Finder
+     always has. */
+  function openCiteSource(kind, key) {
+    var url = kind === 'pdf' ? '/evidence/open-pdf' : '/evidence/open-zotero';
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cite_key: key })
+    })
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (out) { if (out && out.error) sayCiteOpen(out.error); })
+      .catch(function () {
+        sayCiteOpen('the server could not be reached, so nothing was opened');
+      });
+  }
+
+  function sayCiteOpen(msg) {
+    var el = document.querySelector('[data-role="cite-open-msg"]');
+    if (el) { el.textContent = msg; el.hidden = false; }
+    pushTicker({ text: msg, when: new Date().toISOString() });
+  }
+
   function viewCite(key) {
     var rec = (S.ms.cites || {})[key] || {};
     var users = blocksUsing(function (b) { return (b.cites || []).indexOf(key) !== -1; });
@@ -1850,7 +2009,8 @@
       title: rec.title || key,
       sub: key + (users.length ? ' · ' + fileLine(S.blocks[users[0]]) : ''),
       tabs: [
-        { name: 'Evidence', n: (rec.quotes || []).length || 0, body: evidence + beside },
+        { name: 'Evidence', n: (rec.quotes || []).length || 0,
+          body: evidence + citeIdentity(key, rec) + beside },
         { name: 'Claim', n: users.length || 0, body: claim }
       ]
     };
@@ -2431,6 +2591,15 @@
         updateMeta();
         break;
       }
+      case 'diagnostics': {
+        /* Sent when the build's diagnostics move, which now includes something
+           no rebuild produced: an asset the OPEN page asked for and the cache
+           did not hold. The page is already loaded when that is discovered, so
+           nothing it was born with can carry it. */
+        S.ms.diagnostics = msg.diagnostics || {};
+        renderDiagnostics();
+        break;
+      }
       case 'evidence': {
         var btn = document.getElementById('evidence-run');
         if (msg.done) {
@@ -2729,6 +2898,43 @@
     metaEl.textContent = bits.join(' · ');
   }
 
+  /* The build's own account of what it could not do, for the one part of it the
+     author cannot see any other way. A raster the cache no longer holds 404s to
+     the browser and the browser tells nobody: every figure goes blank at once
+     and reads as the figures being gone. The server records the misses as they
+     are asked for, so this is fed by a frame as well as by the page's own
+     state, and it is the same field either way. Hidden when there is nothing to
+     say, because it costs reading height. */
+  function renderDiagnostics() {
+    var bar = document.getElementById('diagbar');
+    if (!bar) return;
+    var diag = S.ms.diagnostics || {};
+    var miss = diag.missing_assets || [];
+    /* A miss whose SOURCE is still in the manuscript is a different fact with a
+       different fix, and saying "restart the server" about a file sitting in the
+       author's own figures directory sends him looking in the wrong place. A PDF
+       figure reaches the page as its raster; with no poppler nothing makes one,
+       and every exhibit 404s while every exhibit is exactly where he left it. */
+    var unstageable = diag.unstageable_assets || [];
+    if (!miss.length && !unstageable.length) {
+      bar.hidden = true; bar.textContent = ''; bar.removeAttribute('title'); return;
+    }
+    var says = [];
+    if (miss.length) {
+      says.push(miss.length + (miss.length === 1 ? ' asset missing' : ' assets missing')
+                + ' — the server may need a restart.');
+    }
+    if (unstageable.length) {
+      says.push(unstageable.length
+                + (unstageable.length === 1 ? ' figure could not be built here'
+                                            : ' figures could not be built here')
+                + ' — the source is in the manuscript; is poppler installed?');
+    }
+    bar.hidden = false;
+    bar.textContent = says.join(' ');
+    bar.setAttribute('title', miss.concat(unstageable).join('\n'));
+  }
+
   // ------------------------------------------------------------------ events
 
   function openKey(key) {
@@ -2872,6 +3078,14 @@
     if (act.indexOf('hist:goto:') === 0) {
       // A history row names its block outright, so no lookup is needed.
       gotoBlock(act.slice('hist:goto:'.length));
+      return;
+    }
+    if (act.indexOf('cite:pdf:') === 0) {
+      openCiteSource('pdf', act.slice('cite:pdf:'.length));
+      return;
+    }
+    if (act.indexOf('cite:zotero:') === 0) {
+      openCiteSource('zotero', act.slice('cite:zotero:'.length));
       return;
     }
     if (act === 'evidence:run') { runEvidence(); return; }
@@ -3189,6 +3403,7 @@
     }
 
     renderTodos(S.ms.todos || []);
+    renderDiagnostics();
     showRepair(S.ms.missing_fulltexts);
     wireSkillMenu('checks-menu');
     wireSkillMenu('produce-menu');

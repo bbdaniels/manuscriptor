@@ -26,12 +26,12 @@ import subprocess
 from pathlib import Path
 
 from . import cache
+from . import zotero as zotero_mod
 from .zotero import ZoteroClient, ZoteroError
 
 log = logging.getLogger(__name__)
 
 CC_PDF_CACHE = Path.home() / ".cache" / "consistency-check" / "pdfs"
-ZOTERO_STORAGE = Path.home() / "Zotero" / "storage"
 
 # Why a citation has no fulltext. Each one implies a different fix, which is
 # the entire point of not collapsing them into a sentence.
@@ -205,21 +205,13 @@ def _why_missing(*, zot_ok: bool, zot_failed: bool, zot_key: str | None,
 def _try_local_pdf(attachments: list[dict]) -> tuple[str, bool]:
     """Run pdftotext over the PDF attachments Zotero has already named.
 
-    Takes the attachment records rather than an item key so that listing an
-    item's PDFs happens exactly once per citation, in `pdf_attachments`, and
-    the caller can also use that list to tell "no PDF" from "PDF not indexed".
+    Which files those are is `zotero.stored_pdfs`'s answer and not a second one
+    made here: the panel's Open PDF opens whatever that returns, and a fulltext
+    pass reading a different file from the one the author is shown is a
+    disagreement nobody would ever see reported.
     """
-    if not attachments or not ZOTERO_STORAGE.exists():
-        return "", False
-    for c in attachments:
-        attach_key = c["key"]
-        attach_dir = ZOTERO_STORAGE / attach_key
-        if not attach_dir.is_dir():
-            continue
-        pdfs = list(attach_dir.glob("*.pdf"))
-        if not pdfs:
-            continue
-        text = _pdftotext(pdfs[0])
+    for pdf in zotero_mod.stored_pdfs(attachments):
+        text = _pdftotext(pdf)
         if text.strip():
             return text, True
     return "", False

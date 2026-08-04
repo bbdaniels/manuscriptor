@@ -30,9 +30,13 @@ one block, exactly mirroring the block id rule.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import subprocess
+import threading
 import unicodedata
+import uuid
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -211,6 +215,232 @@ def stage_assets(html: str, manuscript_dir, output_dir) -> tuple[str, list[str]]
     return html, _copy_assets(html, manuscript_dir, output_dir) + rasterized
 
 
+# --------------------------------------------------------- staging one asset
+#
+# A BUILD STAGES THE FIGURES OF THE DOCUMENT IT RENDERED, AND OF NO OTHER, so a
+# build is the wrong moment to ask whether a staged file is still current. One
+# directory holding `main.tex` and `supplement.tex` has ONE cache: a session
+# serving main re-stages `f1`, `f2`, `f3` every time anything changes and never
+# looks at an `sf*` again. Measured in covet-india on 2026-08-04 -- `f1..f3`
+# rewritten at 20:16, every `sf*` left at 20:10 -- and no amount of rebuild
+# scheduling closes it, because the document that would do the refreshing is the
+# one nobody is rebuilding.
+#
+# So the question is asked where it can always be answered: at the moment a
+# browser asks for the file. `refresh_asset` is that entry point, and it is the
+# SAME two operations `stage_assets` runs, called one file at a time rather than
+# reimplemented -- staging a figure and knowing whether a staged figure is stale
+# are one piece of knowledge, and this repo has already paid for splitting one
+# of those in two (see `render/tables.py`).
+
+
+def raster_source(rel: str) -> str | None:
+    """The manuscript path a raster's NAME claims, or None if it is not a raster.
+
+    Reversible only because the raster keeps the PDF's own suffix:
+    `exhibits/f1.pdf` stages as `exhibits/f1.pdf.png`, so the cache path names
+    its own source exactly. That is a second reason for the naming rule above,
+    beyond the collision it was introduced to prevent -- dropping the suffix
+    would leave `f1.png` ambiguous between a rasterized `f1.pdf` and a `f1.png`
+    the author wrote, and a serve-time refresh would have to guess.
+    """
+    if not rel.lower().endswith(".png"):
+        return None
+    source = rel[: -len(".png")]
+    return source if source.lower().endswith(".pdf") else None
+
+
+# One writer per destination, and a name no other writer can be holding.
+#
+# Both stagers below used to build their temp file from the destination's own
+# name, which was safe for exactly as long as there was one caller: the build,
+# under the session lock. The assets route now calls them from
+# `asyncio.to_thread` on the REQUEST path, so two browsers asking for the same
+# stale figure are two threads inside the same function -- writing the same
+# temp, `os.replace`ing the interleaving into the file being served, stamping
+# the sidecar fresh over it, and unlinking each other's output in `finally`.
+# Reproduced as 20 lines in a raster one clean run writes 10 into.
+#
+# Both halves are needed and neither is sufficient. The unique name keeps two
+# writers off one file (including writers in another process, which no lock of
+# ours can see); the lock keeps the second caller from redoing work the first
+# has already finished and from swapping an older rasterization in behind a
+# newer one. The dict holds one lock per asset path, so it is bounded by the
+# number of assets in the manuscript and never cleaned.
+_staging_locks: dict[str, threading.Lock] = {}
+_staging_locks_guard = threading.Lock()
+
+
+def _staging_lock(dest: Path) -> threading.Lock:
+    key = str(dest)
+    with _staging_locks_guard:
+        lock = _staging_locks.get(key)
+        if lock is None:
+            lock = _staging_locks[key] = threading.Lock()
+        return lock
+
+
+def _staging_name(dest: Path, stem: str) -> Path:
+    """A temp path in the DESTINATION'S OWN DIRECTORY, unique to this call.
+
+    Same directory so `os.replace` stays a rename within one filesystem, which
+    is what makes the swap atomic. `mkstemp` is not usable for the rasterizer's
+    half: `pdftoppm -singlefile` picks the final name itself by appending
+    `.png` to the prefix it is handed, so the caller cannot be handed an
+    already-open file descriptor.
+    """
+    return dest.with_name(f"{stem}.new-{uuid.uuid4().hex[:12]}")
+
+
+def ensure_raster(pdf: Path, dest: Path) -> bool:
+    """Rasterize `pdf` into `dest` unless the sidecar already names its bytes.
+
+    Returns whether the cache holds a raster afterwards -- which may be an OLD
+    one, when the rasterizer is absent or failed. Serving the picture from the
+    last successful build beats serving nothing.
+
+    THE SIDECAR IS ONLY WRITTEN WHEN `pdftoppm` ACTUALLY SUCCEEDED. It used to
+    be written whenever a file was present afterwards, so a failed run over an
+    existing raster stamped the new PDF's digest onto the old picture and pinned
+    it fresh forever: the one state this cache must never be able to reach.
+
+    THE RASTER IS SWAPPED IN, NOT WRITTEN IN PLACE. A request being served out
+    of this cache reads the same path the rasterizer writes, and `pdftoppm`
+    writes it progressively, so writing in place hands a browser a half-drawn
+    PNG whenever the two coincide. `os.replace` is atomic on one filesystem, and
+    the temp file is in the destination's own directory to keep it there.
+    """
+    stamp = dest.with_name(dest.name + ".sha")
+    try:
+        digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+    except OSError:
+        return dest.is_file()
+    # Everything from the freshness check to the swap is one writer's, so the
+    # second caller for the same figure reads the first one's finished work
+    # instead of rasterizing over it. See `_staging_lock`.
+    with _staging_lock(dest):
+        was = stamp.read_text().strip() if stamp.exists() else ""
+        if dest.is_file() and was == digest:
+            return True
+        if not shutil.which("pdftoppm"):
+            return dest.is_file()
+        # `-singlefile` appends `.png` to the prefix it is handed, so the prefix
+        # is the destination with that suffix taken back off, plus a marker no
+        # other call can be using.
+        stem = dest.name[: -len(".png")] if dest.name.lower().endswith(".png") else dest.name
+        prefix = _staging_name(dest, stem)
+        made = prefix.with_name(prefix.name + ".png")
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            done = subprocess.run(
+                ["pdftoppm", "-png", "-r", "200", "-singlefile", str(pdf), str(prefix)],
+                capture_output=True, timeout=60,
+            )
+            if done.returncode == 0 and made.is_file():
+                os.replace(made, dest)
+                stamp.write_text(digest)
+                return True
+        except (OSError, subprocess.SubprocessError):
+            pass
+        finally:
+            if made.is_file():
+                made.unlink(missing_ok=True)
+        return dest.is_file()
+
+
+def mirror(source: Path, dest: Path) -> bool:
+    """Put `source` in the cache at `dest`, unless the copy there is already it.
+
+    `copy2` carries the source's mtime onto the copy, so the two are current
+    exactly when their size and mtime agree. That is not a new staleness key
+    invented for this check -- it is a reading of the one the copier already
+    establishes, which is why nothing has to be recorded alongside the file.
+    """
+    try:
+        now = source.stat()
+    except OSError:
+        return dest.is_file()
+    # One writer per destination, and a staging name unique to this call: the
+    # assets route calls this from a request thread, so two browsers asking for
+    # the same stale image are two callers here. See `_staging_lock`.
+    with _staging_lock(dest):
+        try:
+            have = dest.stat()
+            if (have.st_size, have.st_mtime_ns) == (now.st_size, now.st_mtime_ns):
+                return True
+        except OSError:
+            pass
+        tmp = _staging_name(dest, dest.name)
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, tmp)
+            os.replace(tmp, dest)
+            return True
+        except OSError:
+            if tmp.is_file():
+                tmp.unlink(missing_ok=True)
+            return dest.is_file()
+
+
+def manuscript_source(rel: str, manuscript_dir) -> Path | None:
+    """The file in the MANUSCRIPT that a request for `rel` is asking about.
+
+    `figures/f1.pdf.png` is asking about `figures/f1.pdf`; `figures/f1.png` is
+    asking about itself. None when nothing of that name exists, or when the path
+    climbs out of the manuscript.
+
+    It answers two questions, which is why it is one function. `refresh_asset`
+    needs it to know what to stage from; the assets route needs it to know what
+    KIND of miss a 404 is -- a source still sitting on disk means the file was
+    never staged here, which is a different fact from a figure the author
+    renamed away, and a different instruction to give him.
+    """
+    manuscript_dir = Path(manuscript_dir).resolve()
+    source = (manuscript_dir / unquote(raster_source(rel) or rel)).resolve()
+    if manuscript_dir not in source.parents or not source.is_file():
+        return None
+    return source
+
+
+def refresh_asset(rel: str, manuscript_dir, cache_dir) -> bool:
+    """Bring ONE staged asset up to date with the manuscript. Serve time.
+
+    `rel` is the path the page named, relative to the cache. Returns whether the
+    cache holds a file for it afterwards; the caller decides what a False means,
+    because a missing asset is news on the request path and nothing at all on
+    the build path.
+
+    A source that has VANISHED is not an error and does not clear the cache: the
+    author deleted or renamed a figure that a page still names, and whatever the
+    last build staged is the best answer available. It goes on being served
+    until a rebuild stops naming it, at which point it is a missing asset like
+    any other.
+
+    Containment is checked on BOTH ends, and this is the second place a request
+    path is turned into a filesystem read. `..` cannot survive a real URL, but a
+    rule that holds only because of something two layers away is a rule that
+    stops holding when that layer changes.
+
+    This refreshes only what a build STAGES, which is why a request for a `.pdf`
+    is refused rather than mirrored. A PDF figure reaches the page as its raster
+    and never as itself, so the build has never put one in the cache; copying it
+    here on demand would make the route stage a class of file no build produces,
+    and fill the cache with second copies of every exhibit.
+    """
+    manuscript_dir = Path(manuscript_dir).resolve()
+    cache_dir = Path(cache_dir).resolve()
+    dest = (cache_dir / rel).resolve()
+    if cache_dir not in dest.parents:
+        return False
+    from_pdf = raster_source(rel)
+    if from_pdf is None and rel.lower().endswith(".pdf"):
+        return dest.is_file()
+    source = manuscript_source(rel, manuscript_dir)
+    if source is None:
+        return dest.is_file()
+    return ensure_raster(source, dest) if from_pdf else mirror(source, dest)
+
+
 # Pandoc emits <embed> for a PDF figure (and <img> only for raster formats),
 # the asset copier only knew <img>, and a browser paints nothing for an
 # unsized PDF embed: dsp-bias served with no figures at all. PDF figures are
@@ -242,12 +472,12 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
     pinned the comparison false so the figure could never refresh again. A cache
     that serves a stale figure is worse than no cache, because the page shows a
     wrong picture and says nothing.
-    """
-    import hashlib
-    import shutil
-    import subprocess
-    from urllib.parse import unquote
 
+    Both of those rules live in `ensure_raster`, which the ASSETS ROUTE also
+    calls: a build stages the figures of the document it rendered and of no
+    other, so the same question has to be asked again when a browser asks for a
+    file. One function answers it in both places.
+    """
     if not shutil.which("pdftoppm"):
         return html, []
     manuscript_dir = Path(manuscript_dir).resolve()
@@ -264,23 +494,7 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
         if manuscript_dir not in pdf.parents or not pdf.exists():
             return m.group(0)
         rel_png = rel + ".png"
-        dest = Path(output_dir) / rel_png
-        stamp = dest.with_name(dest.name + ".sha")
-        try:
-            digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-        except OSError:
-            return m.group(0)
-        was = stamp.read_text().strip() if stamp.exists() else ""
-        if not dest.exists() or was != digest:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["pdftoppm", "-png", "-r", "200", "-singlefile",
-                 str(pdf), str(dest.with_name(dest.name[: -len(".png")]))],
-                capture_output=True, timeout=60,
-            )
-            if dest.exists():
-                stamp.write_text(digest)
-        if not dest.exists():
+        if not ensure_raster(pdf, Path(output_dir) / rel_png):
             return m.group(0)
         made.append(rel_png)
         return f'<img src="{rel_png}" />'
@@ -639,6 +853,10 @@ def _copy_assets(html: str, manuscript_dir: Path, output_dir: Path) -> list[str]
     it is opened, because pandoc encodes spaces and the literal string names no
     file. And a path that resolves outside output_dir is refused: `../` in an
     image path would otherwise let a manuscript write anywhere the server can.
+
+    The copy itself is `mirror`, which the assets route calls too -- a direct
+    image goes stale for a document nobody is rebuilding exactly as a rasterized
+    one does, and it is the same copy either way.
     """
     copied: list[str] = []
     seen: set[str] = set()
@@ -659,11 +877,7 @@ def _copy_assets(html: str, manuscript_dir: Path, output_dir: Path) -> list[str]
         dest = (output_dir / rel).resolve()
         if out_root not in dest.parents:
             continue
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
-        except OSError:
-            continue
-        copied.append(rel)
+        if mirror(source, dest):
+            copied.append(rel)
 
     return copied

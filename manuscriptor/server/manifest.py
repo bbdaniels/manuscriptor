@@ -31,8 +31,10 @@ producer is kept and the statistic claim is dropped.
 The manifest is a cache, and it lives in `.manuscriptor/cache/` rather than
 beside the fragments. That is a deliberate departure from the obvious placement:
 the hidden directory ignores itself, whereas a file dropped next to the
-fragments makes `git status` grow inside the author's repository on a
-**read-only** serve, which `build()` cannot currently distinguish. The
+fragments makes `git status` grow inside the author's repository. On a
+**read-only** serve there is no cache in the manuscript at all: `build()` takes
+the flag and `paths` answers it with a scratch directory under the system temp,
+so this file lands there and is removed at exit. The
 hand-editable half is `values.json` in the manuscript directory, which this
 module reads and never writes, so a correction survives regeneration by
 construction rather than by a merge rule remembering to preserve it. A hand edit

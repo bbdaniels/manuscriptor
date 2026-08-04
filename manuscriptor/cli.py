@@ -871,6 +871,10 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
     Exits 2 when a check could not run, and that outranks findings: a skipped
     check is not a pass, and it is the failure that hides the others.
+
+    `--review` is the one thing here that writes, and it writes only to the
+    comment log: the findings land on the page as review comments, which is
+    what the Checks menu asks the server for.
     """
     from manuscriptor.server import preflight
 
@@ -880,6 +884,12 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     planned = preflight.plan(d, args.main)
     results = preflight.run(d, args.main)
     print(preflight.report(d, planned, results))
+    if getattr(args, "review", False):
+        owed = preflight.deliverable(planned, results)
+        filed = preflight.deliver(d, planned=planned, results=results)
+        print(f"\nfiled {len(filed)} review comment"
+              f"{'s' if len(filed) != 1 else ''} of {len(owed)}; "
+              f"{len(owed) - len(filed)} already open.")
     return preflight.exit_code(planned, results)
 
 
@@ -1073,6 +1083,10 @@ def main(argv: list[str] | None = None) -> int:
     p_pre.add_argument("manuscript", help="Manuscript directory to check")
     p_pre.add_argument("--main", default=None,
                        help="Check one document only (default: every document here)")
+    p_pre.add_argument("--review", action="store_true",
+                       help="File what it found as review comments on the page, "
+                            "anchored where each finding's quote lands. Findings "
+                            "already open are not raised twice.")
     p_pre.set_defaults(func=cmd_preflight)
 
     p_clean = sub.add_parser("clean", help="Remove regenerable render output; optionally clear the shared cache.")

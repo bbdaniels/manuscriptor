@@ -183,6 +183,20 @@ def test_ensure_is_safe_to_repeat(tmp_path):
     assert (paths.cache(tmp_path) / "rendered.html").exists()
 
 
+def test_a_read_only_ensure_makes_the_whole_layout_somewhere_else(tmp_path):
+    """What the mode promises is that the MANUSCRIPT is untouched, and the
+    promise is kept by `home()` answering elsewhere -- not by leaving a tier
+    out. The docstring claimed `agent/` was skipped while the code made it, and
+    a doc that describes a mechanism the code does not have sends the next
+    reader looking for a guarantee nothing provides."""
+    h = paths.ensure(tmp_path, read_only=True)
+    assert not (tmp_path / ".manuscriptor").exists(), "the author's tree grew a directory"
+    assert not h.is_relative_to(tmp_path)
+    for tier in (paths.cache(tmp_path, read_only=True), h / "agent"):
+        assert tier.is_dir(), f"the scratch layout is missing {tier.name}"
+    assert not (h / ".gitignore").exists(), "there is no repository to hide from"
+
+
 # ------------------------------------------------------- what `clean` may take
 
 

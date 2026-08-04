@@ -11,6 +11,7 @@ import logging
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -27,6 +28,12 @@ BBT_RPC = f"{ZOTERO_LOCAL_ROOT}/better-bibtex/json-rpc"
 # that "Add Item by Identifier" uses. Read-only here, always: see
 # `lookup_identifier`.
 CLI_BRIDGE_EVAL = f"{ZOTERO_LOCAL_ROOT}/cli-bridge/eval"
+
+# Where Zotero keeps attachment files, keyed by the ATTACHMENT's key and never
+# by the parent item's. One spelling, here, because two modules now ask the same
+# question -- the fulltext pass reading a PDF and the panel opening one -- and a
+# second copy of this join is the divergence this repo keeps rediscovering.
+ZOTERO_STORAGE = Path.home() / "Zotero" / "storage"
 
 # How alike two cite keys must be before one is called a drifted spelling of
 # the other rather than a different paper. A BBT key is derived from author,
@@ -89,7 +96,6 @@ class ZoteroItem:
     authors: list[str]
     year: Optional[int]
     journal: Optional[str]
-    attachment_paths: list[str]
     # What identifies a work that has no DOI, and what kind of entry it is.
     # A book is identified by its ISBN and by this record; discarding the record
     # for want of a DOI is how a search for one book returned three different
@@ -425,7 +431,6 @@ class ZoteroClient:
         ]
         authors = [a for a in authors if a]
         year = _extract_year(data.get("date", ""))
-        attachments = self._collect_attachment_paths(key)
         return ZoteroItem(
             key=key,
             doi=(data.get("DOI") or "").strip() or None,
@@ -436,7 +441,6 @@ class ZoteroClient:
             authors=authors,
             year=year,
             journal=plain_title(data.get("publicationTitle")) or None,
-            attachment_paths=attachments,
             item_type=(data.get("itemType") or "").strip() or None,
             book_title=plain_title(data.get("bookTitle")) or None,
             isbn=_first_isbn(data.get("ISBN")),
@@ -477,12 +481,17 @@ class ZoteroClient:
                 out.append(c)
         return out
 
-    def _collect_attachment_paths(self, parent_key: str) -> list[str]:
-        try:
-            children = self.pdf_attachments(parent_key)
-        except ZoteroError:
-            return []
-        return [p for p in ((c.get("data", {}).get("path") or "") for c in children) if p]
+    def stored_pdfs(self, parent_key: str) -> list[Path]:
+        """Where this item's PDFs actually are on disk.
+
+        The one answer to "where is this PDF", for both callers: the fulltext
+        pass reading one, and the panel opening one. It replaces
+        `ZoteroItem.attachment_paths`, which read `data["path"]` off each
+        attachment -- a field the live local API returns as `None` for every
+        attachment checked, so the list was always empty and nothing consumed
+        it. Two answers to one question, and the dead one was wrong.
+        """
+        return stored_pdfs(self.pdf_attachments(parent_key))
 
     def fulltext_of(self, attachments: list[dict]) -> str:
         """Concatenated indexed fulltext across already-fetched PDF attachments.
@@ -546,6 +555,30 @@ _TRANSLATOR_FIELDS = (
     ("edition", "edition"), ("volume", "volume"), ("issue", "issue"),
     ("pages", "pages"), ("publicationTitle", "journal"), ("bookTitle", "booktitle"),
 )
+
+
+def stored_pdfs(attachments: list[dict]) -> list[Path]:
+    """The PDF files on disk behind these attachment records, in a stable order.
+
+    Takes the records rather than an item key so that listing an item's PDFs is
+    one query, made once, in `pdf_attachments` -- the caller usually needs that
+    list for its own reasons too, since "no attachment" and "attachment with no
+    file" are different things to tell the author.
+
+    NOTHING is normalized away here. The paths are joined and returned as they
+    fall out of the storage layout, so a caller that must gate them (the server
+    opens what this returns) sees the real target and not a cleaned-up one.
+    """
+    found: list[Path] = []
+    for c in attachments or []:
+        key = c.get("key") or (c.get("data") or {}).get("key")
+        if not key:
+            continue
+        attach_dir = ZOTERO_STORAGE / str(key)
+        if not attach_dir.is_dir():
+            continue
+        found.extend(sorted(attach_dir.glob("*.pdf")))
+    return found
 
 
 def _from_translator(item: dict) -> dict:

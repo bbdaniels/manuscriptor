@@ -27,9 +27,32 @@ the manuscript directory, which is nearly always a git working tree the author
 cares about, so serving a paper must never make `git status` grow. The ignore
 file re-includes `comments.jsonl` alone, which is also what makes the first
 `git add` of a new manuscript pick up the record and nothing else.
+
+**A read-only serve gets a different answer, and it is decided here.** `serve
+--read-only` promises that nothing reaches the author's filesystem, and until
+2026-08-05 that promise stopped at the write handlers: `build()` could not see
+the flag, so it created `.manuscriptor/` and rendered into it on every
+read-only serve, staged rasters into it, cached the value manifest in it, and a
+compile dropped its `.aux` and `.log` there too. Opening somebody's paper to
+READ it made a directory inside their working tree.
+
+So `home()` takes the flag and answers with a scratch directory under the
+system temp, and everything derived from it -- the cache, the compile directory
+-- follows without having to know why. That is the whole redirect, in the one
+module that owns the question; the alternative was path arithmetic in `build`,
+`compile` and the asset route, which is three places that can disagree.
+
+Only the tiers Manuscriptor WRITES redirect. `comments()`, `drafts()` and
+`agent_dir()` take no flag at all, because a read-only serve still has to SHOW
+the review record, the unsaved drafts and the drain's feed -- redirecting those
+would open a paper on an empty rail over a queue full of comments. The writes to
+them are refused at the handlers, which is where a refusal can say so.
 """
 from __future__ import annotations
 
+import atexit
+import shutil
+import tempfile
 from pathlib import Path
 
 HOME = ".manuscriptor"
@@ -51,14 +74,55 @@ GITIGNORE = "*\n!comments.jsonl\n"
 LEGACY_BUILD = ("build", "manuscriptor")
 
 
-def home(manuscript_dir: Path | str) -> Path:
-    """The hidden directory holding everything Manuscriptor owns."""
+# Scratch homes for read-only serves, one per manuscript per process. Made
+# with `mkdtemp` rather than a name derived from the manuscript path, so two
+# servers reading the same paper cannot render over each other, and removed at
+# exit because nothing here is worth keeping: every byte of it is regenerable
+# and the tiers that are not regenerable never redirect.
+SCRATCH_PREFIX = "manuscriptor-read-only-"
+_scratch: dict[Path, Path] = {}
+
+
+def scratch_home(manuscript_dir: Path | str) -> Path:
+    """The temp directory a read-only serve renders into, made on first ask.
+
+    Stable for the life of the process: the build writes its rasters here and
+    the asset route serves them from here, and a fresh directory per call would
+    give those two different answers.
+    """
+    key = Path(manuscript_dir).resolve()
+    known = _scratch.get(key)
+    if known is not None:
+        return known
+    made = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX)).resolve()
+    _scratch[key] = made
+    return made
+
+
+def drop_scratch() -> None:
+    """Remove every scratch home this process made. Registered at exit."""
+    for path in list(_scratch.values()):
+        shutil.rmtree(path, ignore_errors=True)
+    _scratch.clear()
+
+
+atexit.register(drop_scratch)
+
+
+def home(manuscript_dir: Path | str, *, read_only: bool = False) -> Path:
+    """The directory holding everything Manuscriptor owns for this manuscript.
+
+    Hidden inside the manuscript directory normally; under the system temp when
+    the serve is read-only, because a read-only serve may not create it.
+    """
+    if read_only:
+        return scratch_home(manuscript_dir)
     return Path(manuscript_dir).resolve() / HOME
 
 
-def cache(manuscript_dir: Path | str) -> Path:
+def cache(manuscript_dir: Path | str, *, read_only: bool = False) -> Path:
     """Regenerable render output. The only tier `clean` may remove."""
-    return home(manuscript_dir) / CACHE_NAME
+    return home(manuscript_dir, read_only=read_only) / CACHE_NAME
 
 
 def agent_dir(manuscript_dir: Path | str) -> Path:
@@ -66,14 +130,14 @@ def agent_dir(manuscript_dir: Path | str) -> Path:
     return home(manuscript_dir) / AGENT_NAME
 
 
-def compile_dir(manuscript_dir: Path | str) -> Path:
+def compile_dir(manuscript_dir: Path | str, *, read_only: bool = False) -> Path:
     """Where LaTeX writes its `.aux`, `.log`, `.bbl` and its PDF.
 
     Under `cache/` because every byte of it comes back from another compile,
     and inside the hidden directory because these are the files that used to
     litter the manuscript folder beside the `.tex` they came from.
     """
-    return cache(manuscript_dir) / COMPILE_NAME
+    return cache(manuscript_dir, read_only=read_only) / COMPILE_NAME
 
 
 def drain_lock(manuscript_dir: Path | str) -> Path:
@@ -122,16 +186,30 @@ def keep_out_of_git(where: Path | str | None = None) -> None:
         pass
 
 
-def ensure(manuscript_dir: Path | str) -> Path:
-    """Create the layout for a manuscript and return its hidden directory.
+def ensure(manuscript_dir: Path | str, *, read_only: bool = False) -> Path:
+    """Create the layout for a manuscript and return its home directory.
 
     Safe to call on every build. Making the directories is what lets the tiers
     be separate rather than a convention nobody enforces.
+
+    Under `read_only` this makes THE SAME LAYOUT somewhere else: `home()` has
+    already answered with a scratch directory under the system temp, so every
+    tier is created there and nothing at all is created in the manuscript. The
+    only difference in what gets made is the `.gitignore`, which is skipped
+    because there is no repository under the system temp to keep a directory
+    out of.
+
+    `agent/` is made too, and this docstring used to claim it was not. What
+    keeps a read-only serve out of the author's `.manuscriptor/agent/` is
+    `home()` pointing elsewhere, plus `watch.watch_file(create=False)` for the
+    feed the panel watches -- not an omission here. An empty `agent/` in a
+    scratch directory nothing drains costs nothing and is deleted with it.
     """
-    h = home(manuscript_dir)
+    h = home(manuscript_dir, read_only=read_only)
     for d in (h, h / CACHE_NAME, h / AGENT_NAME):
         d.mkdir(parents=True, exist_ok=True)
-    keep_out_of_git(h)
+    if not read_only:
+        keep_out_of_git(h)
     return h
 
 

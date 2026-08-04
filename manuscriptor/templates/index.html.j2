@@ -90,9 +90,15 @@
         document-level comment carrying a `check` field; the drain session
         invokes the named skill and the server never learns what one is.
         Checks return findings as review comments; Produce returns edits
-        through the normal work path, or artifacts announced in a reply. -#}
+        through the normal work path, or artifacts announced in a reply.
+
+        The first entry is the exception, and the label says so: the built-in
+        preflight is Python in this package, so the server answers it itself
+        and the findings are pinned before the click finishes. Every other
+        entry needs a session. -#}
     <select class="tb skillmenu" id="checks-menu" aria-label="run a check">
       <option value="" selected disabled>Checks…</option>
+      <option value="preflight">Preflight now (no agent)</option>
       <option value="consistency-check">Preflight (seven checks)</option>
       <option value="review-manuscript">Full review</option>
       <option value="revision-audit">Revision audit</option>
@@ -134,6 +140,13 @@
       log's state records and the patch frames. Hidden until there is something
       to say, so an idle manuscript loses no reading height to it. -#}
   <div class="ticker" id="ticker" aria-live="polite" hidden></div>
+
+  {#- What the build could not do, for the part of it the browser hides: an
+      image the cache no longer holds 404s in silence, so every figure goes
+      blank at once and reads as the figures being gone. Filled in by the
+      viewer from MS.diagnostics and from the frame the asset route sends when
+      it is asked for something that is not there. -#}
+  <div class="diagbar" id="diagbar" role="status" aria-live="polite" hidden></div>
 
   <div class="cols">
 

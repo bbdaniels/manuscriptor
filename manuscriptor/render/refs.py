@@ -33,6 +33,7 @@ in a row, so the sentinel cannot collide with a real label.
 """
 from __future__ import annotations
 
+import bisect
 import re
 from pathlib import Path
 
@@ -331,54 +332,130 @@ _COUNTER_SCAN = re.compile(
 )
 
 
-def _resolve_counters(latex: str, labels: dict[str, str], missing: list[str]) -> str:
-    """Print `\\theX` as the number the `.aux` recorded for its `\\refstepcounter`.
+def _counter_walk(latex: str, labels: dict[str, str], missing: list[str],
+                  bound: dict[str, str]):
+    """One left-to-right scan, reporting what it found and what it now knows.
 
-    One left-to-right scan carrying, per counter, the label most recently
-    stepped with it. A `\\theX` with no such label in scope is left exactly as
-    it was: nothing here knows that number, and inventing one would be worse
-    than whatever the renderer makes of the macro.
+    `bound` is the live counter-to-label state and is updated IN PLACE as the
+    scan moves, so a caller may seed it with the state in force somewhere else
+    in the buffer and read exactly the answers a whole-document pass gave.
+
+    Yields `("bind", start, end)` wherever that state changed, and
+    `("use", start, end, key, value)` for each `\\theX`: `key` is the label the
+    counter is bound to and is None when it is bound to nothing, `value` the
+    number the `.aux` recorded for that label and is None when it carries none.
+    Two different unknowns, and the callers print them differently -- a renderer
+    owes the reader a visible `??`, a name has no room to say anything.
 
     A `\\renewcommand{\\thefigure}{...}` is matched ahead of the use it contains,
-    so the counter's *definition* is never rewritten into its own value.
+    so the counter's *definition* is never read as a use of itself.
     """
-    bound: dict[str, str] = {}
-    out: list[str] = []
-    cursor = 0
     for m in _COUNTER_SCAN.finditer(latex):
-        out.append(latex[cursor:m.start()])
-        cursor = m.end()
         if m.group("step") is not None:
             counter, key = m.group("step_c"), m.group("step_k")
             if key:
                 bound[counter] = key.strip()
             else:
                 bound.pop(counter, None)
-            out.append(m.group(0))
+            yield ("bind", m.start(), m.end(), None, None)
             continue
         if m.group("env") is not None:
             # A float steps its counter from inside `\caption`, which this scan
             # cannot see, so the binding ends here rather than going stale.
-            bound.pop(m.group("env_n"), None)
-            out.append(m.group(0))
+            if bound.pop(m.group("env_n"), None) is not None:
+                yield ("bind", m.start(), m.end(), None, None)
             continue
         if m.group("define") is not None:
-            out.append(m.group(0))
             continue
-        counter = m.group("use_c")
-        key = bound.get(counter)
-        if key is None:
-            out.append(m.group(0))
+        key = bound.get(m.group("use_c"))
+        value = labels.get(key) if key is not None else None
+        if key is not None and value is None and key not in missing:
+            missing.append(key)
+        yield ("use", m.start(), m.end(), key, value)
+
+
+def _resolve_counters(latex: str, labels: dict[str, str], missing: list[str]) -> str:
+    """Print `\\theX` as the number the `.aux` recorded for its `\\refstepcounter`.
+
+    A `\\theX` with no label in scope is left exactly as it was: nothing here
+    knows that number, and inventing one would be worse than whatever the
+    renderer makes of the macro. A label the `.aux` does not carry prints `??`,
+    exactly as LaTeX does, because the reader has to see that it failed.
+    """
+    out: list[str] = []
+    cursor = 0
+    for kind, start, end, key, value in _counter_walk(latex, labels, missing, {}):
+        if kind != "use" or key is None:
             continue
-        value = labels.get(key)
-        if value is None:
-            if key not in missing:
-                missing.append(key)
-            out.append(_UNRESOLVED)
-            continue
-        out.append(value)
+        out.append(latex[cursor:start])
+        out.append(value if value is not None else _UNRESOLVED)
+        cursor = end
     out.append(latex[cursor:])
     return "".join(out)
+
+
+class CounterMap:
+    """What a `\\theX` prints, asked one offset at a time.
+
+    `resolve_source` answers for a whole buffer, which is all a renderer needs.
+    A block's NAME cannot be asked that way, because the binding lives in the
+    block BEFORE it: `\\refstepcounter{figure}\\label{k}` is its own block and
+    the heading printing `\\thefigure` is the next one, so a per-block pass sees
+    a counter bound to nothing and covet-india's outline rail read "Figure ."
+    eight times over while the page beside it read "Figure S1." through "S6.".
+
+    This is the other way to ask, and deliberately the only other way: refs.py
+    stays the single answer to "what number did TeX give this", rather than a
+    second scanner growing in `blocks.py` to serve the names.
+    """
+
+    def __init__(self, labels: dict[str, str],
+                 marks: list[tuple[int, tuple[tuple[str, str], ...]]]):
+        self._labels = labels
+        self._offsets = [at for at, _ in marks]
+        self._states = [state for _, state in marks]
+
+    def at(self, offset: int) -> dict[str, str]:
+        """Counter to label, as of `offset` in the buffer this was built from."""
+        i = bisect.bisect_right(self._offsets, offset)
+        return dict(self._states[i - 1]) if i else {}
+
+    def render(self, text: str, offset: int) -> str:
+        """`text`, with each `\\theX` printed as its number.
+
+        `offset` is where `text` begins in the buffer, and only the state it
+        ENTERS with comes from there -- the scan then walks `text` itself, so a
+        block carrying both its own `\\refstepcounter` and the use of it reads
+        correctly and a float inside it still ends the binding.
+
+        A number this cannot follow leaves its macro exactly as it was, and that
+        includes every counter in a manuscript with no compiled `.aux`. Naming
+        has no room for `??`: a name is not a rendering, and a rail full of
+        `Figure ??` would be a worse answer than the macro's own absence.
+        """
+        out: list[str] = []
+        cursor = 0
+        for kind, start, end, _key, value in _counter_walk(
+                text, self._labels, [], self.at(offset)):
+            if kind != "use" or value is None:
+                continue
+            out.append(text[cursor:start])
+            out.append(value)
+            cursor = end
+        if not out:
+            return text
+        out.append(text[cursor:])
+        return "".join(out)
+
+
+def counter_map(latex: str, labels: dict[str, str]) -> CounterMap:
+    """Where each counter binding in `latex` takes effect."""
+    bound: dict[str, str] = {}
+    marks: list[tuple[int, tuple[tuple[str, str], ...]]] = []
+    for kind, _start, end, _key, _value in _counter_walk(latex, labels, [], bound):
+        if kind == "bind":
+            marks.append((end, tuple(sorted(bound.items()))))
+    return CounterMap(labels, marks)
 
 
 def resolve_source(latex: str, labels: dict[str, str]) -> tuple[str, list[str]]:

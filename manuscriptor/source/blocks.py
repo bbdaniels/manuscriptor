@@ -222,6 +222,28 @@ class Block:
     # a whole block and not a prefix of one; see `splice._locate`.
     src_before: str = ""
     src_after: str = ""
+    # `source_text` with each `\theX` printed as the number the `.aux` recorded
+    # for it, FOR NAMING ONLY. Never spliced, never hashed, never shown in the
+    # editor: `source_text` remains the block's own bytes and is the only thing
+    # a save may round-trip, exactly as it is for a flattened `\input`.
+    #
+    # It has to ride on the block because the number is not in the block. The
+    # binding lives in the one before it -- `\refstepcounter{figure}\label{k}`
+    # is its own block, the heading printing `\thefigure` is the next -- so
+    # `label()` cannot work it out from what it is handed. `server/build` reads
+    # it out of `render/refs.CounterMap` once and puts it here, which is what
+    # keeps every namer (the queue, the ticker, the inspector, the outline rail,
+    # the work item handed to the agent) reading one string. None means nothing
+    # resolved, which is also every block of a manuscript never compiled.
+    display_text: str | None = None
+    # Where `parent_heading` STARTS in the flattened document, so whoever
+    # resolves the numbers in it reads the counter state the heading itself
+    # sees. Rendering an inherited heading at the inheriting block's offset puts
+    # every `\refstepcounter` between the two in force, and the block comes back
+    # named "Figure S2." under Figure S1's words -- a confident wrong number,
+    # where the unresolved `\thefigure` at least showed itself. None when the
+    # block inherits nothing.
+    parent_start: int | None = None
 
 
 # ------------------------------------------------------------------ public API
@@ -285,16 +307,29 @@ def label(block: Block) -> str | None:
     One function, because the queue, the ticker, the inspector title and the
     work item handed to the agent must all name a block the same way; naming it
     two ways is how the page comes to contradict itself.
+
+    Read off `display_text` when the build resolved one, so an exhibit that
+    prints its own number through `\\thefigure` is named the way the identical
+    heading with the number typed in is named. Nothing else here knows about
+    counters, and nothing else here should: the number came from the `.aux` via
+    `render/refs.py`, which is the only thing in this repo that reads it.
     """
-    if block.caption:
-        return _clip(block.caption)
+    text = block.display_text or block.source_text
+    caption = block.caption
+    if block.display_text is not None and caption:
+        # Re-cut rather than substituted into: the caption was read off the
+        # unresolved bytes, and only the block around it says whether a
+        # `\caption`'s own counter is one this can follow.
+        caption = _caption_of(block.display_text) or caption
+    if caption:
+        return _clip(caption)
     if block.kind in _SELF_NAMED:
         # Clipped BEFORE the markup test, because the test is about what the
         # author will read. estonia-ecm's holistic-care paragraph opens with
         # thirty clean words and then a `\citep`-free bit of math, and testing
         # the whole first sentence threw the name away over markup that the
         # ticker was never going to show.
-        own = _clip(_name(block.source_text))
+        own = _clip(_name(text))
         # A paragraph that is only markup -- `\maketitle`, a `\setlength` pair, a
         # displayed derivation carrying `\sum` and `\alpha'` -- has no words to
         # be named by, and printing what is left of it names nothing. Those are
@@ -357,7 +392,11 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
 
     blocks: list[Block] = []
     seen: dict[str, int] = {}
-    headings: list[tuple[int, str]] = []
+    # (level, title, offset). The OFFSET rides along because a heading printing
+    # `\thefigure` is only markup until someone resolves it, and the counter
+    # state that resolves it is read at an offset -- the HEADING's, never the
+    # inheriting block's. See `Block.parent_start`.
+    headings: list[tuple[int, str, int]] = []
 
     for cut in cuts:
         built = _rebuild(flat, pieces, piece_starts, texts, cut.start, cut.end)
@@ -377,9 +416,11 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
             while headings and headings[-1][0] >= cut.level:
                 headings.pop()
             parent = headings[-1][1] if headings else None
-            headings.append((cut.level, cut.title))
+            parent_at = headings[-1][2] if headings else None
+            headings.append((cut.level, cut.title, cut.start))
         else:
             parent = headings[-1][1] if headings else None
+            parent_at = headings[-1][2] if headings else None
 
         bid = block_id(source_text)
         n = seen.get(bid, 0) + 1
@@ -406,6 +447,7 @@ def segment(flat: FlatSource) -> tuple[Block, ...]:
                 source_text=source_text,
                 flat_text=flat.text[cut.start : cut.end],
                 parent_heading=parent,
+                parent_start=parent_at,
                 editable=whole,  # splicing safety only; see producers.apply
                 includes=tuple(includes),
                 caption=_caption_of(source_text),

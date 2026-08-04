@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 
 from manuscriptor.evidence import fetch, resolve
+from manuscriptor.evidence import zotero as zotero_mod
 
 
 # --------------------------------------------------------------------------
@@ -473,7 +474,9 @@ def run_fetch(tmp_path, monkeypatch, citations, *, api=None, available=True):
     monkeypatch.setattr(cache, "FULLTEXT_DIR", tmp_path / "cache" / "fulltext")
     monkeypatch.setattr(cache, "EXTRACT_DIR", tmp_path / "cache" / "extract")
     monkeypatch.setattr(fetch, "CC_PDF_CACHE", tmp_path / "nope")
-    monkeypatch.setattr(fetch, "ZOTERO_STORAGE", tmp_path / "nostorage")
+    # ONE spelling of where Zotero keeps files, in zotero.py, now that the
+    # panel opens the same PDFs this pass reads.
+    monkeypatch.setattr(zotero_mod, "ZOTERO_STORAGE", tmp_path / "nostorage")
     out = tmp_path / "build"
     out.mkdir(parents=True, exist_ok=True)
     (out / "citations.json").write_text(json.dumps(citations), encoding="utf-8")

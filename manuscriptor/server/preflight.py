@@ -45,9 +45,21 @@ all. `n/a` is a separate answer and requires a positive determination -- a
 document that declares no bibliography has nothing to check, which is not the
 same as being unable to tell.
 
-**It reports and does not modify anything**, the same posture as `tidy`. Every
-finding carries the fields `drain.comment(..., review=True)` wants, so a run can
-later be delivered as anchored review comments without reshaping anything.
+**It reports and does not modify anything**, the same posture as `tidy` --
+except when asked, and then it writes in exactly one place. `deliver()` files a
+run as review comments in `comments.jsonl`: anchored on the block each finding
+concerns, in the `review` state the drain never works, so a session cannot end
+up acting on a review it wrote itself. That is what the Checks menu asks for and
+what `preflight --review` does; a plain run still touches nothing.
+
+Two things about that delivery are load-bearing and easy to get wrong.
+**Identity is not the anchor.** `Finding.key` says which finding this is, so a
+second run raises nothing new; the quote says where the comment goes, and
+several findings legitimately share one. Deduping on the quote, as this once
+did, both re-filed every finding that had no quotable site AND swallowed the
+second of two findings about one bibliography. **And the checks that did not run
+are delivered too**, or the whole discipline above evaporates at the last step:
+findings alone on the page render a skipped check as a clean bill.
 """
 from __future__ import annotations
 
@@ -128,11 +140,14 @@ DOI_FIX = r"\providecommand{\bibdoi}[1]{\url{https://doi.org/#1}}"
 class Finding:
     """One defect, shaped so it can be filed as an anchored review comment.
 
-    `quote` is what a comment would anchor on: text from the neighbourhood of
-    the defect, with LaTeX markup stripped, so the server's re-anchoring can
-    place it on the paragraph the reader is looking at. Best effort by
-    construction -- an empty fragment leaves a hole exactly where its number
-    should be, so the quote is the sentence around the hole.
+    `quote` is what a comment ANCHORS on, and it is block source rather than
+    prose, because `match_by_quote` compares against block source (see
+    `_Anchors`). It is not the finding's identity: several findings anchor on
+    one bibliography, and a paragraph's quote changes the moment it is edited.
+    `key` is the identity, and the two are decided in different places on
+    purpose. A defect with no site in any document -- a number hand-typed in an
+    R script -- carries no quote and waits at the document rather than being
+    guessed onto a paragraph.
 
     `doc` and `file` are NOT the same question and must not be folded together.
     `doc` is the document being served, which is what a comment is filed
@@ -148,6 +163,31 @@ class Finding:
     line: int           # 1-indexed in `file`, 0 when there is no one line
     quote: str
     body: str
+    # What was found at that place: the hand-typed number, the dropped field,
+    # the include target. Two findings can share a check, a document, a file
+    # and a line -- covet-india's `supplement.tex:192` carries two hand-typed
+    # numbers, and every `bib-fields` finding sits at line 0 of the same `.bib`
+    # -- so this is the last thing that tells them apart, and without it the
+    # second of each pair would be deduped away as a re-filing of the first.
+    site: str = ""
+
+    @property
+    def key(self) -> str:
+        """This finding's identity, for deciding it has already been filed.
+
+        NOT the quote. The quote is where a comment ANCHORS, and the two
+        questions come apart in both directions on a real run: a `bib-fields`
+        finding has no quotable site at all, so a quote-keyed dedupe filed it
+        again on every run into an append-only log, and two findings about one
+        bibliography share an anchor, so a quote-keyed dedupe swallowed one of
+        them. Composed here, once, rather than by each check: a key invented per
+        check is a key that disagrees with itself.
+
+        The body is deliberately not in it. A body carries counts ("39 of 40
+        entries"), so keying on it would re-file the same finding as new every
+        time the bibliography grew.
+        """
+        return "|".join((self.check, self.doc, self.file, str(self.line), self.site))
 
     def as_comment(self) -> dict:
         """The keyword arguments `drain.comment` takes for a review finding.
@@ -155,7 +195,7 @@ class Finding:
         Kept here rather than at the call site so the shape is asserted by a
         test instead of discovered later by a UI that does not fit it.
         """
-        return {"body": self.body, "quote": self.quote,
+        return {"body": self.body, "quote": self.quote, "key": self.key,
                 "doc": self.doc, "check": self.check, "review": True}
 
     def line_text(self) -> str:
@@ -239,10 +279,16 @@ def plan(manuscript_dir: Path | str, main: str | None = None) -> list[tuple[str,
     return pairs
 
 
+def missing(planned: list[tuple[str, str]],
+            results: list[Result]) -> list[tuple[str, str]]:
+    """Every (check, document) pair the run never reported on at all."""
+    got = {(r.check, r.doc) for r in results}
+    return [(c, doc) for c, doc in planned if (c, doc) not in got]
+
+
 def audit(planned: list[tuple[str, str]], results: list[Result]) -> list[str]:
     """What the run failed to say anything about at all. Empty is the good case."""
-    got = {(r.check, r.doc) for r in results}
-    return [f"{c} on {doc}" for c, doc in planned if (c, doc) not in got]
+    return [f"{c} on {doc}" for c, doc in missing(planned, results)]
 
 
 # ------------------------------------------------------------------- the run
@@ -265,8 +311,12 @@ def run(manuscript_dir: Path | str, main: str | None = None) -> list[Result]:
                 results.append(Result(c, doc, "skipped", f"could not read {doc}: {exc}"))
             continue
         flat = flat_mod.flatten(d / doc)
-        results.append(check_fragments(d, doc, flat))
-        results.append(check_exhibit_numbers(d, doc, flat))
+        # Built once per document and handed to every check: it segments the
+        # document, and doing that per finding would re-cut a 90KB manuscript
+        # for each hand-typed number in it.
+        anchors = _Anchors(flat)
+        results.append(check_fragments(d, doc, flat, anchors))
+        results.append(check_exhibit_numbers(d, doc, flat, anchors))
         results.append(check_bib_fields(d, doc, flat))
         results.append(check_bib_doi_links(d, doc, flat))
     results.append(check_scripts(d))
@@ -276,7 +326,8 @@ def run(manuscript_dir: Path | str, main: str | None = None) -> list[Result]:
 # ------------------------------------------------------------ check: fragments
 
 
-def check_fragments(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
+def check_fragments(d: Path, doc: str, flat: flat_mod.FlatSource,
+                    anchors: "_Anchors | None" = None) -> Result:
     """Every include target exists and actually says something.
 
     The measure is what the target CONTRIBUTED to the flattened buffer, taken
@@ -285,6 +336,7 @@ def check_fragments(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
     zero-byte fragment, a fragment holding one comment, and a fragment that
     inputs two other empty fragments.
     """
+    anchors = anchors or _Anchors(flat)
     findings: list[Finding] = []
     for dr in flat.directives:
         rel = _rel(d, dr.file)
@@ -302,7 +354,8 @@ def check_fragments(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
         else:
             continue
         findings.append(Finding("fragments", doc, rel, dr.line,
-                                _quote(flat.text, dr.flat_start), why))
+                                anchors.at(dr.flat_start), why,
+                                site=f"\\{dr.kind}{{{dr.target}}}"))
     return _result("fragments", doc, findings,
                    f"{len(flat.directives)} include directives",
                    len(flat.directives))
@@ -311,7 +364,8 @@ def check_fragments(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
 # ------------------------------------------------------ check: exhibit numbers
 
 
-def check_exhibit_numbers(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
+def check_exhibit_numbers(d: Path, doc: str, flat: flat_mod.FlatSource,
+                          anchors: "_Anchors | None" = None) -> Result:
     """A hand-typed exhibit number in prose is a hardcoded result.
 
     It goes stale the moment the exhibit order changes, silently and with no
@@ -319,6 +373,7 @@ def check_exhibit_numbers(d: Path, doc: str, flat: flat_mod.FlatSource) -> Resul
     repository: within one document always `\\ref` a `\\label`, and across
     documents use a generated label map.
     """
+    anchors = anchors or _Anchors(flat)
     findings: list[Finding] = []
     text = flat.text
     doubling_matters = bool(S_COUNTER_RE.search(text))
@@ -329,8 +384,8 @@ def check_exhibit_numbers(d: Path, doc: str, flat: flat_mod.FlatSource) -> Resul
         where, line = _locate(flat, m.start())
         findings.append(Finding(
             "exhibit-numbers", doc, _rel(d, where), line,
-            _quote(text, m.start()), f"hand-typed \u201c{m.group(0)}\u201d; use \\ref to a \\label, or a "
-            "generated label-map macro across documents"))
+            anchors.at(m.start()), f"hand-typed \u201c{m.group(0)}\u201d; use \\ref to a \\label, or a "
+            "generated label-map macro across documents", site=m.group(0)))
 
     if doubling_matters:
         for m in DOUBLED_RE.finditer(text):
@@ -339,9 +394,9 @@ def check_exhibit_numbers(d: Path, doc: str, flat: flat_mod.FlatSource) -> Resul
             where, line = _locate(flat, m.start())
             findings.append(Finding(
                 "exhibit-numbers", doc, _rel(d, where), line,
-                _quote(text, m.start()), f"\u201c{m.group(0)}\u201d doubles the S prefix: this document "
+                anchors.at(m.start()), f"\u201c{m.group(0)}\u201d doubles the S prefix: this document "
                 "redefines the counter to carry it already, so this renders "
-                "\u201cTable SS19\u201d"))
+                "\u201cTable SS19\u201d", site=m.group(0)))
 
     detail = f"{len(text)} characters of prose"
     if doubling_matters:
@@ -374,8 +429,8 @@ def check_scripts(d: Path) -> Result:
             line = text.count("\n", 0, m.start()) + 1
             findings.append(Finding(
                 "exhibit-numbers", "", rel, line,
-                _quote(text, m.start()), f"analysis script emits a hand-typed \u201c{m.group(0)}\u201d; "
-                "have it write a label-map macro instead"))
+                "", f"analysis script emits a hand-typed \u201c{m.group(0)}\u201d; "
+                "have it write a label-map macro instead", site=m.group(0)))
     return _result("exhibit-numbers", SCRIPTS, findings,
                    f"{scanned} script{'s' if scanned != 1 else ''} under "
                    f"{base.name}/", scanned)
@@ -458,19 +513,26 @@ def check_bib_fields(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
     dropped = [f for f in sorted(present)
                if f not in declared and f not in BIB_BUILTIN]
     where = ", ".join(read)
+    # The same anchor `bib-doi-links` uses, and for the same reason: the bytes
+    # to fix are in the `.bst`, which is not addressable on the page, so the
+    # comment goes where the reader SEES the defect. Several of these findings
+    # share the anchor -- one per dropped field -- which is exactly why `key`
+    # and not the quote decides whether one has been filed before.
+    anchor = _bib_quote(flat)
     findings = [
-        Finding("bib-fields", doc, where, 0, "",
+        Finding("bib-fields", doc, where, 0, anchor,
                 f"{bst.name} does not declare \u201c{f}\u201d, so BibTeX drops it "
-                f"from {present[f]} of {entries} entries without a warning")
+                f"from {present[f]} of {entries} entries without a warning",
+                site=f)
         for f in dropped if f in BIB_LOCATORS]
     rest = [f for f in dropped if f not in BIB_LOCATORS]
     if rest:
         findings.append(Finding(
-            "bib-fields", doc, where, 0, "",
+            "bib-fields", doc, where, 0, anchor,
             f"{bst.name} also drops {len(rest)} field"
             f"{'s' if len(rest) != 1 else ''} no style typesets "
             f"({', '.join(rest)}); harmless unless one of them was carrying "
-            "something you meant to print"))
+            "something you meant to print", site="(fields no style typesets)"))
     detail = (f"{bst.name} declares {len(declared)} fields; "
               f"{entries} entries carry {len(present)}")
     if via != doc:
@@ -800,7 +862,7 @@ def check_bib_doi_links(d: Path, doc: str, flat: flat_mod.FlatSource) -> Result:
             f"{harm}. Emit a semantic macro and define it with the prefix, as "
             f"aer-doi.bst does: {DOI_FIX}")
     finding = Finding(check, doc, _rel(d, bst), line,
-                      _bib_quote(flat), body)
+                      _bib_quote(flat), body, site=lit)
     return Result(check, doc, "findings", detail, entries, (finding,))
 
 
@@ -908,9 +970,12 @@ def _bib_quote(flat: flat_mod.FlatSource) -> str:
 
     The bytes to fix are in the `.bst`, which is not the document and not
     addressable in it, so the comment anchors where the reader SEES the defect:
-    the bibliography. Non-empty by construction, because `drain.comment` dedupes
-    only on a non-empty quote and `bib-fields` findings, which carry none, get
-    filed again on every run.
+    the bibliography. Both bibliography checks use this, so several findings
+    share one anchor; that is fine and is why `Finding.key` rather than the
+    quote decides whether a finding has been filed before. (It did not used to
+    be fine: dedupe was on the quote, so `bib-fields` findings, carrying none,
+    were re-filed on every run, and two findings sharing this one would have
+    swallowed each other.)
 
     The directive itself, NOT `_quote`'s stripped prose. `match_by_quote`
     compares against block source, and the bibliography is a command rather
@@ -970,26 +1035,49 @@ def _lines(text: str):
         i += len(line)
 
 
-_CMD = re.compile(r"\\[A-Za-z@]+\s*(\[[^\]]*\])?")
+class _Anchors:
+    """Which block of the document an offset falls in, said as a quote.
 
+    THE QUOTE IS BLOCK SOURCE, not the prose a reader sees. `match_by_quote`,
+    which places every comment in this program, compares against a block's
+    source with the whitespace flattened; a quote stripped of its LaTeX matched
+    only when the paragraph happened to open with plain words, and a paragraph
+    sitting directly under a `\\section` had the heading's words folded into its
+    quote -- the two are one blank-line-delimited chunk of the file and two
+    blocks -- so the finding anchored nowhere at all. That was the whole of the
+    delivery: the check was right, the comment was right, and it landed in the
+    tray because the anchor had been rewritten into something the page does not
+    contain.
 
-def _quote(text: str, at: int, width: int = 220) -> str:
-    """Plain words around `at`, for a review comment to anchor on.
+    So the block boundaries come from `blocks.segment`, the one segmenter, and
+    how much of a block identifies it comes from `build.quote_for`, the one
+    answer to that question -- grown until no other block contains it, which is
+    what stops twelve identically-opening table files from swallowing each
+    other's comments. Neither rule is re-derived here.
 
-    The paragraph is trimmed to its blank lines, LaTeX commands and their
-    optional arguments are dropped, and braces are removed, which leaves
-    something close to what the reader sees on the page. Best effort by
-    construction: the anchoring machinery re-places a quote that has drifted,
-    and a quote that matches nothing lands the comment unanchored rather than
-    wrong.
+    An offset in no block at all (the preamble, the space between two floats)
+    has no quote, and says so. An unanchored finding waits at the document,
+    which is the answer the tray gives an unplaceable reviewer note; a guessed
+    paragraph is the one outcome that is worse than that.
     """
-    lo = max(text.rfind("\n\n", 0, at) + 2, at - width, 0)
-    hi = text.find("\n\n", at)
-    hi = min(len(text) if hi < 0 else hi, at + width)
-    chunk = _uncommented(text[lo:hi])
-    chunk = _CMD.sub(" ", chunk)
-    chunk = chunk.replace("{", " ").replace("}", " ").replace("$", " ")
-    return " ".join(chunk.split())[:200]
+
+    def __init__(self, flat: flat_mod.FlatSource):
+        # Imported here rather than at the top of the module: `build` pulls in
+        # the render path, and `plan`/`report` have no use for any of it.
+        from manuscriptor.server import build as build_mod
+        from manuscriptor.source import blocks as blocks_mod
+
+        self._blocks = blocks_mod.segment(flat)
+        self._quote_for = build_mod.quote_for
+        self._cache: dict[str, str] = {}
+
+    def at(self, offset: int) -> str:
+        for blk in self._blocks:
+            if blk.flat_start <= offset < blk.flat_end:
+                if blk.id not in self._cache:
+                    self._cache[blk.id] = self._quote_for(blk, self._blocks)
+                return self._cache[blk.id]
+        return ""
 
 
 # --------------------------------------------------------------- the reporting
@@ -1025,6 +1113,77 @@ def report(manuscript_dir: Path | str, planned: list[tuple[str, str]],
     elif not skipped and not missing:
         lines.append(f"{len(results)} checks ran, all clean.")
     return "\n".join(lines)
+
+
+FILED_BY = "preflight"
+
+
+def deliverable(planned: list[tuple[str, str]],
+                results: list[Result]) -> list[Finding]:
+    """Everything a run owes the author, findings AND the checks that did not run.
+
+    The second half is not a nicety. This module's whole discipline is that a
+    skipped check never renders as a pass, and delivering only findings renders
+    it as exactly that: the author reads an empty margin and calls the
+    bibliography clean, which is the failure the preflight memo is about.
+
+    A finding from the scripts sweep belongs to no one document -- an R file
+    printing "Table~S19" is a defect of the project -- and is filed with no
+    document, which is how the log says "whichever one is being read".
+    """
+    out = [f for r in results for f in r.findings]
+    for r in results:
+        if r.status != "skipped":
+            continue
+        out.append(Finding(
+            r.check, "" if r.doc == SCRIPTS else r.doc, "", 0, "",
+            f"the {r.check} check could not run on {_where(r.doc)}: {r.detail}. "
+            "A skipped check is not a pass, so nothing here has been cleared.",
+            site="did not run"))
+    for check, doc in missing(planned, results):
+        out.append(Finding(
+            check, "" if doc == SCRIPTS else doc, "", 0, "",
+            f"the {check} check reported nothing at all on {_where(doc)}, not "
+            "even that it was skipped. Nothing here has been checked.",
+            site="no result"))
+    return out
+
+
+def _where(doc: str) -> str:
+    return "the analysis scripts" if doc == SCRIPTS else (doc or "this manuscript")
+
+
+def deliver(manuscript_dir: Path | str, *, main: str | None = None,
+            planned: list[tuple[str, str]] | None = None,
+            results: list[Result] | None = None,
+            author: str = FILED_BY) -> list[dict]:
+    """File a run as review comments, and answer with the ones that were new.
+
+    `review` is the state the drain never works, so these are pinned and
+    readable at once without an agent ever being handed its own review as
+    instructions. Anchoring is by quote, through the same `match_by_quote` every
+    other comment goes through; a finding whose quote matches nothing waits at
+    the document rather than being guessed onto a paragraph.
+
+    Nothing else here writes anything, which is why this is a separate verb and
+    not something `run` does. `manuscriptor preflight` still reports and
+    modifies nothing; `--review`, and the toolbar, are the ways to ask for it.
+    """
+    # Imported here, not at the top: `drain` pulls in the whole build, and a
+    # report-only run of this module has no business paying for it.
+    from manuscriptor.server import drain
+
+    d = Path(manuscript_dir).resolve()
+    if planned is None:
+        planned = plan(d, main)
+    if results is None:
+        results = run(d, main)
+    filed: list[dict] = []
+    for f in deliverable(planned, results):
+        rec = drain.comment(d, author=author, **f.as_comment())
+        if rec is not None:
+            filed.append(rec)
+    return filed
 
 
 def exit_code(planned: list[tuple[str, str]], results: list[Result]) -> int:

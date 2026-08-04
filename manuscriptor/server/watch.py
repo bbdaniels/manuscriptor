@@ -192,7 +192,8 @@ def block_until_log_grows(log: Path, *, from_offset: int, poll: float = 0.5) -> 
         time.sleep(poll)
 
 
-def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 200):
+def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 200,
+               create: bool = True):
     """Watch ONE file, wherever it lives. Returns a function that stops it.
 
     The tree watcher skips generated output, and rightly: it holds the
@@ -210,6 +211,17 @@ def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 
     lived under `build/`, and the caller that believed it watched a file the
     drain had stopped writing months earlier -- which fires no events, so the
     panel simply never moved and nothing reported an error.
+
+    THE DIRECTORY IS MADE BECAUSE THE FILE USUALLY DOES NOT EXIST YET: watchdog
+    schedules a directory, and the feed is written for the first time when the
+    drain first runs. `create=False` is for a read-only serve, where making it
+    would be the one thing the mode promises not to do -- `.manuscriptor/agent/`
+    inside the author's working tree, created by a server that was only ever
+    asked to read. Nothing is lost by not making it: a read-only serve starts no
+    drain, so an absent directory means no feed can appear while it runs, and a
+    drain running in ANOTHER process has already made the directory, so that
+    watch is armed exactly as before. A watch that could not be armed returns a
+    stop function that stops nothing, so the caller's teardown is unchanged.
     """
     path = Path(path).resolve()
 
@@ -231,5 +243,8 @@ def watch_file(path: Path, on_change: Callable[[], None], *, debounce_ms: int = 
                 self.timer.daemon = True
                 self.timer.start()
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.parent.is_dir():
+        return lambda: None
     return _schedule(str(path.parent), False, _One())
