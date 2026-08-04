@@ -1268,8 +1268,16 @@
     /* Never hand-edit a generated block. Editing it would hardcode a result
        into the manuscript, which is the one thing this tool exists to stop. */
     if (b.editable === false) {
+      /* `values` is derived from the block's \input directives, so the block
+         that IS the included file has none -- and the fallback then read "the
+         script that writes <this same file>", a tautology printed exactly where
+         the author needed somewhere to go. The block's own `producer` is in the
+         payload beside them and is the more direct answer, so it leads. */
       var producers = (b.values || []).map(function (v) { return v.producer; }).filter(Boolean);
-      var who = producers.length ? producers.join(', ') : 'the script that writes ' + (b.file || 'this file');
+      if (b.producer) producers.unshift(b.producer);
+      var who = producers.length
+        ? producers.filter(function (p, i) { return producers.indexOf(p) === i; }).join(', ')
+        : 'the script that writes ' + (b.file || 'this file');
       return { body: card('This block is generated', fileLine(b),
         '<div class="locked"><span>⊘</span><div><b>Not editable here.</b> This file is written by <b>' +
         esc(who) + '</b>. Editing it would hardcode a result into the manuscript. ' +

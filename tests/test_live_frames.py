@@ -830,3 +830,42 @@ def test_a_refused_reveal_is_printed_too(tmp_path):
     assert "not there any more" in (out["panel"] or ""), (
         "reveal was refused and the page said nothing"
     )
+
+
+# ------------------------------------------ a refusal has to have a destination
+
+
+def test_a_refused_generated_block_names_the_script_that_writes_it(tmp_path):
+    """A refusal with nowhere to go is half a refusal.
+
+    The panel built `who` out of `b.values`, which is derived from the block's
+    `\\input` directives -- so the block that IS the included file has no values
+    and the card fell back to "the script that writes <that same file>", a
+    tautology printed where the author needed a path. The payload has carried
+    `producer` alongside `values` the whole time; the card simply did not read
+    it. Seen on covet-india, whose eleven `py/` producers had just become
+    visible to the scan.
+    """
+    (tmp_path / "py").mkdir()
+    (tmp_path / "py" / "fig1.py").write_text(
+        'NOTE = "f1-note.tex"\nopen(NOTE, "w").write(note)\n', encoding="utf-8")
+    (tmp_path / "f1-note.tex").write_text(
+        "Note: the estimate is 0.48 (SE 0.13) across 752 providers.\n", encoding="utf-8")
+    session, page = served(tmp_path, r"""\documentclass{article}
+\begin{document}
+First paragraph, entirely unremarkable, and long enough to be a block of its own.
+
+\input{f1-note}
+
+Third paragraph, which must not be disturbed by anything happening above it here.
+\end{document}
+""")
+    note = para(session, "0.48 (SE 0.13)")
+    assert note.editable is False, "the fixture is not a refused block at all"
+    out = pagedriver.drive(page, [], tmp_path=tmp_path, steps=["select:" + note.id])
+    panel = out["panel"] or ""
+    assert "the script that writes" not in panel, (
+        "the card told the author his file is written by the script that writes "
+        "his file: " + panel[:400]
+    )
+    assert "fig1.py" in panel, "the card refused the edit without naming a producer"

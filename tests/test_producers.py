@@ -67,6 +67,57 @@ def test_stata_and_python_producers_count_too(tmp_path):
     assert a.resolve() in found and b.resolve() in found
 
 
+# ------------------------------------------- where the code is allowed to live
+#
+# `_CODE_DIRS` is not a guess at what a script looks like -- `_CODE_SUFFIXES`
+# answers that -- it is the list of subdirectories `scan` is willing to RECURSE
+# into. Everything at the top level of the repo and of the manuscript directory
+# is read regardless. So a gap in the list is invisible: the scan runs, finds
+# the top-level scripts, and silently misses a whole directory of producers.
+#
+# covet-india keeps eleven Python producers in `py/`, which was not on the list.
+# `do/` was, which is why its two Stata outputs were correctly refused while ten
+# generated `exhibits/*-note.tex` files -- f-strings carrying twenty to thirty
+# interpolated estimates each -- stayed editable on a live manuscript.
+
+
+def test_a_producer_in_a_python_directory_is_found(tmp_path):
+    """The bug. `py/` is as ordinary a name for Python as `do/` is for Stata."""
+    s = w(tmp_path, "py/fig1_rounds_cases.py",
+          'NOTE_OUT = "f1-rounds-cases-note.tex"\n'
+          'NOTE_OUT.write_text(note)\n')
+    note = w(tmp_path, "manuscript/exhibits/f1-rounds-cases-note.tex", TABLE)
+    assert producers.scan(tmp_path / "manuscript").get(note.resolve()) == s.resolve()
+
+
+def test_code_directories_match_whatever_their_case(tmp_path):
+    """`Analysis/` and `PY/` house the same code `analysis/` and `py/` do.
+
+    macOS hides this: its filesystem is case-insensitive, so `root / "R"` finds
+    a directory named `r` here and finds nothing on the Linux box that runs the
+    same manuscript. A case-sensitive list is a portability bug that cannot be
+    reproduced on the machine it is written on.
+    """
+    w(tmp_path, "Analysis/mk.R", 'writeLines(rows, "tab_upper.tex")\n')
+    w(tmp_path, "PY/mk.py", 'open("tab_shouty.tex", "w").write(out)\n')
+    a = w(tmp_path, "latex/tables/tab_upper.tex", TABLE)
+    b = w(tmp_path, "latex/tables/tab_shouty.tex", TABLE)
+    found = producers.scan(tmp_path / "latex")
+    assert a.resolve() in found and b.resolve() in found
+
+
+def test_a_directory_that_is_not_code_is_not_walked(tmp_path):
+    """The list is a boundary, not decoration.
+
+    An unbounded walk would reach `ado/` -- third-party Stata packages, which
+    write files constantly and own none of this manuscript's exhibits.
+    """
+    w(tmp_path, "ado/plus/e/estout.ado", 'file write handle "tableA1.tex"\n')
+    w(tmp_path, "ado/plus/e/helper.do", 'esttab using "tableA1.tex", replace\n')
+    t = w(tmp_path, "latex/tables/tableA1.tex", TABLE)
+    assert t.resolve() not in producers.scan(tmp_path / "latex")
+
+
 # --------------------------------- reading a .tex is not producing it
 
 # dsp-bias's `paper/make_word_submission.py`, reduced to the four lines that

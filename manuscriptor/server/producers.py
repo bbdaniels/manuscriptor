@@ -58,8 +58,39 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# Where analysis code tends to live, relative to the repo root.
-_CODE_DIRS = ("code", "scripts", "do", "R", "src", "analysis", "stata", "dofiles")
+# Which subdirectories the scan is willing to RECURSE into, relative to the repo
+# root and to the manuscript directory.
+#
+# It is not a guess at what a script looks like -- `_CODE_SUFFIXES` answers that,
+# and every script sitting at the top level of either directory is read whatever
+# it is called, which is how covet-india's `manuscript/make-bib.py` was found.
+# This list exists only as the BOUNDARY on recursion, and the boundary is the
+# point: an unbounded walk reaches `ado/` (third-party Stata packages, which
+# write constantly and own nothing here), `renv/`, `data/`, and vendored trees,
+# and each of those can only produce over-claims -- the direction of this error
+# that refuses a whole file of prose and has nothing downstream to catch it.
+#
+# So a gap in the list is silent by construction. The scan still runs, still
+# finds the top-level scripts, and misses a directory of producers with no
+# symptom until an author edits a generated file and the next `make` eats it.
+# covet-india kept eleven Python producers in `py/`; `do/` was listed and its two
+# Stata outputs were correctly refused, while ten generated `exhibits/*-note.tex`
+# -- f-strings carrying twenty to thirty interpolated estimates each -- stayed
+# editable on a manuscript being served read-write.
+#
+# Matched case-insensitively against the directory entries that actually exist,
+# rather than by constructing `root / name`. Constructing the path outsources the
+# comparison to the filesystem, which answers differently per platform: macOS is
+# case-insensitive, so `root / "R"` finds `r/` here and finds nothing on a Linux
+# box running the same manuscript. That is a portability bug that cannot be
+# reproduced on the machine it is written on.
+_CODE_DIRS = (
+    "code", "scripts", "src",
+    "do", "dofiles", "do-files", "stata",
+    "R", "analysis",
+    "py", "python", "notebooks",
+)
+_CODE_DIR_SET = frozenset(n.casefold() for n in _CODE_DIRS)
 _CODE_SUFFIXES = (".R", ".r", ".do", ".py", ".Rmd", ".qmd")
 
 _SKIP_DIRS = {".git", "renv", "node_modules", "__pycache__", ".venv", "venv", "build", "data"}
@@ -676,12 +707,26 @@ def _replace(block, **changes):
     return block._replace(**changes)
 
 
+def code_dirs(root: Path) -> list[Path]:
+    """The subdirectories of `root` that hold analysis code.
+
+    Enumerated and compared here rather than built as `root / name`, so the
+    answer does not depend on whether the filesystem folds case. One function,
+    because `insert.find_runfile` asks the same question and a second spelling
+    of it would drift the way the two copies of every other rule in this repo
+    have.
+    """
+    try:
+        entries = sorted(Path(root).iterdir())
+    except OSError:
+        return []
+    return [p for p in entries if p.is_dir() and p.name.casefold() in _CODE_DIR_SET]
+
+
 def _find_scripts(root: Path) -> list[Path]:
     found: list[Path] = []
-    for name in _CODE_DIRS:
-        d = root / name
-        if d.is_dir():
-            found.extend(_walk_scripts(d))
+    for d in code_dirs(root):
+        found.extend(_walk_scripts(d))
     found.extend(p for p in root.glob("*") if p.is_file() and p.suffix in _CODE_SUFFIXES)
     return found
 

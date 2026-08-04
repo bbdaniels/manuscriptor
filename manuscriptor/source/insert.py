@@ -1220,7 +1220,7 @@ def find_runfile(root: Path) -> Path | None:
     """The script that runs the others, if this project has one."""
     root = Path(root).resolve()
     for base in (root.parent, root):
-        for d in (base,) + tuple(base / n for n in producers._CODE_DIRS):
+        for d in [base] + producers.code_dirs(base):
             if not d.is_dir():
                 continue
             for p in sorted(d.glob("*")):
