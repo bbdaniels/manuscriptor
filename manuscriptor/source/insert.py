@@ -58,14 +58,32 @@ class LibraryError(Exception):
 # --------------------------------------------------------------- the vocabulary
 
 
+NA = "n/a"
+
+
 @dataclass(frozen=True)
 class Check:
-    """One thing that had to be true. `blocking` decides whether it stops the write."""
+    """One thing that had to be true. `blocking` decides whether it stops the write.
+
+    `status` exists because a row that cannot apply must not render as a tick.
+    The gate asks for a canonical DOI on which Crossref and OpenAlex agree, and
+    a book has none of those things -- Crossref does not resolve a work with no
+    DOI, so "Crossref agrees" is not a pass, it is a question that was never
+    asked. `n/a` is a POSITIVE determination and nothing else may use it: the
+    library record was read and it records no DOI. Not knowing is still a
+    failure, and is still reported as one. Same discipline as preflight, where a
+    skipped check never renders as a pass.
+    """
 
     name: str
     ok: bool
     detail: str
     blocking: bool = True
+    status: str = ""
+
+    @property
+    def state(self) -> str:
+        return self.status or ("pass" if self.ok else "fail")
 
 
 @dataclass
@@ -124,7 +142,7 @@ class Plan:
             "rerun": self.rerun,
             "library_add": self.library_add,
             "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail,
-                        "blocking": c.blocking} for c in self.checks],
+                        "blocking": c.blocking, "state": c.state} for c in self.checks],
             "writes": [{"path": w.rel(root), "kind": w.kind, "label": w.label,
                         "preview": w.preview, "context": w.context} for w in self.writes],
         }
@@ -210,6 +228,7 @@ def plan_citation(
     base: str | None = None,
     key: str | None = None,
     beside: str | None = None,
+    produced: dict | None = None,
 ) -> Plan:
     """Search the library first, then Crossref and OpenAlex, then gate.
 
@@ -259,30 +278,72 @@ def plan_citation(
         plan.summary = f"{meta.get('title') or cite_key} — {cite_key}, already in your bibliography."
         return plan
 
-    doi, seed, from_library = _candidate_doi(query, net, library)
+    doi, seed, held_lib = _candidate_doi(query, net, library)
+    from_library = held_lib is not None
 
     checks: list[Check] = []
-    checks.append(Check(
-        "doi", bool(doi),
-        f"{doi}" if doi else f"nothing with a DOI matched {query!r} in your library, Crossref or OpenAlex",
-    ))
-    cross = net.crossref_by_doi(doi) if doi else None
-    checks.append(Check(
-        "crossref", bool(cross),
-        (cross or {}).get("title", "") if cross else "Crossref does not resolve this DOI",
-    ))
-    alex = net.openalex_by_doi(doi) if doi else None
-    checks.append(Check(
-        "openalex", bool(alex),
-        (alex or {}).get("title", "") if alex else "OpenAlex does not resolve this DOI",
-    ))
-    agree = bool(cross and alex and _titles_agree(cross.get("title"), alex.get("title")))
-    checks.append(Check(
-        "agreement", agree,
-        "Crossref and OpenAlex name the same work" if agree else
-        (f"Crossref calls it {cross.get('title')!r}; OpenAlex calls it {alex.get('title')!r}"
-         if cross and alex else "both catalogues have to answer before they can agree"),
-    ))
+
+    # NOTHING MAY BE APPENDED TO A GENERATED BIBLIOGRAPHY, and the author is
+    # told so before any of the identity work, because no answer to it can end
+    # in a write to that file. covet-india's `sample.bib` is exported from
+    # Zotero; an entry appended here dies at the next `make bib` while the
+    # `\citep{...}` in main.tex survives, which is a broken build the author did
+    # not cause and cannot see coming.
+    refusal = _generated_bib(bib_path, root, produced)
+    if refusal:
+        checks.append(Check("bibliography", False, refusal))
+
+    # A BOOK HAS NO DOI, AND THAT IS AN ANSWER RATHER THAN A GAP. The gate used
+    # to find the author's own copy in Zotero and then throw it away for having
+    # no DOI, falling through to a Crossref search that could only offer near
+    # misses -- three attempts at Rogers' *Diffusion of Innovations* returned
+    # three different wrong works, one of them Rogers' own 1993 chapter. When
+    # the library holds the work, that IS identity; `match` has said so all
+    # along.
+    no_doi_on_record = from_library and not doi
+    if no_doi_on_record:
+        checks.append(Check("doi", True, _no_doi_detail(seed, held_lib), status=NA))
+    else:
+        checks.append(Check(
+            "doi", bool(doi),
+            f"{doi}" if doi
+            else f"nothing with a DOI matched {query!r} in your library, Crossref or OpenAlex",
+        ))
+
+    if no_doi_on_record:
+        # Not run, and said so. A tick here would claim a corroboration that
+        # never happened.
+        cross = alex = None
+        agree = False
+        for name in ("crossref", "openalex"):
+            checks.append(Check(
+                name, True,
+                f"{name.capitalize() if name == 'crossref' else 'OpenAlex'} resolves DOIs, "
+                "and this work has none; it was not asked",
+                status=NA))
+        checks.append(Check(
+            "agreement", True,
+            "neither catalogue was asked, so there is nothing for them to agree on; "
+            "your library record is the identity instead",
+            status=NA))
+    else:
+        cross = net.crossref_by_doi(doi) if doi else None
+        checks.append(Check(
+            "crossref", bool(cross),
+            (cross or {}).get("title", "") if cross else "Crossref does not resolve this DOI",
+        ))
+        alex = net.openalex_by_doi(doi) if doi else None
+        checks.append(Check(
+            "openalex", bool(alex),
+            (alex or {}).get("title", "") if alex else "OpenAlex does not resolve this DOI",
+        ))
+        agree = bool(cross and alex and _titles_agree(cross.get("title"), alex.get("title")))
+        checks.append(Check(
+            "agreement", agree,
+            "Crossref and OpenAlex name the same work" if agree else
+            (f"Crossref calls it {cross.get('title')!r}; OpenAlex calls it {alex.get('title')!r}"
+             if cross and alex else "both catalogues have to answer before they can agree"),
+        ))
 
     meta = dict(cross or seed or {})
     if doi:
@@ -306,7 +367,7 @@ def plan_citation(
           f"the closest thing either catalogue offers is {meta.get('title')!r}, which is not what "
           f"you asked for. Give a DOI, or more of the title."))))
 
-    held = library.find(doi=doi) if doi else None
+    held = held_lib or (library.find(doi=doi) if doi else None)
     library_add = None
     if held:
         checks.append(Check("zotero", True, f"already in your library as {held.get('key')}"))
@@ -336,7 +397,10 @@ def plan_citation(
     # because two keys for one paper is how a bibliography starts to rot.
     entries = read_bib(bib_path) if bib_path else {}
     existing = _bib_key_for_doi(entries, doi)
-    cite_key = key or existing or bib_key(meta, taken=entries)
+    # Zotero's own citation key wins over a minted one. covet-india's generator
+    # resolves every cited key back to exactly one library record and fails if
+    # it cannot, so a key invented here is one `make bib` can never satisfy.
+    cite_key = key or existing or meta.get("citation_key") or bib_key(meta, taken=entries)
     plan.cite_key = cite_key
 
     writes: list[Write] = []
@@ -733,7 +797,7 @@ def handle(data: dict, *, root: Path, build, read_only: bool,
                 # `beside` names a citation the author clicked, which is a target
                 # that needs no caret and cannot be measured wrong.
                 beside=str(data.get("beside") or "") or None,
-                bib_path=bib_path, net=net, library=library, **common)
+                bib_path=bib_path, net=net, library=library, produced=produced, **common)
         elif kind == "value":
             plan = plan_value(
                 key=str(data.get("key") or ""), description=str(data.get("description") or ""),
@@ -1298,26 +1362,68 @@ def bib_key(meta: dict, *, taken: dict) -> str:
     return stem + secrets.token_hex(2)
 
 
-_BIB_TYPES = {"journal-article": "article", "book": "book", "book-chapter": "incollection",
-              "posted-content": "misc", "report": "techreport", "proceedings-article": "inproceedings"}
+# Two vocabularies, one map: Crossref's `book-chapter` and Zotero's
+# `bookSection` are the same entry type, and a caller should not have to know
+# which catalogue an answer came from.
+_BIB_TYPES = {
+    "journal-article": "article", "book": "book", "book-chapter": "incollection",
+    "posted-content": "misc", "report": "techreport", "proceedings-article": "inproceedings",
+    "journalArticle": "article", "bookSection": "incollection",
+    "conferencePaper": "inproceedings", "thesis": "phdthesis", "preprint": "misc",
+    "manuscript": "unpublished", "webpage": "misc",
+}
+
+# WHICH FIELDS EACH ENTRY TYPE TAKES. Every type used to be given the same nine
+# fields, so an `@incollection` was emitted with `journal = {...}` -- a field
+# BibTeX does not read on that type, which silently drops the container title
+# out of the rendered reference. The container has a different name per type,
+# and that is the whole of the mapping.
+_BIB_FIELDS = {
+    "article": ("title", "author", "journal", "year", "volume", "number", "pages", "doi"),
+    "incollection": ("title", "author", "booktitle", "editor", "year", "publisher",
+                     "address", "edition", "pages", "isbn", "doi"),
+    "inproceedings": ("title", "author", "booktitle", "year", "publisher", "address",
+                      "pages", "doi"),
+    "book": ("title", "author", "year", "publisher", "address", "edition", "volume",
+             "isbn", "doi"),
+    "techreport": ("title", "author", "institution", "year", "number", "doi", "url"),
+    "phdthesis": ("title", "author", "school", "year", "doi", "url"),
+    "unpublished": ("title", "author", "year", "note", "doi", "url"),
+    "misc": ("title", "author", "year", "publisher", "howpublished", "doi", "url"),
+}
 
 
 def bib_entry(key: str, meta: dict) -> str:
     kind = _BIB_TYPES.get(str(meta.get("type") or ""), "article")
     authors = meta.get("authors") or []
-    fields = [
-        ("title", meta.get("title")),
-        ("author", " and ".join(str(a) for a in authors) if authors else None),
-        ("journal", meta.get("journal")),
-        ("year", meta.get("year")),
-        ("volume", meta.get("volume")),
-        ("number", meta.get("issue")),
-        ("pages", meta.get("pages")),
-        ("publisher", meta.get("publisher")),
-        ("doi", meta.get("doi")),
-    ]
+    # A container title arrives under one name and is written under another:
+    # Crossref's `container-title` is a journal for an article and a book title
+    # for a chapter, and a report's publisher is its institution.
+    have = {
+        "title": meta.get("title"),
+        "author": " and ".join(str(a) for a in authors) if authors else None,
+        "editor": meta.get("editor"),
+        "journal": meta.get("journal"),
+        "booktitle": meta.get("booktitle") or meta.get("journal"),
+        "institution": meta.get("institution") or meta.get("publisher"),
+        "school": meta.get("school") or meta.get("publisher"),
+        "publisher": meta.get("publisher"),
+        "address": meta.get("address"),
+        "edition": meta.get("edition"),
+        "year": meta.get("year"),
+        "volume": meta.get("volume"),
+        "number": meta.get("number") or meta.get("issue"),
+        "pages": meta.get("pages"),
+        "isbn": meta.get("isbn"),
+        "doi": meta.get("doi"),
+        "url": meta.get("url"),
+        "note": meta.get("note"),
+        "howpublished": meta.get("howpublished"),
+    }
     body = "".join(
-        f"  {name} = {{{_clean(value)}}},\n" for name, value in fields if value not in (None, "")
+        f"  {name} = {{{_clean(have[name])}}},\n"
+        for name in _BIB_FIELDS.get(kind, _BIB_FIELDS["article"])
+        if have.get(name) not in (None, "")
     )
     return f"\n@{kind}{{{key},\n{body}}}\n"
 
@@ -1369,29 +1475,90 @@ def _norm_title(t) -> str:
 
 
 def _candidate_doi(query: str, net, library):
-    """The DOI to gate, whatever metadata came with it, and where it came from.
+    """The DOI to gate, the metadata that came with it, and the library record.
 
     The library is asked first, deliberately: a paper the author already holds
     should not be re-derived from a search engine, and its own DOI is the one
-    the rest of his bibliography is keyed on. Whether the answer came from there
-    travels back with it, because a record he already holds needs no relevance
-    check and asking the library a second time to find that out is a second
-    round trip for something already known.
+    the rest of his bibliography is keyed on. The record itself travels back,
+    because a record he already holds needs no relevance check and asking the
+    library a second time to find that out is a second round trip for something
+    already known.
+
+    **A library hit with no DOI is still the answer.** It used to be discarded
+    -- the record was found, `held.get("doi")` was empty, and the search fell
+    through to Crossref, which does not hold books and therefore offered the
+    nearest article-shaped thing it had. That is how three tries at one book
+    produced three different wrong records. A book identified by ISBN, or by
+    nothing but the author's own record of it, is identified.
     """
     q = (query or "").strip()
     m = _DOI_RE.search(q)
     if m:
-        return _norm_doi(m.group(0)), None, False
+        return _norm_doi(m.group(0)), None, None
 
     held = library.find(title=q) if hasattr(library, "find") else None
-    if held and held.get("doi"):
-        return _norm_doi(held["doi"]), {"title": held.get("title"), "doi": held.get("doi")}, True
+    if held:
+        doi = _norm_doi(held["doi"]) if held.get("doi") else None
+        return doi, _from_library(held), held
 
     hits = list(net.crossref_search(q) or [])
     for cand in hits:
         if cand.get("doi"):
-            return _norm_doi(cand["doi"]), cand, False
-    return None, (hits or [None])[0], False
+            return _norm_doi(cand["doi"]), cand, None
+    return None, (hits or [None])[0], None
+
+
+def _from_library(held: dict) -> dict:
+    """A Zotero record as the metadata the rest of this module speaks.
+
+    Only the fields the record actually carries. A missing `publisher` must stay
+    missing rather than become an empty field in a bib entry.
+    """
+    meta = {k: held.get(k) for k in (
+        "title", "doi", "isbn", "type", "authors", "year", "journal", "booktitle",
+        "publisher", "address", "edition", "volume", "issue", "pages", "citation_key",
+    ) if held.get(k) not in (None, "")}
+    return meta
+
+
+def _no_doi_detail(seed: dict | None, held: dict | None) -> str:
+    """Why the `doi` row does not apply, said as a determination rather than a shrug."""
+    seed = seed or {}
+    key = (held or {}).get("key")
+    where = f"your Zotero record {key}" if key else "your library"
+    isbn = seed.get("isbn")
+    if isbn:
+        return f"no DOI; {where} identifies it by ISBN {isbn}"
+    return f"no DOI; {where} records none, and is itself the identity"
+
+
+def _generated_bib(bib_path, root, produced=None) -> str | None:
+    """Why nothing may be appended to this bibliography, or None if it may.
+
+    Provenance is `server/producers.py`'s decision and this asks it rather than
+    guessing from a name or a directory. It is deliberately a CHECK with a named
+    remedy and never a silent skip: a hand-maintained bibliography that were
+    wrongly claimed here would refuse every legitimate insertion, so the author
+    has to be able to see which file, which producer, and what to run instead.
+    """
+    if bib_path is None:
+        return None
+    path = Path(bib_path)
+    if produced is None:
+        produced = producers.scan(Path(root))
+    p = producers.provenance(path, produced)
+    if not p.generated:
+        return None
+    who = Path(p.producer).name if p.producer else None
+    return (
+        f"{path.name} is a generated file"
+        + (f", written by {who}" if who else " -- its own header says so")
+        + ". An entry appended here is destroyed the next time it is regenerated, while the "
+        "\\citep{} in the manuscript survives, leaving a citation with no entry. Add the work "
+        "to the source that generator reads"
+        + (f", then regenerate: {p.remedy}" if p.remedy else ", then regenerate it")
+        + "."
+    )
 
 
 # ============================================================ the outside world
@@ -1505,9 +1672,16 @@ class ZoteroLibrary:
         item = c.get_item(key)
         if item is None:
             return None
+        # Everything the entry will need, because a work with no DOI is
+        # identified by what else the record holds -- its ISBN, its publisher,
+        # and the key Better BibTeX already gave it.
         return {
             "key": item.key, "doi": item.doi, "title": item.title,
             "has_fulltext": bool(c.get_fulltext(item.key)),
+            "isbn": item.isbn, "type": item.item_type, "booktitle": item.book_title, "authors": list(item.authors or []),
+            "year": item.year, "journal": item.journal, "publisher": item.publisher,
+            "address": item.place, "edition": item.edition, "volume": item.volume,
+            "issue": item.issue, "pages": item.pages, "citation_key": item.citation_key,
         }
 
     def add_by_doi(self, doi):

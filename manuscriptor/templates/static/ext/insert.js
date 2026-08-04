@@ -359,10 +359,16 @@
     if ((plan.checks || []).length) {
       html += '<div class="w"><h4>Checks</h4><div style="padding:.35rem .6rem">' +
         plan.checks.map(function (c) {
-          var cls = c.ok ? 'yes' : (c.blocking ? 'no' : 'adv');
-          return '<div class="chk"><b class="' + cls + '">' + (c.ok ? '✓' : (c.blocking ? '✗' : '!')) +
+          // A row that could not apply must not render as a tick. A book has no
+          // DOI, so "Crossref agrees" is not a pass, it is a question that was
+          // never asked, and a ✓ there claims a corroboration that never happened.
+          var na = c.state === 'n/a';
+          var cls = na ? 'adv' : (c.ok ? 'yes' : (c.blocking ? 'no' : 'adv'));
+          var mark = na ? '–' : (c.ok ? '✓' : (c.blocking ? '✗' : '!'));
+          return '<div class="chk"><b class="' + cls + '">' + mark +
             ' ' + esc(c.name) + '</b><span>' + esc(c.detail) +
-            (!c.blocking ? ' <em>(does not block)</em>' : '') + '</span></div>';
+            (na ? ' <em>(not applicable)</em>' : '') +
+            (!c.blocking && !na ? ' <em>(does not block)</em>' : '') + '</span></div>';
         }).join('') + '</div></div>';
     }
 

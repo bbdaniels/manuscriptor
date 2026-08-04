@@ -1,4 +1,4 @@
-r"""Which `.tex` files are written by analysis code.
+r"""Which files are written by analysis code.
 
 The first cut of this rule lived in `segment()` and said "generated means the
 host file is not the root .tex". That is wrong in a way that matters: on
@@ -35,10 +35,27 @@ blocks of that manuscript had a claimed host, and only the root-file rescue in
 or one `\input` away. What is computed here is therefore the verb, not the noun:
 a filename counts only when the statement it sits in, or the name it is bound
 to, is doing the writing.
+
+**A `.tex` is not the only artifact a script writes.** covet-india's
+`sample.bib` is exported from Zotero by `manuscript/make-bib.py`, and an entry
+appended to it is destroyed by the next `make bib` while the `\citep{...}` that
+needs it survives -- a citation with no bibliography entry, and a broken build
+the author did not cause. The question "who writes this file" is the same
+question whatever the suffix, so it is answered here, once, by `provenance()`.
+Callers ask that function; they do not re-derive an answer from a path or a
+directory name.
+
+**A generated file's own header is a second SIGNAL, not a second decision.** A
+producer scan can only see scripts it can reach, and a Makefile rule or a
+generator living in another repo is invisible to it. A file whose leading
+comments say `GENERATED FILE` / `DO NOT EDIT` -- and often name the generator
+and the command that regenerates it -- is telling us the same fact its producer
+would have. That signal feeds `provenance()` and lives nowhere else.
 """
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 # Where analysis code tends to live, relative to the repo root.
@@ -47,9 +64,17 @@ _CODE_SUFFIXES = (".R", ".r", ".do", ".py", ".Rmd", ".qmd")
 
 _SKIP_DIRS = {".git", "renv", "node_modules", "__pycache__", ".venv", "venv", "build", "data"}
 
-_TEX_LITERAL_RE = re.compile(r"""['"]([^'"\n]*?\.tex)['"]""")
+# The artifacts a manuscript is built from and that a script may write. `.bib`
+# is here because covet-india's bibliography is exported from Zotero, and an
+# append to it is silently undone by the next export.
+_OUT_SUFFIXES = ("tex", "bib")
+_SUFFIX_ALT = "|".join(_OUT_SUFFIXES)
+
+_TEX_LITERAL_RE = re.compile(rf"""['"]([^'"\n]*?\.(?:{_SUFFIX_ALT}))['"]""")
 # Stata names its files bare as often as quoted: `esttab using tabA.tex`.
-_DO_TEX_RE = re.compile(r"""['"]([^'"\n]*?\.tex)['"]|\busing\s+([^\s,"]+\.tex)""")
+_DO_TEX_RE = re.compile(
+    rf"""['"]([^'"\n]*?\.(?:{_SUFFIX_ALT}))['"]|\busing\s+([^\s,"]+\.(?:{_SUFFIX_ALT}))"""
+)
 # A captured string is only a filename if it could be one. A progress line like
 # `cat("wrote outputs/tab_main.tex\n", file = log)` sits in a real write and
 # ends in a real basename, and would hand `tab_main.tex` to whichever script
@@ -149,7 +174,7 @@ _PROSE_STRUCTURE_RE = re.compile(r"\\(?:section|subsection|subsubsection|paragra
 
 
 def scan(manuscript_dir: Path) -> dict[Path, Path]:
-    """Map each generated `.tex` file to the script that writes it.
+    """Map each generated artifact to the script that writes it.
 
     Looks for analysis code beside the manuscript directory and up one level,
     since a manuscript usually sits in `latex/` or `manuscript/` next to `code/`.
@@ -163,10 +188,11 @@ def scan(manuscript_dir: Path) -> dict[Path, Path]:
     # Index every .tex under the manuscript directory by basename, so a script
     # naming only `table2_cross.tex` still resolves to `latex/tables/table2_cross.tex`.
     by_name: dict[str, list[Path]] = {}
-    for tex in manuscript_dir.rglob("*.tex"):
-        if _skipped(tex, manuscript_dir):
-            continue
-        by_name.setdefault(tex.name, []).append(tex.resolve())
+    for suffix in _OUT_SUFFIXES:
+        for tex in manuscript_dir.rglob(f"*.{suffix}"):
+            if _skipped(tex, manuscript_dir):
+                continue
+            by_name.setdefault(tex.name, []).append(tex.resolve())
 
     produced: dict[Path, Path] = {}
     for script in scripts:
@@ -292,6 +318,111 @@ def looks_generated(path: Path) -> bool:
     return bool(_TABULAR_RE.search(stripped)) or stripped.count("&") >= 4
 
 
+# ------------------------------------------------------- the header a generator writes
+#
+# Two signals, one decision. The header is read only from the leading run of
+# comment lines, so a `%% DO NOT EDIT` discussed halfway down a prose appendix
+# claims nothing.
+
+_GENERATED_RE = re.compile(r"GENERATED FILE|DO NOT EDIT", re.I)
+_GENERATOR_RE = re.compile(r"(?im)^[\s%#/*!;-]*generator\s*:\s*(\S+)\s*$")
+# `[^\S\n]*` and not `\s*`: `\s` crosses the newline, and the tail of
+# `%% Regenerate (Zotero must be running):` is then the NEXT line's comment
+# marker -- a remedy reading `%%`, which is a refusal with no way out of it.
+_REGEN_RE = re.compile(r"(?im)^[\s%#/*!;-]*regenerate[^:\n]*:[^\S\n]*(.*)$")
+_COMMENT_RE = re.compile(r"^\s*(?:%|#|//|;|\*)")
+_HEADER_LINES = 60
+
+
+@dataclass(frozen=True)
+class Provenance:
+    """Who writes a file, and how to make it write it again.
+
+    `signal` says which evidence decided it -- `producer` (a script naming the
+    file in a write), `header` (the file's own banner), `content` (it reads as
+    analysis output), or `none`. Kept because the three are not equally strong
+    and a caller reporting a refusal should be able to say what it saw.
+    """
+
+    generated: bool
+    producer: str | None = None
+    remedy: str | None = None
+    signal: str = "none"
+
+
+def provenance(path: Path, produced: dict[Path, Path] | None = None) -> Provenance:
+    """THE answer to "is this file written by something other than the author".
+
+    Whatever the suffix. A producer match is definitive and outranks everything;
+    the file's own header is next; the content guess is last and applies only to
+    `.tex`, because it was written to recognise a table fragment and says
+    nothing useful about a `.bib`.
+    """
+    p = Path(path)
+    try:
+        resolved = p.resolve()
+    except OSError:
+        resolved = p
+    head = _header(p)
+    script = (produced or {}).get(resolved)
+    if script is not None:
+        # The scan says WHO writes it; the header, when there is one, says HOW
+        # to make it write again. `make bib` is a better instruction than the
+        # path of a script the author may not invoke directly.
+        remedy = _regen_command(head or "") or f"re-run {script}"
+        return Provenance(True, str(script), remedy, "producer")
+
+    if head is not None and _GENERATED_RE.search(head):
+        gen = _GENERATOR_RE.search(head)
+        return Provenance(
+            True,
+            gen.group(1) if gen else None,
+            _regen_command(head) or (f"re-run {gen.group(1)}" if gen else None),
+            "header",
+        )
+
+    if p.suffix == ".tex" and looks_generated(p):
+        return Provenance(True, None, None, "content")
+    return Provenance(False)
+
+
+def _header(path: Path) -> str | None:
+    """The leading run of comment lines, or None if the file cannot be read."""
+    try:
+        with Path(path).open(encoding="utf-8", errors="replace") as fh:
+            lines = []
+            for i, line in enumerate(fh):
+                if i >= _HEADER_LINES:
+                    break
+                if line.strip() and not _COMMENT_RE.match(line):
+                    break
+                lines.append(line)
+    except OSError:
+        return None
+    return "".join(lines)
+
+
+def _regen_command(head: str) -> str | None:
+    """What the header says to run. The command is often on the NEXT line.
+
+    covet-india writes `%% Regenerate (Zotero must be running):`, a blank
+    comment line, then the command indented under it. Taking only the tail of
+    the matched line would report an empty remedy, which is a refusal with no
+    way out of it.
+    """
+    m = _REGEN_RE.search(head)
+    if not m:
+        return None
+    tail = m.group(1).strip()
+    if tail:
+        return tail
+    for line in head[m.end():].splitlines():
+        body = _COMMENT_RE.sub("", line).strip().lstrip("%#/;*").strip()
+        if body:
+            return body
+    return None
+
+
 def apply(blocks, produced: dict[Path, Path], *, root_file: Path):
     """Re-derive `editable` and `kind` from provenance rather than from path.
 
@@ -304,25 +435,22 @@ def apply(blocks, produced: dict[Path, Path], *, root_file: Path):
     cache: dict[Path, bool] = {}
     for b in blocks:
         host = Path(b.file).resolve()
-        if host in produced:
-            # Evidence, and it outranks being the root. dsp-bias's
+        if host not in cache:
+            # One decision function, so a block and a bibliography are answered
+            # the same way. A producer match outranks being the root: dsp-bias's
             # `main_anonymous.tex` is a served document in its own right AND is
             # rewritten by `make_word_submission.py` on every build; editing it
             # loses the edit at the next `make`, which is the whole reason this
             # module exists.
-            generated = True
-        elif host == root_file:
+            p = provenance(host, produced)
             # The root is exempt from the CONTENT guess and from nothing else.
             # That guess reads a preamble followed by a column of `\input` lines
             # as a fragment -- no sentences, barely any prose -- and would
             # refuse the one file the author is certainly writing. This used to
             # exempt the root from `produced` as well, which quietly propped up
             # a scan that claimed every file it saw an analysis script mention.
-            generated = False
-        else:
-            if host not in cache:
-                cache[host] = looks_generated(host)
-            generated = cache[host]
+            cache[host] = p.generated and not (host == root_file and p.signal == "content")
+        generated = cache[host]
 
         kind = "generated" if generated else b.kind
         if b.kind == "generated" and not generated:

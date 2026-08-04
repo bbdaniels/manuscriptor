@@ -338,3 +338,76 @@ def test_apply_never_re_enables_a_block_the_segmenter_refused(tmp_path):
     bl = (FakeBlock(prose, editable=False),)
     out = producers.apply(bl, {}, root_file=root)
     assert out[0].editable is False
+
+
+# ------------------------------------------- provenance beyond the .tex tree
+#
+# A `.bib` is written by analysis code as surely as a table is, and appending to
+# a generated one loses the entry at the next regeneration while the `\citep`
+# that needs it survives. The decision is still made HERE and nowhere else.
+
+GENERATED_BIB = """\
+%% ==========================================================================
+%% sample.bib -- GENERATED FILE. DO NOT EDIT BY HAND.
+%%
+%% Regenerate: cd manuscript && make bib
+%% Generator: manuscript/make-bib.py
+%% ==========================================================================
+
+@article{rowe2018effectiveness,
+  title = {Effectiveness of strategies},
+}
+"""
+
+HAND_BIB = """\
+@article{rowe2018effectiveness,
+  title = {Effectiveness of strategies},
+}
+"""
+
+
+def test_a_script_that_writes_a_bib_is_found(tmp_path):
+    w(tmp_path, "manuscript/make-bib.py",
+      'open("sample.bib", "w").write(body)\n')
+    out = w(tmp_path, "manuscript/sample.bib", HAND_BIB)
+    found = producers.scan(tmp_path / "manuscript")
+    assert found.get(out.resolve()) == (tmp_path / "manuscript" / "make-bib.py").resolve()
+
+
+def test_a_generated_header_is_provenance_even_with_no_script_in_reach(tmp_path):
+    """The generator may not be a file this scan can see -- a Makefile rule, a
+    script in another repo. The header the generator wrote is still evidence."""
+    bib = w(tmp_path, "manuscript/sample.bib", GENERATED_BIB)
+    p = producers.provenance(bib, {})
+    assert p.generated is True
+    assert p.producer == "manuscript/make-bib.py"
+    assert p.remedy == "cd manuscript && make bib"
+
+
+def test_a_hand_maintained_bib_is_not_claimed(tmp_path):
+    bib = w(tmp_path, "manuscript/sample.bib", HAND_BIB)
+    p = producers.provenance(bib, {})
+    assert p.generated is False
+    assert p.producer is None
+
+
+def test_a_producer_match_outranks_the_header_sniff(tmp_path):
+    """The script that names the file is definitive; the header is a second
+    signal for the files no scan can claim."""
+    w(tmp_path, "manuscript/make-bib.py", 'open("sample.bib", "w").write(body)\n')
+    bib = w(tmp_path, "manuscript/sample.bib", HAND_BIB)
+    produced = producers.scan(tmp_path / "manuscript")
+    p = producers.provenance(bib, produced)
+    assert p.generated is True
+    assert p.producer == str((tmp_path / "manuscript" / "make-bib.py").resolve())
+    assert p.signal == "producer"
+
+
+def test_a_generated_header_in_a_tex_file_refuses_the_block_too(tmp_path):
+    """The same decision, one function, whatever the suffix."""
+    root = w(tmp_path, "latex/main.tex", "x")
+    frag = w(tmp_path, "latex/appendix/a.tex",
+             "% GENERATED FILE -- DO NOT EDIT\n% Generator: code/mk.R\n" + PROSE)
+    out = producers.apply((FakeBlock(frag),), {}, root_file=root)
+    assert out[0].editable is False
+    assert out[0].kind == "generated"

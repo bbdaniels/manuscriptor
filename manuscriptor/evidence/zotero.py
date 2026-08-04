@@ -61,6 +61,20 @@ class ZoteroItem:
     year: Optional[int]
     journal: Optional[str]
     attachment_paths: list[str]
+    # What identifies a work that has no DOI, and what kind of entry it is.
+    # A book is identified by its ISBN and by this record; discarding the record
+    # for want of a DOI is how a search for one book returned three different
+    # wrong ones. Optional with defaults so every existing construction stands.
+    item_type: Optional[str] = None
+    book_title: Optional[str] = None
+    isbn: Optional[str] = None
+    publisher: Optional[str] = None
+    edition: Optional[str] = None
+    place: Optional[str] = None
+    pages: Optional[str] = None
+    volume: Optional[str] = None
+    issue: Optional[str] = None
+    citation_key: Optional[str] = None
 
 
 class ZoteroClient:
@@ -277,6 +291,16 @@ class ZoteroClient:
             year=year,
             journal=plain_title(data.get("publicationTitle")) or None,
             attachment_paths=attachments,
+            item_type=(data.get("itemType") or "").strip() or None,
+            book_title=plain_title(data.get("bookTitle")) or None,
+            isbn=_first_isbn(data.get("ISBN")),
+            publisher=(data.get("publisher") or "").strip() or None,
+            edition=(data.get("edition") or "").strip() or None,
+            place=(data.get("place") or "").strip() or None,
+            pages=(data.get("pages") or "").strip() or None,
+            volume=(data.get("volume") or "").strip() or None,
+            issue=(data.get("issue") or "").strip() or None,
+            citation_key=_citation_key(data),
         )
 
     def pdf_attachments(self, parent_key: str) -> list[dict]:
@@ -404,6 +428,27 @@ def _query_variants(title: str) -> list[tuple[str, int]]:
             seen.add(q)
             out.append((q, limit))
     return out
+
+
+_ISBN_RE = re.compile(r"[\dXx][\dXx -]{8,}")
+# Better BibTeX writes the key into `citationKey` on newer Zotero, and into the
+# Extra field on older ones. Both are read, because a key invented instead of
+# read is one an export gated on the library can never resolve.
+_EXTRA_KEY_RE = re.compile(r"(?im)^\s*Citation Key\s*:\s*(\S+)\s*$")
+
+
+def _first_isbn(value) -> Optional[str]:
+    """Zotero stores several ISBNs in one field, space or comma separated."""
+    m = _ISBN_RE.search(str(value or ""))
+    return m.group(0).strip() if m else None
+
+
+def _citation_key(data: dict) -> Optional[str]:
+    key = (data.get("citationKey") or "").strip()
+    if key:
+        return key
+    m = _EXTRA_KEY_RE.search(str(data.get("extra") or ""))
+    return m.group(1) if m else None
 
 
 _YEAR_RE = re.compile(r"\b(1[89]\d{2}|20\d{2}|21\d{2})\b")

@@ -950,3 +950,150 @@ def test_adding_beside_a_key_that_is_already_there_changes_nothing():
     source = r"formats \citep{cook2010, zhang2026ai}"
     new, note = ins.place_beside_key(source, "cook2010", "zhang2026ai")
     assert new == source and "already" in note
+
+
+# ==================================================== a generated bibliography
+#
+# covet-india's `sample.bib` is exported from Zotero by `make-bib.py`. An entry
+# appended to it is destroyed by the next `make bib` while the `\citep{...}`
+# written into main.tex SURVIVES -- a citation with no entry, a broken build the
+# author did not cause. So the append is refused, and the refusal names the
+# producer and the way to get the entry there for real.
+
+GENERATED_BIB = """\
+%% sample.bib -- GENERATED FILE. DO NOT EDIT BY HAND.
+%% Regenerate: cd latex && make bib
+%% Generator: latex/make-bib.py
+
+@article{king2018multimorbidity,
+  title = {Multimorbidity},
+  doi = {10.1/king},
+}
+"""
+
+
+def test_a_citation_is_never_appended_to_a_generated_bib(repo):
+    (repo / "latex" / "references.bib").write_text(GENERATED_BIB, encoding="utf-8")
+    plan = cite_plan(repo)
+    assert not plan.ok
+    assert plan.failed_check == "bibliography"
+    assert "make-bib.py" in plan.blocked
+    assert "make bib" in plan.blocked
+    assert plan.writes == ()
+
+
+def test_a_hand_maintained_bib_still_accepts_a_citation(repo):
+    plan = cite_plan(repo)
+    assert plan.ok, plan.blocked
+    assert any(w.kind == "append" for w in plan.writes)
+
+
+# ================================================ a book, identified by Zotero
+#
+# The author's own copy of Rogers' *Diffusion of Innovations* has an ISBN and no
+# DOI. It was found in his library and then DISCARDED for having no DOI, so the
+# gate fell through to a Crossref search that could only offer near misses, and
+# three separate attempts cited three different wrong works.
+
+ROGERS = {
+    "key": "A4A5CXWE",
+    "doi": None,
+    "isbn": "978-0-7432-5823-4",
+    "title": "Diffusion of Innovations, 5th Edition",
+    "type": "book",
+    "authors": ["Rogers, Everett M."],
+    "year": 2003,
+    "publisher": "Free Press",
+    "citation_key": "rogers2003diffusion",
+    "has_fulltext": False,
+}
+
+WRONG = {
+    "doi": "10.1007/978-1-4899-2271-7_9",
+    "title": "The Diffusion of Innovations Model",
+    "year": 1993,
+    "authors": ["Rogers, Everett M."],
+    "publisher": "Springer",
+}
+
+
+def rogers_library():
+    return FakeLibrary(items=[dict(ROGERS)])
+
+
+def rogers_net():
+    return FakeNet(crossref={WRONG["doi"]: dict(WRONG)},
+                   openalex={WRONG["doi"]: dict(WRONG)},
+                   search=[dict(WRONG)])
+
+
+def test_a_zotero_book_with_no_doi_is_identity_enough(repo):
+    plan = cite_plan(repo, net=rogers_net(), library=rogers_library(),
+                     query="Diffusion of Innovations, 5th Edition")
+    assert plan.ok, plan.blocked
+    assert "A4A5CXWE" in " ".join(c.detail for c in plan.checks)
+    # And emphatically NOT the Springer chapter Crossref would have offered.
+    assert WRONG["doi"] not in "".join(w.preview for w in plan.writes)
+
+
+def test_the_rows_a_book_cannot_answer_do_not_read_as_passes(repo):
+    plan = cite_plan(repo, net=rogers_net(), library=rogers_library(),
+                     query="Diffusion of Innovations, 5th Edition")
+    state = {c.name: c.state for c in plan.checks}
+    assert state["doi"] == "n/a", state
+    assert state["crossref"] == "n/a", state
+    assert state["openalex"] == "n/a", state
+    assert state["agreement"] == "n/a", state
+    assert state["zotero"] == "pass", state
+    doi_row = [c for c in plan.checks if c.name == "doi"][0]
+    assert "978-0-7432-5823-4" in doi_row.detail
+
+
+def test_the_entry_a_book_writes_carries_its_isbn_and_not_a_doi(repo):
+    plan = cite_plan(repo, net=rogers_net(), library=rogers_library(),
+                     query="Diffusion of Innovations, 5th Edition")
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert entry.lstrip().startswith("@book{")
+    assert "isbn = {978-0-7432-5823-4}" in entry
+    assert "doi" not in entry
+    assert "journal" not in entry
+
+
+def test_a_zotero_record_keeps_the_key_zotero_already_uses(repo):
+    """The generator gates on Zotero's own citation key, so minting a fresh one
+    here is an entry `make bib` can never resolve."""
+    plan = cite_plan(repo, net=rogers_net(), library=rogers_library(),
+                     query="Diffusion of Innovations, 5th Edition")
+    assert plan.cite_key == "rogers2003diffusion"
+
+
+def test_a_doi_less_work_that_is_not_in_the_library_still_fails_the_doi_row(repo):
+    """`n/a` is a positive determination -- the library record says there is no
+    DOI. Not knowing is still a failure."""
+    plan = cite_plan(repo, net=FakeNet(), library=FakeLibrary(), query="something obscure")
+    assert not plan.ok
+    assert plan.failed_check == "doi"
+    assert [c for c in plan.checks if c.name == "doi"][0].state == "fail"
+
+
+# ------------------------------------------------- what each entry type emits
+
+
+def test_an_incollection_takes_a_booktitle_and_never_a_journal():
+    entry = ins.bib_entry("x2020y", {
+        "type": "book-chapter", "title": "A chapter", "authors": ["Lee, Jung Woo"],
+        "journal": "Encyclopedia of Sport Management", "year": 2020,
+        "publisher": "Edward Elgar", "doi": "10.1/x",
+    })
+    assert entry.lstrip().startswith("@incollection{")
+    assert "booktitle = {Encyclopedia of Sport Management}" in entry
+    assert "journal" not in entry
+
+
+def test_a_techreport_takes_an_institution():
+    entry = ins.bib_entry("x2020y", {
+        "type": "report", "title": "A report", "authors": ["Doe, J"],
+        "publisher": "World Bank", "year": 2020,
+    })
+    assert entry.lstrip().startswith("@techreport{")
+    assert "institution = {World Bank}" in entry
