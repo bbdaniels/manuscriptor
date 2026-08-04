@@ -24,6 +24,15 @@
 
   var S = {
     kind: null,        // 'pdf' | 'docx' while running, null when idle
+    /* Whether the run in flight is the server's own, started because the page's
+       cross-reference numbers went stale rather than because anything was
+       pressed. It changes exactly two things and deliberately nothing else: an
+       unrequested run does not throw the panel open over what the author is
+       writing, and it says whose run it was when it fails. Everything else --
+       the chip, the steps, the error, the transcript -- is the button's
+       machinery, because a failure the author cannot find is the defect this
+       app keeps rediscovering. */
+    auto: false,
     label: '',
     steps: [],
     result: null,
@@ -102,11 +111,14 @@
     if (S.kind) {
       c.hidden = false;
       c.className = 'tb ms-compile-chip is-running';
-      c.textContent = 'compiling…';
+      c.textContent = S.auto ? 'numbering…' : 'compiling…';
     } else if (S.result) {
+      var r = S.result;
       c.hidden = false;
-      c.className = 'tb ms-compile-chip ' + (S.result.ok ? 'is-ok' : 'is-bad');
-      c.textContent = LABEL[S.result.kind] + (S.result.ok ? ' ready · ' : ' failed · ') + secs(S.result.seconds);
+      c.className = 'tb ms-compile-chip ' + (r.ok ? 'is-ok' : 'is-bad');
+      c.textContent = r.auto
+        ? (r.ok ? 'numbers updated · ' : 'auto-compile failed · ') + secs(r.seconds)
+        : LABEL[r.kind] + (r.ok ? ' ready · ' : ' failed · ') + secs(r.seconds);
     }
   }
 
@@ -188,13 +200,17 @@
     var sub;
     // No number here: this line is only rebuilt when a frame arrives, and a
     // stale count of seconds is worse than none.
-    if (S.kind) sub = 'this takes tens of seconds; every step appears as it finishes';
+    if (S.kind && S.auto) sub = 'the numbers on the page are stale' + (S.why ? ' — ' + S.why : '');
+    else if (S.kind) sub = 'this takes tens of seconds; every step appears as it finishes';
+    else if (r && r.auto) sub = (r.ok ? 'the page’s numbers were refreshed in ' : 'the background run failed after ') + secs(r.seconds);
     else if (r) sub = (r.ok ? 'finished in ' : 'failed after ') + secs(r.seconds);
     else sub = 'nothing compiled in this session yet';
     return {
       eyebrow: 'Compile',
       chip: S.kind ? ['c', 'running'] : (r ? [r.ok ? 'v' : 'm', r.ok ? 'ready' : 'failed'] : null),
-      title: S.kind ? ('Compiling ' + LABEL[S.kind]) : (r ? LABEL[r.kind] : 'Compile'),
+      title: S.kind
+        ? ((S.auto ? 'Compiling for numbering' : 'Compiling ' + LABEL[S.kind]))
+        : (r ? (r.auto ? 'Numbering' : LABEL[r.kind]) : 'Compile'),
       sub: sub,
       tabs: [{ name: 'Progress', body: progressBody(ctx) }]
     };
@@ -220,6 +236,7 @@
     S.ctx = ctx;
     if (S.kind) { openPanel(); return; }
     S.kind = kind;
+    S.auto = false;
     S.label = LABEL[kind];
     S.steps = [];
     S.result = null;
@@ -285,6 +302,8 @@
     S.ctx = ctx;
     if (msg.phase === 'start') {
       S.kind = msg.kind;
+      S.auto = !!msg.auto;
+      S.why = msg.why || '';
       S.label = msg.label || LABEL[msg.kind];
       S.steps = [];
       S.result = null;
@@ -298,6 +317,10 @@
       stopTicking();
       S.result = {
         kind: msg.kind, ok: !!msg.ok, seconds: msg.seconds, output: msg.output,
+        // Whose run this was, and what made it necessary. A background failure
+        // that reads like a button failure would send the author looking for a
+        // click he never made.
+        auto: !!msg.auto, why: msg.why || '',
         // The copy beside the `.tex`; null on a read-only serve, which
         // withholds it. This is what "Open it" opens.
         delivered: msg.delivered,
@@ -310,6 +333,7 @@
         });
       }
       S.started = 0;
+      S.auto = false;
     }
     paintToolbar();
     ctx.refresh();

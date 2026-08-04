@@ -939,6 +939,9 @@ def route(session):
                 })
             finally:
                 _BUSY.pop(session, None)
+                # A source change that arrived mid-run left a re-check owed, and
+                # this is the first moment it can be paid.
+                await _pay_owed(session)
 
         task = loop.create_task(work())
         _RUNNING.add(task)
@@ -946,3 +949,190 @@ def route(session):
         return web.json_response({"started": action}, status=202)
 
     return handler
+
+
+# ------------------------------------------- compiling for the numbers alone
+#
+# The author should not have to press a button to get his cross-reference
+# numbers. Every number on the page comes out of the `.aux`, the `.aux` comes
+# out of a compile, and when the two disagree the page prints `??` -- or worse,
+# prints a stale number that looks like an answer. So when the numbering is
+# stale, the server compiles in the background, as far as needed.
+#
+# FOUR THINGS MAKE THAT SAFE, and each of them is a gate below.
+#
+# It never delivers. The button's compile copies the finished PDF beside the
+# author's `.tex`, which is a write he asked for by pressing it. A run he never
+# requested stays entirely inside the cache: `deliver_out=False`, always, on
+# every path here, read-only or not.
+#
+# It triggers on the LABEL SIGNATURE, not on typing. Prose cannot move a `\ref`,
+# so a save pause compiles nothing; adding a `\label` or a `\ref` compiles once.
+#
+# It attempts a given signature ONCE. A `\ref{typo}` no compile can ever satisfy
+# would otherwise re-trigger on its own failure forever, since the failure leaves
+# the reference exactly as unresolved as it found it. The last attempted
+# signature is remembered on the session -- in memory, not on disk, because it is
+# a fact about this server's own runs and a stale one read back after a restart
+# would suppress the compile a restart is most likely to need.
+#
+# It is quiet but never silent. A failed auto-compile refreshes nothing (a
+# half-written `.aux` must not reach the page), retries nothing until the source
+# moves, and opens no panel -- and it says so in the same compile panel and chip
+# the button's failures already use, in its own words.
+
+_OWED: "weakref.WeakSet" = weakref.WeakSet()
+
+AUTO_LABEL = "PDF (numbering)"
+AUTO_FAILED = "auto-compile for numbering failed — "
+
+
+def _main_tex_of(session) -> Path:
+    return build_mod.find_main_tex(session.root, session.doc or None)
+
+
+def numbering_signature(session):
+    """What this session's flattened source declares and uses.
+
+    Flattened, because a `\\label` in an included table is as much a declaration
+    as one in the root file, and covet-india's are all in included files.
+    """
+    from manuscriptor.source.flatten import flatten
+
+    return refs_mod.signature(flatten(_main_tex_of(session)).text)
+
+
+def stale_numbering(session, sig) -> str | None:
+    """Why the chosen `.aux` cannot print this signature, or None.
+
+    THE SAME CHOOSER THE PAGE USES, through the same two directories `build.py`
+    hands it. Asking a different `.aux` than the page reads would compile against
+    a staleness the reader never saw, or -- worse -- see the page's `??` and call
+    it fresh.
+    """
+    aux = refs_mod.choose_aux(
+        _main_tex_of(session),
+        paths.compile_dir(session.root),
+        paths.compile_dir(session.root, read_only=session.read_only))
+    labels = refs_mod.load_labels(aux) if aux is not None else {}
+    return refs_mod.unsatisfied(sig, labels)
+
+
+async def auto_compile(session) -> str:
+    """Compile in the background if, and only if, the numbering is stale.
+
+    Returns what it decided, as a word, so a test can tell "did not need to"
+    from "refused to" -- the two failures that look identical from outside are
+    a gate that never fires and a gate that always does.
+
+    ONE COMPILE AT A TIME AND THE LATEST WINS. The concurrency discipline is the
+    one the button already has: `_BUSY`, keyed by session. A trigger arriving
+    while anything is compiling does not queue a second run -- it records that a
+    re-check is owed, and whichever run is in flight pays it when it finishes.
+    A pile of queued compiles would all be answering questions the last one has
+    already made obsolete.
+    """
+    import asyncio
+
+    if not getattr(session, "auto_compile", False):
+        return "off"
+    try:
+        sig = numbering_signature(session)
+    except Exception:
+        # A manuscript mid-edit may not flatten. Nothing to compare, nothing to
+        # say: the render itself already tells the author his source is broken.
+        return "unreadable"
+    reason = stale_numbering(session, sig)
+    if reason is None:
+        return "fresh"
+    if getattr(session, "auto_sig", None) == sig:
+        # Attempted already, and nothing about the numbering has changed since.
+        return "attempted"
+    if _BUSY.get(session):
+        _OWED.add(session)
+        return "busy"
+
+    session.auto_sig = sig
+    _BUSY[session] = "auto"
+    loop = asyncio.get_running_loop()
+    task = loop.create_task(_auto_work(session, reason))
+    _RUNNING.add(task)
+    task.add_done_callback(_RUNNING.discard)
+    return "started"
+
+
+def arm(session) -> None:
+    """Run the check on the running loop, without awaiting it.
+
+    For the boot path, which has a loop and no one to await on. Tracked in
+    `_RUNNING` for the reason recorded there: asyncio holds only a weak
+    reference to a running task, so an untracked one can be collected mid-run
+    and simply stop.
+    """
+    import asyncio
+
+    task = asyncio.get_running_loop().create_task(auto_compile(session))
+    _RUNNING.add(task)
+    task.add_done_callback(_RUNNING.discard)
+
+
+async def _pay_owed(session) -> None:
+    """Run the re-check a mid-compile change left owed. At most one."""
+    if session in _OWED:
+        _OWED.discard(session)
+        await auto_compile(session)
+
+
+async def _auto_work(session, reason: str) -> None:
+    import asyncio
+
+    loop = asyncio.get_running_loop()
+
+    def announce(msg):
+        asyncio.run_coroutine_threadsafe(session.broadcast(msg), loop)
+
+    try:
+        await session.broadcast({
+            "type": "compile", "phase": "start", "kind": "pdf",
+            "label": AUTO_LABEL, "auto": True, "why": reason,
+        })
+
+        def on_step(step):
+            announce({
+                "type": "compile", "phase": "step", "kind": "pdf", "auto": True,
+                "step": step.name, "ok": step.ok,
+                "seconds": round(step.seconds, 1), "detail": step.detail,
+            })
+
+        result = await asyncio.to_thread(
+            compile_pdf, session.root, main=session.doc, bib=session.bib,
+            on_step=on_step,
+            # NEVER. This run is the tool compiling for its own display, and
+            # the author's directory is not where it displays.
+            deliver_out=False,
+            read_only=session.read_only,
+        )
+        frame = result.as_frame(root=session.root, read_only=session.read_only)
+        frame["auto"] = True
+        frame["why"] = reason
+        if not result.ok:
+            frame["error"] = AUTO_FAILED + (
+                result.error or "it failed and said nothing")
+        await session.broadcast(frame)
+        # Only a run that SUCCEEDED may redraw, for the same reason the button's
+        # may not: a compile that died in pass 2 leaves an `.aux` holding
+        # whatever it got to, and pushing that to the page would replace the
+        # numbers the author can see are stale with numbers he cannot.
+        if result.ok:
+            await session.on_change()
+    except Exception as exc:  # a failed compile must not kill the server
+        await session.broadcast({
+            "type": "compile", "phase": "done", "kind": "pdf", "ok": False,
+            "auto": True, "why": reason,
+            "error": AUTO_FAILED + f"{type(exc).__name__}: {exc}",
+            "steps": [], "notes": [], "output": None, "delivered": None,
+            "url": None, "seconds": 0, "log": None,
+        })
+    finally:
+        _BUSY.pop(session, None)
+        await _pay_owed(session)

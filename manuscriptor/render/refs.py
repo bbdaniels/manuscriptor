@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import bisect
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 PAGE_SUFFIX = "@@page"
@@ -547,3 +548,139 @@ def resolve_source(latex: str, labels: dict[str, str]) -> tuple[str, list[str]]:
     # Counters first: `\refstepcounter{figure}\label{k}` has to be seen with its
     # `\label` still intact, and the `\ref` pass does not touch `\label` anyway.
     return _MACRO_RE.sub(one, _resolve_counters(latex, labels, missing)), missing
+
+
+# ------------------------------------------------- what the numbering depends on
+
+
+_LABEL_RE = re.compile(r"\\label\s*\{([^}]*)\}")
+
+# Labels an author never typed. hyperref writes `sub@fig:x`, cleveref writes
+# `fig:x@cref`, and `lastpage` writes `LastPage`; none of them appear in the
+# source, so comparing the source's labels against the `.aux` without excluding
+# them would report every compiled manuscript as stale forever. `@` is the
+# marker LaTeX itself reserves for internals and is the whole rule; `LastPage`
+# is the one package name that has to be spelled out.
+_GENERATED_LABEL = "LastPage"
+
+
+@dataclass(frozen=True)
+class Signature:
+    """What a manuscript's DECLARED and USED numbering is, as one comparable value.
+
+    Three parts, and each is there because it can move a printed number without
+    any other part moving:
+
+      `labels`    every `\\label` the source declares. A new one means a counter
+                  the `.aux` has never recorded.
+      `refs`      every `\\ref`, `\\pageref` and `\\eqref`, as (macro, key), since
+                  a `\\pageref` is satisfied by a different aux entry than a
+                  `\\ref` on the same key.
+      `bindings`  which counter each `\\refstepcounter{X}\\label{k}` tied to
+                  which label, because that is what decides the number a
+                  free-standing `\\theX` prints -- the same labels rebound to
+                  different counters print different exhibit numbers.
+
+    WHAT IT DELIBERATELY DOES NOT CARRY IS PROSE. Typing a sentence cannot
+    change a `\\ref` number, so it must not trigger a compile; a sentence CAN
+    move a page boundary and therefore a `\\pageref`, and that is knowingly not
+    detected here. Chasing it would mean compiling on every save pause, which is
+    the thrash this signature exists to avoid, and the Compile button remains
+    the way to settle pagination on demand.
+    """
+
+    labels: tuple[str, ...]
+    refs: tuple[tuple[str, str], ...]
+    bindings: tuple[tuple[str, str], ...]
+
+
+def _strip_tex_comments(latex: str) -> str:
+    """Drop `%` comments, so a commented-out `\\label` is not a declaration.
+
+    An odd number of backslashes before the `%` escapes it (`\\%` is a literal
+    percent, `\\\\%` is a line break then a comment).
+    """
+    out = []
+    for line in (latex or "").splitlines():
+        cut = None
+        i = 0
+        while i < len(line):
+            if line[i] == "\\":
+                i += 2
+                continue
+            if line[i] == "%":
+                cut = i
+                break
+            i += 1
+        out.append(line if cut is None else line[:cut])
+    return "\n".join(out)
+
+
+def counter_bindings(latex: str) -> tuple[tuple[str, str], ...]:
+    """Every `(counter, label)` a `\\refstepcounter{counter}\\label{label}` ties.
+
+    Through `_counter_walk`, the one scanner in this module that knows how a
+    binding starts and how a float ends it. A second scanner for the same
+    sentence structure is exactly the divergence this module exists to prevent.
+    """
+    bound: dict[str, str] = {}
+    seen: list[tuple[str, str]] = []
+    for kind, _s, _e, _k, _v in _counter_walk(latex, {}, [], bound):
+        if kind != "bind":
+            continue
+        for pair in sorted(bound.items()):
+            if pair not in seen:
+                seen.append(pair)
+    return tuple(sorted(seen))
+
+
+def signature(latex: str) -> Signature:
+    """The numbering signature of a flattened manuscript."""
+    text = _strip_tex_comments(latex)
+    labels = sorted({m.group(1).strip() for m in _LABEL_RE.finditer(text)})
+    used = sorted({(m.group(1), m.group(2).strip()) for m in _MACRO_RE.finditer(text)})
+    return Signature(tuple(labels), tuple(used), counter_bindings(text))
+
+
+def unsatisfied(sig: Signature, labels: dict[str, str]) -> str | None:
+    """Why the `.aux` cannot print this signature's numbers, or None if it can.
+
+    Three ways it fails, and the reason names which one, because a reason a
+    reader cannot act on is the same as no reason:
+
+      a reference the `.aux` carries no entry for -- what prints as `??`;
+      a label the source declares and the `.aux` has never seen -- a new exhibit
+      whose siblings after it have all renumbered;
+      a label the `.aux` still carries and the source no longer declares -- a
+      deleted exhibit, whose numbers have moved the other way.
+
+    The last one is why the generated names above are excluded. A never-compiled
+    manuscript has no labels at all and is reported as such, since "17
+    references unresolved" would bury the actual fact.
+    """
+    have = {k for k in labels if not k.endswith(PAGE_SUFFIX)}
+    if not have:
+        if sig.labels or sig.refs:
+            return "nothing has been compiled yet, so no cross-reference has a number"
+        return None
+
+    missing = [f"\\{macro}{{{key}}}" for macro, key in sig.refs
+               if _lookup(macro, key, labels) is None]
+    declared = set(sig.labels)
+    fresh = [k for k in sig.labels if k not in have]
+    gone = sorted(k for k in have
+                  if k not in declared and "@" not in k and k != _GENERATED_LABEL)
+
+    parts = []
+    if missing:
+        parts.append(f"{len(missing)} unresolved: {_first(missing)}")
+    if fresh:
+        parts.append(f"{len(fresh)} new label(s): {_first(fresh)}")
+    if gone:
+        parts.append(f"{len(gone)} label(s) removed since it: {_first(gone)}")
+    return "; ".join(parts) or None
+
+
+def _first(items, n: int = 3) -> str:
+    head = ", ".join(items[:n])
+    return head + (f", and {len(items) - n} more" if len(items) > n else "")

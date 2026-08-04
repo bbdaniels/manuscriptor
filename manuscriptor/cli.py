@@ -543,6 +543,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             main=args.main,
             bib=args.bib,
             read_only=args.read_only,
+            auto_compile=not args.no_auto_compile,
             on_switch=on_switch,
         )
     finally:
@@ -957,6 +958,14 @@ def main(argv: list[str] | None = None) -> int:
                          help="Require the agent (the default already runs it when the claude "
                               "CLI is present; this makes its absence an error). Refuses to "
                               "combine with --read-only.")
+    # NEGATIVE, because the feature is on. A `--auto-compile` flag would say the
+    # opposite of what is true -- that the numbers stay stale until asked -- and
+    # the author who needs this most is the one who does not know the option
+    # exists. The flag is for the manuscript where a compile costs minutes.
+    p_serve.add_argument("--no-auto-compile", action="store_true",
+                         help="Do not compile in the background when the page's cross-reference "
+                              "numbers go stale; the Compile button then remains the only way "
+                              "to move them. Background runs never write beside your .tex.")
     p_serve.add_argument("--no-agent", action="store_true",
                          help="Serve without the comment-draining agent; comments queue until "
                               "a session runs `manuscriptor proc`.")

@@ -68,10 +68,21 @@ class Session:
 
     def __init__(self, manuscript_dir: Path, *, main: str | None = None,
                  bib: str | None = None, read_only: bool = False,
-                 on_switch=None):
+                 auto_compile: bool = True, on_switch=None):
         self.dir = Path(manuscript_dir).resolve()
         self.bib = bib
         self.read_only = read_only
+        # Whether a stale set of cross-reference numbers may compile itself.
+        # ON by default: the author of a fast manuscript should never have to
+        # press a button to see a number LaTeX already knows. `--no-auto-compile`
+        # is for the paper that takes minutes, where a background run is a cost
+        # rather than a convenience.
+        self.auto_compile = auto_compile
+        # The numbering signature of the last auto-compile ATTEMPTED, successful
+        # or not. In memory on purpose: it records what this server has already
+        # tried, and a `\ref{typo}` that no compile can satisfy must be attempted
+        # once and then left alone until the source moves.
+        self.auto_sig = None
         # Fired with the new document root whenever a switch moves it, so the
         # caller (the drain agent in cmd_serve) can follow the current document.
         self._on_switch = on_switch
@@ -406,6 +417,16 @@ class Session:
             # The src path is stable, so the version query is the only thing that
             # can force the browser past the copy it already has.
             await self.broadcast({"type": "assets", "v": chat.now()})
+        # LAST, AND HERE RATHER THAN ANYWHERE ELSE. This is the one point every
+        # source change converges on -- the watcher, a splice, the drain, an
+        # import -- and the only one where a rebuild has just finished, so the
+        # `.aux` the page is reading and the source it was read against are both
+        # current. Deciding it in the watcher would be deciding it without the
+        # build; deciding it in `rebuild()` would decide it inside the lock and
+        # on a document switch as well. After the patch, never before it: the
+        # author's text must reach his screen without waiting on LaTeX, and the
+        # numbers follow when they are ready.
+        await compile_mod.auto_compile(self)
 
     async def on_assets_change(self) -> None:
         """A figure changed on disk, with no source change beside it.
@@ -1476,12 +1497,13 @@ def serve(
     main: str | None = None,
     bib: str | None = None,
     read_only: bool = False,
+    auto_compile: bool = True,
     on_switch=None,
 ) -> None:
     from manuscriptor.server.watch import watch_file, watch_tree
 
     session = Session(manuscript_dir, main=main, bib=bib, read_only=read_only,
-                      on_switch=on_switch)
+                      auto_compile=auto_compile, on_switch=on_switch)
     app = make_app(session)
 
     # A manuscript keeps its own port (server/ports.py). The browser keys storage
@@ -1552,6 +1574,13 @@ def serve(
                 print(f"  {len(diag[key])} {label}")
         if open_window:
             webbrowser.open(url)
+        # A page that OPENS on stale numbers is the case the author actually
+        # met: he had not edited anything, the `??` were simply there. So the
+        # check is armed once at boot as well, after the URL is printed and the
+        # window is open, so nothing about it delays either. It goes through the
+        # identical gates -- fresh numbers cost one `.aux` read and start
+        # nothing.
+        compile_mod.arm(session)
         try:
             await asyncio.Event().wait()
         finally:
