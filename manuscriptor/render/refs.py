@@ -71,6 +71,61 @@ _SCAN_RE = re.compile(
 # ------------------------------------------------------------------ aux side
 
 
+def aux_in(directory: Path, main_tex: Path) -> Path:
+    """What this document's `.aux` is called inside `directory`.
+
+    TeX names it after the root file, so `supplement.tex` compiled into the
+    cache is `supplement.aux` beside `main.aux`. One spelling, here, because the
+    chooser below and the compile that watches its own `.aux` converge must be
+    talking about the same file -- and the way this bug happened once already
+    was two places each deriving the path for themselves.
+    """
+    return Path(directory) / (Path(main_tex).stem + ".aux")
+
+
+def choose_aux(main_tex: Path, *compile_dirs: Path | None) -> Path | None:
+    """Which `.aux` this document's numbers come from. The single answer.
+
+    There are two files with a claim, and until 2026-08-05 two parts of this
+    program each picked one and never compared notes. `server/compile.py` writes
+    into the hidden compile cache; `server/build.py` read the `.aux` sitting
+    beside the source, which only the author's own terminal `make` ever writes.
+    So on covet-india the author pressed Compile, the compile succeeded, the
+    cache's `.aux` gained all six new labels -- and the page still printed `??`,
+    because it was reading a file the app's own compile can never touch. The
+    button was structurally incapable of resolving a cross-reference, for every
+    manuscript, always, with nothing raising anywhere.
+
+    **Freshness decides, not whose file it is.** The tempting rule is "prefer
+    ours", and it is wrong in the ordinary case: an author who has just run
+    `make` has newer numbers than our last compile, and preferring the cache
+    would show him numbers older than the PDF open on his screen. Newest mtime
+    wins; a file that does not exist has no claim.
+
+    Per document, because a directory holding `main.tex` and `supplement.tex`
+    holds two of these and the compile cache may hold both.
+
+    `compile_dirs` come from `server/paths.compile_dir()` -- that module owns
+    WHERE Manuscriptor keeps its files, this one owns reading them. None, or a
+    directory that does not exist yet, is the ordinary never-compiled case and
+    is not an error. More than one is the read-only serve, which compiles into a
+    scratch directory under the system temp and may still READ the numbers the
+    author's own hidden cache is holding.
+    """
+    main_tex = Path(main_tex)
+    candidates = [aux_in(main_tex.parent, main_tex)]
+    candidates += [aux_in(d, main_tex) for d in compile_dirs if d is not None]
+    live = []
+    for path in candidates:
+        try:
+            live.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    if not live:
+        return None
+    return max(live, key=lambda pair: pair[0])[1]
+
+
 def load_labels(aux: Path) -> dict[str, str]:
     """Read `\\newlabel` entries out of a LaTeX .aux, following `\\@input`.
 

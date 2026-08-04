@@ -50,6 +50,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from manuscriptor.render import refs as refs_mod
 from manuscriptor.server import build as build_mod, pagination, paths
 
 # ------------------------------------------------------------------- the skill
@@ -455,7 +456,7 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
     env = _tex_env(root, out)
     tex_cmd = [engine, *ENGINE_FLAGS, f"-output-directory={out}", main_tex.name]
 
-    aux = out / (main_tex.stem + ".aux")
+    aux = refs_mod.aux_in(out, main_tex)
 
     started = time.monotonic()
     steps: list[Step] = []
@@ -641,21 +642,14 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     # The .aux is where every cross-reference number lives, and HTML has no
     # pages, so `\pageref` can come from nowhere else. Compiling once is what
     # the skill says to do when it is missing.
-    aux = out / (main_tex.stem + ".aux")
-    if not aux.exists():
-        beside = main_tex.with_suffix(".aux")
-        if beside.exists():
-            # THE AUTHOR'S OWN BUILD WROTE THIS ONE, and nothing here knows how
-            # old it is or whether the passes that wrote it ever converged. Its
-            # numbers are used because they are far better than none, and the
-            # note is what stops that being a silent assumption.
-            aux = beside
-            notes.append(
-                "cross-references came from the .aux beside the manuscript, "
-                "which this compile did not write; recompile the PDF if its "
-                "numbers look stale")
-        elif shutil.which("pdflatex") or shutil.which("xelatex"):
-            t0 = time.monotonic()
+    # THE SAME CHOOSER THE PAGE USES, for the same reason: two answers to "which
+    # .aux is the truth" is what made the Compile button unable to move a `\ref`.
+    # This path had the second half of that bug -- it took the .aux beside the
+    # manuscript whenever its own was missing, with no freshness check at all, so
+    # a stale beside-source file beat a cache written minutes earlier.
+    aux = refs_mod.choose_aux(main_tex, out)
+    if aux is None:
+        if shutil.which("pdflatex") or shutil.which("xelatex"):
             pre = compile_pdf(root, main=main, on_step=on_step, runner=runner,
                               deliver_out=False, read_only=read_only)
             steps.extend(pre.steps)
@@ -668,14 +662,23 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
                 notes.append("the PDF pre-compile did not succeed, so the "
                              "cross-reference numbers may be wrong: "
                              + pre.error.splitlines()[0])
-            if not aux.exists():
+            aux = refs_mod.choose_aux(main_tex, out)
+            if aux is None:
                 notes.append("cross-references could not be resolved: no .aux was produced")
         else:
             notes.append("no TeX engine, so cross-references are unresolved")
+    if aux is not None and aux.parent != out:
+        # THE AUTHOR'S OWN BUILD WROTE THIS ONE, and it won because it is the
+        # fresher of the two. Nothing here knows whether the passes behind it
+        # converged, and the note is what stops that being a silent assumption.
+        notes.append(
+            "cross-references came from the .aux beside the manuscript, which is "
+            "newer than the one this app compiled; recompile the PDF if its "
+            "numbers look stale")
 
     t0 = time.monotonic()
     flat = flatten(main_tex)
-    labels = refs_mod.load_labels(aux) if aux.exists() else {}
+    labels = refs_mod.load_labels(aux) if aux is not None else {}
     resolved, unresolved = refs_mod.resolve_source(flat.text, labels)
     source = pandoc_mod.normalize_for_pandoc(resolved)
     source, rasterized = _rasterize_pdf_figures(source, root, out, run)
@@ -919,6 +922,15 @@ def route(session):
                 )
                 await session.broadcast(result.as_frame(root=session.root,
                                                         read_only=session.read_only))
+                # A SUCCESSFUL COMPILE IS THE ONLY THING THAT MOVES THE PAGE'S
+                # CROSS-REFERENCES, so it has to redraw the page itself. Nothing
+                # else can: the run writes its `.aux` into the hidden cache, and
+                # the tree watcher ignores that directory on purpose -- watching
+                # it instead would fire on every one of the three passes, and on
+                # the half-written `.aux` a run that died in pass 2 leaves
+                # behind. Only when the run succeeded, and only after it is over.
+                if result.ok:
+                    await session.on_change()
             except Exception as exc:  # a failed compile must not kill the server
                 await session.broadcast({
                     "type": "compile", "phase": "done", "kind": action, "ok": False,

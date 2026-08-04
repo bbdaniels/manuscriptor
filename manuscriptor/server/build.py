@@ -126,8 +126,16 @@ def build(
     produced = producers.scan(manuscript_dir)
     bl = source_blocks(manuscript_dir, main_tex, flat=flat, produced=produced)
 
-    aux = main_tex.with_suffix(".aux")
-    labels = refs.load_labels(aux) if aux.exists() else {}
+    # WHICH `.aux` IS THE TRUTH IS A QUESTION FOR `refs`, and it used to be
+    # answered here, wrongly: the file beside the source, which our own compile
+    # never writes, so pressing Compile could not move a single `\ref` on the
+    # page. The chooser takes the fresher of the two, so the author's terminal
+    # `make` still wins when it ran last.
+    aux = refs.choose_aux(
+        main_tex,
+        paths.compile_dir(manuscript_dir),
+        paths.compile_dir(manuscript_dir, read_only=read_only))
+    labels = refs.load_labels(aux) if aux is not None else {}
     # The names, before anything is drawn. A free-standing exhibit prints its
     # own number through `\thefigure`, bound by a `\refstepcounter` in the block
     # ABOVE it, so no block can resolve its own name and every namer read
