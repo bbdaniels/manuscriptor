@@ -563,9 +563,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_compile(args: argparse.Namespace) -> int:
     """Compile the manuscript to PDF or to Word.
 
-    A subprocess, not a model call: `pdflatex` three times around a `bibtex`,
-    or the `pandoc-docx` skill's scripts in the order it documents. Each step
-    prints as it finishes, because the whole thing takes tens of seconds.
+    A subprocess, not a model call: a `bibtex` between `pdflatex` passes that
+    run until the `.aux` stops changing, or the `pandoc-docx` skill's scripts
+    in the order it documents. Each step prints as it finishes, because the
+    whole thing takes tens of seconds.
+
+    The passes are not counted, because `\\pageref{LastPage}` is resolved from
+    the PREVIOUS run's `.aux` and a fixed count ships wrong page totals at exit
+    0 whenever the page count changes on the last pass. See `compile_pdf`.
     """
     from manuscriptor.server import compile as compile_mod
 

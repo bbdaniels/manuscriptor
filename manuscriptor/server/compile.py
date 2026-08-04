@@ -50,7 +50,7 @@ import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from manuscriptor.server import build as build_mod, paths
+from manuscriptor.server import build as build_mod, pagination, paths
 
 # ------------------------------------------------------------------- the skill
 
@@ -67,6 +67,11 @@ SKILL_SCRIPTS = {
 ENGINE_FLAGS = ("-interaction=nonstopmode", "-file-line-error")
 
 STEP_TIMEOUT = 600.0
+
+# The bound on the pass loop. Eight is the author's own number, from
+# `latex-until-stable.sh`; a document that has not converged by then has a label
+# whose target moves every pass, and a ninth would not settle it either.
+MAX_PASSES = 8
 
 
 @dataclass(frozen=True)
@@ -382,12 +387,40 @@ def _tex_env(manuscript_dir: Path, out: Path) -> dict:
 
 def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = None,
                 on_step=None, runner=None, deliver_out: bool = True) -> Result:
-    """Three passes around a bibtex, which is the author's documented recipe.
+    """One pass, a bibtex, then passes until the `.aux` stops changing.
 
-    Three because the first writes the `.aux` with the citation keys, bibtex
-    turns those into a `.bbl`, the second pulls the bibliography in and moves
-    every page number, and the third settles the cross-references against the
-    pages they finally landed on.
+    THIS USED TO BE A FIXED THREE, AND THE REASONING FOR IT WAS WRONG. The old
+    docstring argued that the third pass "settles the cross-references against
+    the pages they finally landed on", which is true of the pass itself and
+    false of what it writes. `\\pageref{LastPage}` is a BACKWARD reference: the
+    `lastpage` package writes the label at the END of a run and every footer
+    reads it out of the PREVIOUS run's `.aux`. If the page count changes on the
+    last pass you run, the correct total is written and read by nobody.
+
+    covet-india does this from a clean tree, every time, at exit 0:
+
+        pass 1  no `.bbl` yet, so no bibliography                 17 pages
+        pass 2  the bibliography is typeset                       21 pages
+        pass 3  the citation superscripts render for the first
+                time and the reflow adds a page                   22 pages
+
+    Every footer in the shipped PDF read "/21" and the last page read "22/21".
+    A fourth pass would have fixed that instance and armed the next one, because
+    any edit that moves a page boundary on the final pass reintroduces it. The
+    `.aux` is the fixed point the whole cross-reference mechanism converges to,
+    so the passes iterate to it and the count is whatever the document needs.
+    This is strictly better than counting: three stay three when three is
+    enough, and it costs one extra pass when it is not.
+
+    NOT CONVERGING IS A FAILURE, not a delivery. Returning the eighth attempt
+    would ship the very footers this loop exists to prevent, with the added
+    insult of having noticed. `MAX_PASSES` bounds it because a label whose
+    target moves every pass would otherwise loop forever.
+
+    THE FOOTERS ARE THEN READ BACK OFF THE FINISHED PDF, because the failure is
+    invisible without a gate: everything else here passes a wrong-footer PDF.
+    The exit code is 0, the file exists, and this run wrote it. See
+    `pagination.py`; a document that prints no total is not failed by it.
 
     Each step is announced through `on_step` the moment it finishes rather than
     collected and handed over at the end, because the whole thing takes tens of
@@ -409,18 +442,14 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
     env = _tex_env(root, out)
     tex_cmd = [engine, *ENGINE_FLAGS, f"-output-directory={out}", main_tex.name]
 
-    plan = [
-        ("pass 1 of 3", tex_cmd, root),
-        ("bibtex", ["bibtex", main_tex.stem], out),
-        ("pass 2 of 3", tex_cmd, root),
-        ("pass 3 of 3", tex_cmd, root),
-    ]
+    aux = out / (main_tex.stem + ".aux")
 
     started = time.monotonic()
     steps: list[Step] = []
     notes: list[str] = []
     transcript: list[str] = []
-    for name, cmd, cwd in plan:
+
+    def do(name, cmd, cwd):
         t0 = time.monotonic()
         code, output = run(cmd, cwd=cwd, env=env)
         took = time.monotonic() - t0
@@ -434,8 +463,33 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
             on_step(step)
         if name == "bibtex" and code != 0 and detail:
             notes.append(f"bibtex: {detail}")
-        if _fatal(output):
-            break
+        return output or ""
+
+    settled = None
+    output = do("pass 1", tex_cmd, root)
+    if not _fatal(output):
+        do("bibtex", ["bibtex", main_tex.stem], out)
+        passes = 1
+        while passes < MAX_PASSES:
+            was = _bytes(aux)
+            output = do(f"pass {passes + 1}", tex_cmd, root)
+            passes += 1
+            if _fatal(output):
+                break
+            now = _bytes(aux)
+            if now is None:
+                # Nothing to converge ON. TeX always writes an `.aux`, so this
+                # is a compile that is already broken; the PDF decides, and
+                # spending six more passes to learn that would be theatre.
+                notes.append("no .aux was written, so the passes could not be "
+                             "checked for convergence")
+                settled = True
+                break
+            if now == was:
+                settled = True
+                break
+        else:
+            settled = False
 
     log = out / (main_tex.stem + ".log")
     whole = "\n".join(transcript)
@@ -444,12 +498,52 @@ def compile_pdf(manuscript_dir, *, main: str | None = None, bib: str | None = No
     if not ok:
         error = _diagnosis(whole) or _diagnosis(_read(log)) or \
             "the compile produced no PDF and said nothing about why"
+    elif settled is False:
+        ok = False
+        error = (
+            f"the cross-references never settled: {main_tex.stem}.aux was still "
+            f"changing after {MAX_PASSES} passes, so the page numbers, exhibit "
+            f"numbers or citations in the PDF are typeset against a total that "
+            f"was never final. Look for a label whose target moves every pass.")
+    else:
+        wrong = _pagination_error(pdf)
+        if wrong:
+            ok = False
+            error = wrong
+
     return Result(
         kind="pdf", ok=ok, output=pdf if ok else None,
         seconds=time.monotonic() - started, steps=steps, error=error,
         log=log if log.exists() else None, notes=notes,
         delivered=deliver(pdf, root) if (ok and deliver_out) else None,
     )
+
+
+def _bytes(path: Path) -> bytes | None:
+    try:
+        return Path(path).read_bytes()
+    except OSError:
+        return None
+
+
+def _pagination_error(pdf: Path) -> str | None:
+    """What the finished PDF's own footers say, or nothing if they agree.
+
+    THE GATE IS NOT ALLOWED TO SKIP ITSELF. A PDF that cannot be read is a
+    failed compile rather than an unchecked one: the deliverable nothing can
+    open is not a deliverable, and "the check could not run" reported as a pass
+    is how the original bug survived three passes of review.
+    """
+    try:
+        problems = pagination.check(pdf)
+    except pagination.Unreadable as exc:
+        return str(exc)
+    if not problems:
+        return None
+    return (pagination.summarize(problems) +
+            "\n  The passes are supposed to iterate until the .aux is stable, "
+            "which is what makes \\pageref{LastPage} right. This PDF was not "
+            "delivered.")
 
 
 def _fatal(output: str) -> bool:
@@ -538,11 +632,29 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     if not aux.exists():
         beside = main_tex.with_suffix(".aux")
         if beside.exists():
+            # THE AUTHOR'S OWN BUILD WROTE THIS ONE, and nothing here knows how
+            # old it is or whether the passes that wrote it ever converged. Its
+            # numbers are used because they are far better than none, and the
+            # note is what stops that being a silent assumption.
             aux = beside
+            notes.append(
+                "cross-references came from the .aux beside the manuscript, "
+                "which this compile did not write; recompile the PDF if its "
+                "numbers look stale")
         elif shutil.which("pdflatex") or shutil.which("xelatex"):
             t0 = time.monotonic()
-            pre = compile_pdf(root, main=main, on_step=on_step, runner=runner)
+            pre = compile_pdf(root, main=main, on_step=on_step, runner=runner,
+                              deliver_out=False)
             steps.extend(pre.steps)
+            # A pre-compile that did not converge, or whose printed page totals
+            # disagree with the document, leaves an `.aux` whose numbers are the
+            # ones this conversion is about to write into Word. Word has no page
+            # footers, so this is not fatal to the docx -- but `\pageref` comes
+            # from here and the author should be told where it came from.
+            if not pre.ok and pre.error:
+                notes.append("the PDF pre-compile did not succeed, so the "
+                             "cross-reference numbers may be wrong: "
+                             + pre.error.splitlines()[0])
             if not aux.exists():
                 notes.append("cross-references could not be resolved: no .aux was produced")
         else:

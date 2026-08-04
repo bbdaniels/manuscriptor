@@ -210,10 +210,17 @@ next rebuild and nobody notices until a referee does.
 
 **Compile PDF** and **Compile Word** are in the toolbar.
 
-PDF runs three passes around a bibtex, and reports each step as it finishes, so
-you can see it working rather than watching a button go quiet. Roughly thirty
+PDF runs a bibtex between pdflatex passes, and reports each step as it finishes,
+so you can see it working rather than watching a button go quiet. Roughly thirty
 seconds for a full paper. When it fails you get the LaTeX error that actually
 stopped it, with its source line, rather than the first warning in the log.
+
+The passes are not counted: they run until the `.aux` stops changing, usually
+three and sometimes four. `\pageref{LastPage}` is resolved from the previous
+run's `.aux`, so a fixed count ships a wrong page total in every footer whenever
+the page count changes on the last pass -- silently, at exit 0. Afterwards the
+footers are read back off the finished PDF and a compile whose printed totals
+disagree with the document fails instead of delivering.
 
 Word goes through your `pandoc-docx` skill, so it arrives with its table rules,
 its cross-references resolved, and its figures embedded, and it is not handed

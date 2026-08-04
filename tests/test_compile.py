@@ -38,6 +38,8 @@ import pytest
 
 from manuscriptor.server import paths
 from manuscriptor.server import compile as compile_mod
+from manuscriptor.server import pagination
+from tests import minipdf
 
 
 HAS_LATEX = shutil.which("pdflatex") is not None
@@ -300,7 +302,10 @@ def _fake_runner(exits, *, writes=None, pdf=None):
         calls.append(cmd)
         if pdf is not None and len(calls) == 1:
             pdf.parent.mkdir(parents=True, exist_ok=True)
-            pdf.write_bytes(b"%PDF-1.4\nfake\n")
+            # A REAL PDF, because the pagination gate reads the finished file
+            # and a stand-in nothing can parse is a failed compile now -- which
+            # is the point of the gate, so it is not weakened to suit a fixture.
+            minipdf._pdf(pdf, ["1/2", "2/2"])
         return exits, (writes or "")
 
     run.calls = calls
@@ -338,14 +343,17 @@ def test_a_stale_pdf_from_a_previous_run_is_not_a_success(tmp_path):
 
 
 def test_every_step_is_announced_as_it_finishes(tmp_path):
-    """A button that goes quiet for forty seconds reads as broken. The steps are
-    the author's own documented recipe, three passes around a bibtex."""
+    """A button that goes quiet for forty seconds reads as broken.
+
+    The pass count is no longer in the name because it is no longer known in
+    advance: the passes run until the `.aux` stops changing. This fake writes
+    no `.aux` at all, so the loop stops after the second pass and says so."""
     d = tiny(tmp_path)
     pdf = compile_mod.out_dir(d) / "main.pdf"
     seen = []
     compile_mod.compile_pdf(d, runner=_fake_runner(0, pdf=pdf), on_step=seen.append)
     names = [s.name for s in seen]
-    assert names == ["pass 1 of 3", "bibtex", "pass 2 of 3", "pass 3 of 3"]
+    assert names == ["pass 1", "bibtex", "pass 2"]
     assert all(s.seconds >= 0 for s in seen)
 
 
@@ -989,3 +997,266 @@ def test_the_frame_names_the_file_the_author_opens(tmp_path):
     assert frame["delivered"] == str(d / "main.pdf")
     # the served URL still resolves against the cache, or the page loses its link
     assert frame["url"] == "/compile/main.pdf"
+
+
+# ------------------------------------------------- passes, and how many of them
+#
+# THE BUG THESE EXIST FOR SHIPPED AT EXIT 0. `\pageref{LastPage}` is a backward
+# reference resolved from the PREVIOUS run's `.aux`, so a document whose page
+# count changes on the LAST pass that runs prints a total nobody ever computed.
+# covet-india did exactly that: 17 pages, then 21 once the bibliography was
+# typeset, then 22 once the citation superscripts rendered and reflowed -- on
+# pass three of three. Every footer read "/21" and the last page read "22/21".
+#
+# A fourth pass would have fixed that instance and left the next one armed. The
+# `.aux` is the fixed point the whole cross-reference mechanism converges to, so
+# the passes run until it stops changing.
+
+
+def _aux_runner(page_counts, *, pdf=None, aux=None):
+    """A pdflatex whose `.aux` settles after a stated number of passes.
+
+    `page_counts` is what each pdflatex pass would write as `LastPage`. The
+    `.aux` is the only thing the loop reads, so writing a plausible one is
+    enough to drive it.
+    """
+    calls = []
+
+    def run(cmd, *, cwd, env=None):
+        calls.append(cmd)
+        if cmd[0] == "bibtex":
+            return 0, ""
+        passes = sum(1 for c in calls if c[0] != "bibtex")
+        n = page_counts[min(passes, len(page_counts)) - 1]
+        if aux is not None:
+            aux.parent.mkdir(parents=True, exist_ok=True)
+            aux.write_text(f"\\newlabel{{LastPage}}{{{{}}{{{n}}}}}\n", encoding="utf-8")
+        if pdf is not None:
+            minipdf._pdf(pdf, [f"{i}/{n}" for i in range(1, n + 1)])
+        return 0, ""
+
+    run.calls = calls
+    return run
+
+
+def test_the_passes_stop_when_the_aux_stops_changing(tmp_path):
+    """Three stay three when three is enough. The loop costs nothing on a
+    document that already converged, which is the argument for it over a
+    counted fourth pass."""
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+    res = compile_mod.compile_pdf(d, runner=_aux_runner(
+        [2, 3, 3], pdf=out / "main.pdf", aux=out / "main.aux"))
+    assert res.ok, res.error
+    assert [s.name for s in res.steps] == ["pass 1", "bibtex", "pass 2", "pass 3"]
+
+
+def test_a_document_that_needs_a_fourth_pass_gets_one(tmp_path):
+    """covet-india's shape: the page count changes on pass three, so pass three
+    typesets against a total that is already stale and a fourth pass is what
+    makes the footers right."""
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+    res = compile_mod.compile_pdf(d, runner=_aux_runner(
+        [17, 21, 22, 22], pdf=out / "main.pdf", aux=out / "main.aux"))
+    assert res.ok, res.error
+    assert [s.name for s in res.steps] == ["pass 1", "bibtex", "pass 2", "pass 3", "pass 4"]
+
+
+def test_a_manuscript_that_never_settles_is_a_failure(tmp_path):
+    """Bounded at eight, and the bound is a FAILURE rather than a delivery.
+
+    Returning the last attempt would ship the same wrong footers the loop
+    exists to prevent, with the additional insult of having noticed.
+    """
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+    good = d / "main.pdf"
+    good.write_bytes(b"%PDF-1.7\nthis mornings good build\n")
+    res = compile_mod.compile_pdf(d, runner=_aux_runner(
+        list(range(1, 40)), pdf=out / "main.pdf", aux=out / "main.aux"))
+    assert res.ok is False
+    assert res.delivered is None
+    assert good.read_bytes() == b"%PDF-1.7\nthis mornings good build\n"
+    assert "never settled" in (res.error or "") or "still changing" in (res.error or "")
+    assert str(compile_mod.MAX_PASSES) in (res.error or "")
+    passes = [s for s in res.steps if s.name.startswith("pass")]
+    assert len(passes) == compile_mod.MAX_PASSES
+
+
+# --------------------------------------------------------- the pagination gate
+
+
+def test_footers_that_disagree_with_the_document_fail_the_compile(tmp_path):
+    """The gate, because the failure is invisible without one.
+
+    A PDF of four pages whose every footer says three is what a three-pass
+    build of covet-india produced, and every other check in this module passes
+    it: the exit code is 0, the PDF exists, and it was written by this run.
+    """
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+    good = d / "main.pdf"
+    good.write_bytes(b"%PDF-1.7\nthis mornings good build\n")
+
+    def stale(cmd, *, cwd, env=None):
+        if cmd[0] != "bibtex":
+            minipdf._pdf(out / "main.pdf", ["1/3", "2/3", "3/3", "4/3"])
+        return 0, ""
+
+    res = compile_mod.compile_pdf(d, runner=stale)
+    assert res.ok is False
+    assert "4/3" in (res.error or ""), res.error
+    assert "4 pages" in (res.error or "")
+    # And the wrong-footer PDF must not have replaced the good one.
+    assert res.delivered is None
+    assert good.read_bytes() == b"%PDF-1.7\nthis mornings good build\n"
+
+
+def test_a_pdf_that_cannot_be_read_is_not_a_successful_compile(tmp_path):
+    """A deliverable nothing can open is not a deliverable. The gate refusing
+    to run is not the gate passing."""
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+
+    def junk(cmd, *, cwd, env=None):
+        (out / "main.pdf").write_bytes(b"%PDF-1.4\nnot really a pdf\n")
+        return 0, ""
+
+    res = compile_mod.compile_pdf(d, runner=junk)
+    assert res.ok is False
+    assert "read" in (res.error or "").lower()
+
+
+def test_a_manuscript_with_no_total_footer_still_compiles(tmp_path):
+    """Most classes print a bare `\\thepage`. A gate that fails those has
+    replaced a rare silent bug with a loud wrong one."""
+    d = tiny(tmp_path)
+    out = compile_mod.out_dir(d)
+
+    def plain(cmd, *, cwd, env=None):
+        minipdf._pdf(out / "main.pdf", ["1", "2", "3"])
+        return 0, ""
+
+    res = compile_mod.compile_pdf(d, runner=plain)
+    assert res.ok, res.error
+    assert res.delivered == d / "main.pdf"
+
+
+# --------------------------------------------------------- against real LaTeX
+
+# Two pages of prose, a bibliography that appears only once bibtex has run, and
+# a page that appears only once the bibliography has moved LastPage past 2. The
+# page count therefore changes on pass THREE -- covet-india's shape, reduced to
+# something that compiles in a second. `refcount` is what makes `\pageref`
+# readable by `\ifnum`; without it the growth cannot be made to depend on the
+# page count at all.
+GROWS = r"""\documentclass[11pt]{article}
+\usepackage{lastpage}
+\usepackage{refcount}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\cfoot{\thepage/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0pt}
+\begin{document}
+\section{One}
+Prose that cites \cite{smith2020}.
+\newpage
+\section{Two}
+More prose on a second page.
+\newpage
+\bibliographystyle{plain}
+\bibliography{refs}
+\ifnum\getpagerefnumber{LastPage}>2\relax
+  \clearpage\mbox{}
+\fi
+\end{document}
+"""
+
+
+def growing(tmp_path: Path) -> Path:
+    d = tmp_path / "grows"
+    d.mkdir(parents=True)
+    (d / "main.tex").write_text(GROWS, encoding="utf-8")
+    (d / "refs.bib").write_text(BIB, encoding="utf-8")
+    return d
+
+
+@pytest.mark.skipif(not HAS_LATEX, reason="pdflatex is not installed")
+def test_three_passes_would_have_shipped_the_wrong_footers(tmp_path):
+    """The bug, reproduced against real LaTeX before the fix is trusted.
+
+    This is the old recipe -- one pass, bibtex, two more -- run by hand on a
+    document that grows on the third. It exits 0 and writes a four-page PDF
+    every footer of which says three.
+    """
+    d = growing(tmp_path)
+    out = compile_mod.out_dir(d)
+    cmd = ["pdflatex", *compile_mod.ENGINE_FLAGS, f"-output-directory={out}", "main.tex"]
+    env = compile_mod._tex_env(d, out)
+    for step in (cmd, ["bibtex", "main"], cmd, cmd):
+        compile_mod._default_runner(step, cwd=(out if step[0] == "bibtex" else d), env=env)
+
+    total, found = pagination.footers(out / "main.pdf")
+    assert total == 4, f"the fixture no longer grows on the third pass: {total} pages"
+    assert found[4] == (4, 3), f"the fixture no longer reproduces the bug: {found}"
+    problems = pagination.check(out / "main.pdf")
+    assert problems, "three passes shipped wrong footers and the gate said nothing"
+    assert "but the document is 4 pages" in " ".join(problems)
+
+
+@pytest.mark.skipif(not HAS_LATEX, reason="pdflatex is not installed")
+def test_the_loop_gets_the_footers_right_on_the_same_manuscript(tmp_path):
+    """And the fix, on the identical document: a fourth pass, right footers."""
+    d = growing(tmp_path)
+    res = compile_mod.compile_pdf(d)
+    assert res.ok, res.error
+    assert [s.name for s in res.steps] == ["pass 1", "bibtex", "pass 2", "pass 3", "pass 4"]
+    total, found = pagination.footers(res.output)
+    assert total == 4
+    assert found[4] == (4, 4)
+    assert pagination.check(res.output) == []
+
+
+# ------------------------------------------------- what Word inherits from this
+
+
+def test_word_says_where_its_cross_reference_numbers_came_from(tmp_path, monkeypatch):
+    """`compile_docx` has no pass count of its own -- it gets the `.aux` from
+    `compile_pdf` and therefore inherits the loop. What it did NOT inherit was
+    any interest in whether that pre-compile succeeded, so a run whose page
+    totals never settled handed its numbers to Word in silence."""
+    d = tiny(tmp_path)
+    monkeypatch.setattr(compile_mod, "compile_pdf", lambda *a, **k: compile_mod.Result(
+        kind="pdf", ok=False, output=None, seconds=0.1, steps=[],
+        error="the cross-references never settled: main.aux was still changing",
+        log=None))
+    res = compile_mod.compile_docx(d, runner=_fake_runner(1))
+    assert any("never settled" in n for n in res.notes), res.notes
+
+
+def test_word_says_when_the_aux_is_the_authors_own(tmp_path):
+    """An `.aux` beside the manuscript is used because its numbers are far
+    better than none, but nothing here knows how old it is."""
+    d = tiny(tmp_path)
+    (d / "main.aux").write_text("\\relax\n", encoding="utf-8")
+    res = compile_mod.compile_docx(d, runner=_fake_runner(1))
+    assert any("beside the manuscript" in n for n in res.notes), res.notes
+
+
+def test_a_word_compile_does_not_quietly_replace_the_pdf(tmp_path):
+    """The pre-compile exists to produce an `.aux`, not a deliverable.
+
+    It used to run with delivery on, so asking for Word overwrote this
+    morning's PDF beside the manuscript without being asked -- and did it in a
+    `--read-only` serve too, which promises that nothing reaches the
+    filesystem at all.
+    """
+    d = tiny(tmp_path)
+    good = d / "main.pdf"
+    good.write_bytes(b"%PDF-1.7\nthis mornings good build\n")
+    compile_mod.compile_docx(
+        d, runner=_fake_runner(1, pdf=compile_mod.out_dir(d) / "main.pdf"),
+        deliver_out=False)
+    assert good.read_bytes() == b"%PDF-1.7\nthis mornings good build\n"
