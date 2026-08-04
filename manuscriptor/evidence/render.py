@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
 
 from jinja2 import Template
 
-from manuscriptor.render import pandoc
+from manuscriptor.render import pandoc, postprocess
 
 
 def run(*, output_dir: Path, main_tex: Path) -> None:
@@ -31,6 +30,12 @@ def run(*, output_dir: Path, main_tex: Path) -> None:
 
     augmented_html = _augment_html(
         manuscript_html, claims, citations_by_key, evidence_by_pair
+    )
+
+    # Before the template, not after: staging rewrites a PDF figure's `<embed>`
+    # into an `<img>`, and it is the rewritten html that has to reach the page.
+    augmented_html, _assets = postprocess.stage_assets(
+        augmented_html, main_tex.parent, output_dir
     )
 
     title = _extract_title(main_tex, manuscript_html, fallback=main_tex.stem)
@@ -64,38 +69,10 @@ def run(*, output_dir: Path, main_tex: Path) -> None:
     )
     (output_dir / "index.html").write_text(rendered, encoding="utf-8")
 
-    _copy_assets(main_tex.parent, output_dir, augmented_html)
-
     print(f"  n cite-instances: {n_pairs}")
     print(f"  verbatim quotes : {n_verbatim}")
     print(f"  paraphrase      : {n_paraphrase}")
     print(f"  pairs w/o quote : {n_missing_pairs}")
-
-
-def _copy_assets(manuscript_dir: Path, output_dir: Path, html: str) -> None:
-    """Copy local images referenced in the rendered HTML into output_dir.
-
-    Pandoc emits `<img src="exhibits/foo.png">` (or similar relative paths).
-    We mirror those relative paths under output_dir so the page renders
-    standalone.
-    """
-    seen: set[str] = set()
-    for m in re.finditer(r'<img\s[^>]*src="([^"]+)"', html):
-        src = m.group(1)
-        if src.startswith(("http://", "https://", "data:", "/")):
-            continue
-        if src in seen:
-            continue
-        seen.add(src)
-        source = (manuscript_dir / src).resolve()
-        if not source.exists():
-            continue
-        dest = (output_dir / src).resolve()
-        try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, dest)
-        except OSError:
-            continue
 
 
 # ----------------------------------------------------------------------------- helpers

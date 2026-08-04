@@ -14,6 +14,7 @@ blocks were supposed to be there.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -642,9 +643,11 @@ def test_a_pdf_figure_becomes_a_png_img(tmp_path, harvester):
     out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
                       output_dir=tmp_path / "out", labels={})
     assert '<embed' not in out["html"]
-    assert '<img src="outputs/fig2.png"' in out["html"]
-    assert (tmp_path / "out" / "outputs" / "fig2.png").exists()
-    assert "outputs/fig2.png" in out["assets"]
+    # The PDF's own suffix is kept, so the raster can never land on the cache
+    # path the asset copier mirrors a same-stem `fig2.png` onto.
+    assert '<img src="outputs/fig2.pdf.png"' in out["html"]
+    assert (tmp_path / "out" / "outputs" / "fig2.pdf.png").exists()
+    assert "outputs/fig2.pdf.png" in out["assets"]
 
 
 def test_a_pdf_figure_is_rasterized_once_and_cached(tmp_path, harvester):
@@ -653,11 +656,60 @@ def test_a_pdf_figure_is_rasterized_once_and_cached(tmp_path, harvester):
     html = f'<p>{mark(A)}x</p><embed src="outputs/fig2.pdf" />'
     postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
                 output_dir=tmp_path / "out", labels={})
-    png = tmp_path / "out" / "outputs" / "fig2.png"
+    png = tmp_path / "out" / "outputs" / "fig2.pdf.png"
     first = png.stat().st_mtime_ns
     postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
                 output_dir=tmp_path / "out", labels={})
     assert png.stat().st_mtime_ns == first, "an unchanged figure re-rasterized"
+
+
+# A PNG sitting beside the PDF under the same stem is a DIFFERENT file, and the
+# LaTeX named the PDF. Rasterizing to `<stem>.png` put both through one cache
+# path, and the asset copier -- which runs after -- copied the manuscript's PNG
+# over the raster, with `copy2` carrying its mtime along. Two ways that is worse
+# than no cache at all. The page shows a file the manuscript never asked for; and
+# the raster's staleness key becomes the OTHER file's mtime, so a PNG newer than
+# the PDF pins the check false forever and the figure can never refresh again.
+# covet-india ships both forms of all nine of its exhibits, so this was live
+# there on every build.
+
+
+def test_a_png_of_the_same_stem_does_not_replace_the_pdfs_raster(tmp_path, harvester):
+    (tmp_path / "outputs").mkdir()
+    (tmp_path / "outputs" / "fig2.pdf").write_bytes(MINI_PDF)
+    decoy = b"\x89PNG\r\n\x1a\n not the figure the latex named"
+    (tmp_path / "outputs" / "fig2.png").write_bytes(decoy)
+    html = f'<figure>{mark(A)}<embed src="outputs/fig2.pdf" /><figcaption>F</figcaption></figure>'
+    out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                      output_dir=tmp_path / "out", labels={})
+    src = re.search(r'<img src="([^"]+)"', out["html"]).group(1)
+    served = tmp_path / "out" / src
+    assert served.read_bytes() != decoy, "the page serves the PNG, not the PDF the LaTeX named"
+    assert served.stat().st_size > len(decoy)
+
+
+def test_a_changed_pdf_is_re_rasterized_even_when_its_mtime_did_not_advance(tmp_path, harvester):
+    """Content, not mtime. The author regenerates figures constantly, and a
+    rebuilt PDF can land with an mtime that does not move forward -- a restore
+    from git, a copy that preserves times, or an mtime the asset copier
+    overwrote with another file's. A cache keyed on mtime alone then serves the
+    old picture with nothing on the page to say so."""
+    (tmp_path / "outputs").mkdir()
+    pdf = tmp_path / "outputs" / "fig2.pdf"
+    pdf.write_bytes(MINI_PDF)
+    html = f'<p>{mark(A)}x</p><embed src="outputs/fig2.pdf" />'
+    out = postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                      output_dir=tmp_path / "out", labels={})
+    src = re.search(r'<img src="([^"]+)"', out["html"]).group(1)
+    served = tmp_path / "out" / src
+    before = served.read_bytes()
+    stamp = pdf.stat()
+
+    pdf.write_bytes(MINI_PDF.replace(b"[0 0 24 24]", b"[0 0 96 48]"))
+    os.utime(pdf, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+    postprocess(html, blocks=(FakeBlock(A),), manuscript_dir=tmp_path,
+                output_dir=tmp_path / "out", labels={})
+    assert served.read_bytes() != before, "a changed figure kept its old raster"
 
 
 def test_a_pdf_outside_the_manuscript_is_left_alone(tmp_path, harvester):

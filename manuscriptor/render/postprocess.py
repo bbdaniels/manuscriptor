@@ -150,6 +150,28 @@ def _frontmatter_classes(html: str) -> str:
     return html
 
 
+def stage_assets(html: str, manuscript_dir, output_dir) -> tuple[str, list[str]]:
+    """Get this document's figures onto a page rendered from `output_dir`.
+
+    ONE implementation, and every renderer calls it. Rasterizing a PDF figure
+    and mirroring the images into the build directory are halves of a single
+    job, and they were written twice: this pass, and the evidence viewer's own
+    copier, which knew only `<img>`. Pandoc emits `<embed>` for a PDF, and a
+    browser paints nothing for an unsized PDF embed, so every PDF figure was a
+    blank rectangle in `index.html` -- all nine of covet-india's exhibits, all
+    five of dsp-bias's -- with the caption beneath it rendering perfectly and
+    the build exiting 0. The viewer's copy also percent-decoded nothing and
+    refused nothing, so `../` in an image path wrote wherever the pass could
+    reach.
+
+    Rasterize first: it REWRITES `<embed src=...pdf>` into an `<img>`, and the
+    copier reads the `<img>` elements it leaves behind.
+    """
+    manuscript_dir, output_dir = Path(manuscript_dir), Path(output_dir)
+    html, rasterized = _pdf_figures_to_png(html, manuscript_dir, output_dir)
+    return html, _copy_assets(html, manuscript_dir, output_dir) + rasterized
+
+
 # Pandoc emits <embed> for a PDF figure (and <img> only for raster formats),
 # the asset copier only knew <img>, and a browser paints nothing for an
 # unsized PDF embed: dsp-bias served with no figures at all. PDF figures are
@@ -161,6 +183,28 @@ _PDF_FIG_RE = re.compile(
 
 
 def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tuple[str, list[str]]:
+    r"""Rasterize every PDF figure into the cache and point the page at it.
+
+    Two things here are load-bearing, and both were learned the hard way against
+    covet-india, which ships a `.png` beside every one of its nine `.pdf`
+    exhibits.
+
+    THE RASTER'S NAME KEEPS THE PDF'S OWN SUFFIX -- `fig.pdf` becomes
+    `fig.pdf.png`, not `fig.png`. Dropping the suffix put the raster and the
+    asset copier's mirror of a same-stem `fig.png` on ONE cache path, and the
+    copier runs second, so the page served a file the LaTeX never named. Names
+    that cannot collide are the fix; a rule about which pass wins would leave
+    the two operations sharing a namespace and depending on their order forever.
+
+    THE STALENESS KEY IS THE PDF'S CONTENT, not its mtime. The author
+    regenerates figures constantly and a rebuilt PDF does not reliably arrive
+    with a later mtime -- a restore from git, a `copy2`, or (before the renaming
+    above) an mtime the asset copier had overwritten with another file's, which
+    pinned the comparison false so the figure could never refresh again. A cache
+    that serves a stale figure is worse than no cache, because the page shows a
+    wrong picture and says nothing.
+    """
+    import hashlib
     import shutil
     import subprocess
     from urllib.parse import unquote
@@ -174,20 +218,29 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
         src = m.group(1)
         if src.startswith(("http:", "https:", "data:", "/")):
             return m.group(0)
-        pdf = (manuscript_dir / unquote(src)).resolve()
+        rel = unquote(src)
+        pdf = (manuscript_dir / rel).resolve()
         # Same containment rule as the asset copier: a src that walks out of
         # the manuscript directory is left alone, never followed.
         if manuscript_dir not in pdf.parents or not pdf.exists():
             return m.group(0)
-        rel_png = str(Path(unquote(src)).with_suffix(".png"))
+        rel_png = rel + ".png"
         dest = Path(output_dir) / rel_png
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if not dest.exists() or dest.stat().st_mtime < pdf.stat().st_mtime:
+        stamp = dest.with_name(dest.name + ".sha")
+        try:
+            digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
+        except OSError:
+            return m.group(0)
+        was = stamp.read_text().strip() if stamp.exists() else ""
+        if not dest.exists() or was != digest:
+            dest.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run(
                 ["pdftoppm", "-png", "-r", "200", "-singlefile",
-                 str(pdf), str(dest.with_suffix(""))],
+                 str(pdf), str(dest.with_name(dest.name[: -len(".png")]))],
                 capture_output=True, timeout=60,
             )
+            if dest.exists():
+                stamp.write_text(digest)
         if not dest.exists():
             return m.group(0)
         made.append(rel_png)
@@ -356,8 +409,7 @@ def postprocess(
     # Split before tagging, so each key's span gets its own `data-cite-id`.
     html = _split_citation_groups(html)
     html = _tag_citations(html)
-    html, rasterized = _pdf_figures_to_png(html, Path(manuscript_dir), Path(output_dir))
-    assets = _copy_assets(html, Path(manuscript_dir), Path(output_dir)) + rasterized
+    html, assets = stage_assets(html, manuscript_dir, output_dir)
 
     # Report in the caller's own vocabulary. The marker contract writes ids
     # without the `b-` prefix, so the harvester's orphans arrive in that form;

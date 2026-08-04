@@ -1473,7 +1473,9 @@ def test_a_regenerated_figure_reaches_the_page(tmp_path):
     (tmp_path / "outputs" / "fig.pdf").write_bytes(MINI_PDF)
     (tmp_path / "main.tex").write_text(FIG_DOC, encoding="utf-8")
     s = Session(tmp_path)
-    png = paths.cache(tmp_path) / "outputs" / "fig.png"
+    # `fig.pdf.png`: the raster keeps the PDF's own suffix so it can never
+    # share a cache path with a same-stem PNG the asset copier mirrors.
+    png = paths.cache(tmp_path) / "outputs" / "fig.pdf.png"
     assert png.exists(), "the figure never rasterized at all"
     first = png.stat().st_mtime_ns
 
