@@ -45,6 +45,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from manuscriptor.evidence.zotero import ZoteroError, printing_marker
 from manuscriptor.server import producers
 from manuscriptor.source import splice as splice_mod
 
@@ -278,8 +279,9 @@ def plan_citation(
         plan.summary = f"{meta.get('title') or cite_key} — {cite_key}, already in your bibliography."
         return plan
 
-    doi, seed, held_lib = _candidate_doi(query, net, library)
+    doi, seed, held_lib, ident = _candidate_doi(query, net, library)
     from_library = held_lib is not None
+    from_isbn = bool(ident and ident.get("status") == "found")
 
     checks: list[Check] = []
 
@@ -300,9 +302,21 @@ def plan_citation(
     # three different wrong works, one of them Rogers' own 1993 chapter. When
     # the library holds the work, that IS identity; `match` has said so all
     # along.
-    no_doi_on_record = from_library and not doi
+    # WHAT ZOTERO'S TRANSLATORS SAID, when an identifier was typed and the
+    # library did not hold it. Three answers, kept apart on purpose: "the bridge
+    # is not installed" is a machine to fix, "no catalogue holds it" is a book
+    # to double-check, and only the third is metadata. Collapsing the first into
+    # the second would tell the author his book does not exist because his
+    # Zotero was closed.
+    if ident is not None:
+        checks.append(_identifier_check(ident))
+
+    no_doi_on_record = (from_library or from_isbn) and not doi
     if no_doi_on_record:
-        checks.append(Check("doi", True, _no_doi_detail(seed, held_lib), status=NA))
+        checks.append(Check(
+            "doi", True,
+            _no_doi_detail(seed, held_lib, source="isbn" if from_isbn else "library"),
+            status=NA))
     else:
         checks.append(Check(
             "doi", bool(doi),
@@ -324,7 +338,8 @@ def plan_citation(
         checks.append(Check(
             "agreement", True,
             "neither catalogue was asked, so there is nothing for them to agree on; "
-            "your library record is the identity instead",
+            + (f"the ISBN {(ident or {}).get('isbn')} record is the identity instead"
+               if from_isbn else "your library record is the identity instead"),
             status=NA))
     else:
         cross = net.crossref_by_doi(doi) if doi else None
@@ -349,6 +364,17 @@ def plan_citation(
     if doi:
         meta["doi"] = doi
 
+    # THE YEAR, WHICH IS THE ONE THING A CATALOGUE GETS WRONG ON PURPOSE.
+    given_year = _year_in(query, (ident or {}).get("isbn")) if from_isbn else None
+    if from_isbn:
+        # The row is built BEFORE the override lands, so it can report what it
+        # discarded. Built after, it read "you gave 1981, so the catalogue's
+        # 1981 was not used" -- a sentence that quotes the override back and
+        # tells the author nothing about the year he avoided.
+        checks.append(_date_check(meta, given_year))
+        if given_year:
+            meta["year"] = given_year
+
     # IDENTITY IS NOT RELEVANCE, and finding that out cost nothing only because
     # the real catalogues were run rather than a fake. Crossref answers every
     # query with something: a deliberately nonsense search returned a real,
@@ -358,11 +384,12 @@ def plan_citation(
     # look fine.
     typed_doi = bool(_DOI_RE.search(query or ""))
     score = _relevance(query, meta)
-    matched = typed_doi or from_library or score >= 0.5
+    matched = typed_doi or from_library or from_isbn or score >= 0.5
     checks.append(Check(
         "match", matched,
         "you gave the DOI, so there is nothing to match against" if typed_doi else
-        ("it is the record already in your library" if from_library else
+        ("you gave the ISBN, so there is nothing to match against" if from_isbn else
+         "it is the record already in your library" if from_library else
          (f"{meta.get('title') or 'the candidate'} answers what you asked for" if matched else
           f"the closest thing either catalogue offers is {meta.get('title')!r}, which is not what "
           f"you asked for. Give a DOI, or more of the title."))))
@@ -377,6 +404,31 @@ def plan_citation(
             else "no indexed fulltext yet, so the evidence pass cannot quote it",
             blocking=False,
         ))
+    elif from_isbn:
+        # NOT A SAVE, AND NEVER ONE. The identifier path is read-only by
+        # construction (`libraryID: false`), and the author's
+        # `zotero-write-guard.py` blocks connector and CLI saves on purpose; a
+        # write routed through the bridge would be that guard's own defeat. So
+        # the row fails honestly and names the tool that does the job properly.
+        #
+        # It does not BLOCK, which is a judgement call and this is the argument:
+        # the work of this whole path is citing a book Zotero does not yet hold,
+        # so blocking on Zotero not holding it would make the feature inert. The
+        # citation and the `@book` entry are correct on their own; what is
+        # missing is a library record, and a `!` that says so beside a named
+        # remedy serves the author better than a refusal. A GENERATED
+        # bibliography is different and is still refused outright, above.
+        checks.append(Check(
+            "zotero", False,
+            "not in your library. It has no DOI, so it cannot be imported by one, and "
+            "nothing here ever writes to Zotero. Add it yourself -- "
+            "`~/.claude/skills/add-citation/scripts/citekit.py add`, which checks for "
+            "duplicates -- and the evidence pass will be able to quote it",
+            blocking=False))
+        checks.append(Check(
+            "fulltext", False,
+            "no library record, so no indexed fulltext and nothing for the evidence pass to read",
+            blocking=False))
     elif agree:
         library_add = doi
         checks.append(Check("zotero", True, f"not in your library; it will be imported by DOI {doi}"))
@@ -422,7 +474,9 @@ def plan_citation(
     plan.summary = (
         f"{meta.get('title') or query} — {cite_key}. "
         + ("The entry is already in your bibliography. " if existing else "")
-        + ("Importing it into Zotero first." if library_add else "Already in your library.")
+        + ("Importing it into Zotero first." if library_add else
+           "Not in your library, and nothing was saved there." if from_isbn else
+           "Already in your library.")
     )
     return plan
 
@@ -1475,14 +1529,21 @@ def _norm_title(t) -> str:
 
 
 def _candidate_doi(query: str, net, library):
-    """The DOI to gate, the metadata that came with it, and the library record.
+    """The DOI to gate, the metadata that came with it, the library record, and
+    what Zotero's translators said about an identifier if one was typed.
 
-    The library is asked first, deliberately: a paper the author already holds
-    should not be re-derived from a search engine, and its own DOI is the one
-    the rest of his bibliography is keyed on. The record itself travels back,
-    because a record he already holds needs no relevance check and asking the
-    library a second time to find that out is a second round trip for something
-    already known.
+    THE ORDER, and each step is where it is for a reason:
+
+      1. A DOI typed into the box. Nothing beats being told.
+      2. The library, by ISBN if one was typed, then by title. Zotero is the
+         source of truth, so a book the author already holds resolves to HIS
+         record with HIS citation key -- never to a fresh catalogue record that
+         would key it differently and split the bibliography in two.
+      3. Zotero's own translators, for an ISBN the library does not hold. This
+         is ahead of Crossref because an ISBN is an exact identifier and a
+         Crossref title search is a guess; running the guess first would let it
+         win against an exact answer.
+      4. Crossref, for everything else.
 
     **A library hit with no DOI is still the answer.** It used to be discarded
     -- the record was found, `held.get("doi")` was empty, and the search fell
@@ -1490,22 +1551,148 @@ def _candidate_doi(query: str, net, library):
     nearest article-shaped thing it had. That is how three tries at one book
     produced three different wrong records. A book identified by ISBN, or by
     nothing but the author's own record of it, is identified.
+
+    Step 3 is the same argument one shelf further out: Crossref returns zero for
+    every trade ISBN tested, so without it a book the author has NOT yet filed
+    could only ever be answered with a near miss.
     """
     q = (query or "").strip()
     m = _DOI_RE.search(q)
     if m:
-        return _norm_doi(m.group(0)), None, None
+        return _norm_doi(m.group(0)), None, None, None
 
-    held = library.find(title=q) if hasattr(library, "find") else None
+    isbn = _isbn_in(q)
+    held = None
+    if hasattr(library, "find"):
+        if isbn:
+            held = library.find(isbn=isbn)
+        if held is None:
+            held = library.find(title=q)
     if held:
         doi = _norm_doi(held["doi"]) if held.get("doi") else None
-        return doi, _from_library(held), held
+        return doi, _from_library(held), held, None
+
+    if isbn and hasattr(library, "lookup_isbn"):
+        # A bare title cannot come here: Zotero's `extractIdentifiers` reads
+        # identifiers, not titles, so there is no title fallback to build. What
+        # a title query falls back to is this same branch when the query carries
+        # an ISBN, and it runs whether or not Crossref would have answered.
+        look = library.lookup_isbn(isbn) or {}
+        look = dict(look, isbn=isbn)
+        if look.get("status") == "found" and look.get("record"):
+            record = dict(look["record"])
+            # AND THE LIBRARY GETS THE LAST WORD, with the title it could not be
+            # asked for a moment ago. Zotero quicksearch is a LITERAL SUBSTRING
+            # match, so `9780743258234` cannot match a stored
+            # `978-0-7432-5823-4` -- measured against the live library, where
+            # the plain spelling returns nothing and the hyphenated one returns
+            # A4A5CXWE. Without this, "the library is checked first" would hold
+            # only for the spelling the author happened to type, and a book he
+            # already owns would be given a second bib entry under a second
+            # citation key.
+            #
+            # The ISBN has to agree, not merely the title: a library holding a
+            # different edition of the same work is a different entry.
+            mine = library.find(title=record.get("title") or "")
+            if mine and _same_isbn(mine.get("isbn"), isbn):
+                doi = _norm_doi(mine["doi"]) if mine.get("doi") else None
+                return doi, _from_library(mine), mine, None
+            return None, record, None, look
+        return None, None, None, look
 
     hits = list(net.crossref_search(q) or [])
     for cand in hits:
         if cand.get("doi"):
-            return _norm_doi(cand["doi"]), cand, None
-    return None, (hits or [None])[0], None
+            return _norm_doi(cand["doi"]), cand, None, None
+    return None, (hits or [None])[0], None, None
+
+
+# An ISBN-10 or ISBN-13, hyphenated or not, standing on its own in the query.
+_ISBN_IN_RE = re.compile(r"(?<![0-9Xx-])(?:97[89][- ]?)?(?:[0-9][- ]?){9}[0-9Xx](?![0-9Xx-])")
+
+
+def _same_isbn(a, b) -> bool:
+    """Two spellings of one ISBN. Hyphens are typography, not identity."""
+    da = re.sub(r"[^0-9Xx]", "", str(a or "")).upper()
+    db = re.sub(r"[^0-9Xx]", "", str(b or "")).upper()
+    return bool(da) and da == db
+
+
+def _isbn_in(query: str) -> str | None:
+    """The ISBN the author typed, or None. Length is the whole of the test.
+
+    Deliberately narrow: a bare 13- or 10-digit run. A year, a page range or a
+    DOI cannot reach this length, and a false positive here would send a title
+    query down the identifier road.
+    """
+    for m in _ISBN_IN_RE.finditer(query or ""):
+        digits = re.sub(r"[^0-9Xx]", "", m.group(0)).upper()
+        if len(digits) in (10, 13):
+            return m.group(0).strip()
+    return None
+
+
+# A publication year the author typed alongside the identifier, which overrides
+# whatever the catalogue holds. Bounded below at 1500 so a page number or a run
+# of ISBN digits cannot be read as one.
+_YEAR_IN_RE = re.compile(r"(?<!\d)(1[5-9]\d{2}|20\d{2})(?!\d)")
+
+
+def _year_in(query: str, isbn: str | None) -> int | None:
+    rest = (query or "").replace(isbn, " ") if isbn else (query or "")
+    m = _YEAR_IN_RE.search(rest)
+    return int(m.group(1)) if m else None
+
+
+def _date_check(meta: dict, given_year: int | None) -> Check:
+    """Whether the year about to be written is a publication year.
+
+    THIS IS THE ONE CORRECTNESS TRAP IN THE IDENTIFIER PATH. A catalogue holds a
+    HOLDINGS date, not a publication date, and the difference is not small:
+    Sen's *Poverty and Famines* (1981) comes back dated 2010, and *Development
+    as Freedom* (1999) as 2001. A year like that written into an `@book` is
+    wrong in a way nobody re-reads.
+
+    Three outcomes, and the middle one is the design:
+
+      * The author typed a year. It wins, and the catalogue's is discarded.
+      * The edition string marks a printing (`Reprinted`, `6th print`,
+        `Nachdruck`). That is a POSITIVE finding that the year is wrong, so it
+        BLOCKS and quotes the string that gave it away.
+      * Nothing marks it. This is the *Development as Freedom* case -- 2001, no
+        edition field, nothing to catch. So the row is `ok=False,
+        blocking=False`: the viewer draws `!` rather than `✓`, the citation
+        still goes in, and the author is shown how to override. An unconfirmed
+        year may not render as a tick; the edition tell is sufficient evidence
+        and never necessary, and pretending otherwise would be the silent pass
+        this whole gate exists to refuse.
+    """
+    catalogue = meta.get("year")
+    isbn = meta.get("isbn") or "the ISBN"
+    if given_year:
+        return Check("date", True,
+                     f"you gave {given_year}, so the catalogue's "
+                     f"{catalogue or 'undated record'} was not used")
+    marker = printing_marker(meta.get("edition"))
+    if marker:
+        return Check("date", False,
+                     f"the catalogue dates this {catalogue}, but its edition reads "
+                     f"{str(meta.get('edition'))!r} -- {marker!r} means that year is a "
+                     f"printing, not the publication year. Type the publication year "
+                     f"after the ISBN ({isbn} 1981) and it will be used instead")
+    if not catalogue:
+        return Check("date", False,
+                     f"the catalogue record carries no date. Type the publication year "
+                     f"after the ISBN ({isbn} 1999)", blocking=False)
+    return Check(
+        "date", False,
+        f"{catalogue}, as the catalogue holds it"
+        + (f", edition {str(meta.get('edition'))!r}" if meta.get("edition") else "")
+        + ". A catalogue date is a holdings date and can be a printing rather than "
+          "first publication -- Sen 1999 is held as 2001, with nothing in the record "
+          f"to say so. Check it, or type the year after the ISBN ({isbn} 1999) to "
+          "override it",
+        blocking=False)
 
 
 def _from_library(held: dict) -> dict:
@@ -1521,15 +1708,51 @@ def _from_library(held: dict) -> dict:
     return meta
 
 
-def _no_doi_detail(seed: dict | None, held: dict | None) -> str:
+def _no_doi_detail(seed: dict | None, held: dict | None, *, source: str = "library") -> str:
     """Why the `doi` row does not apply, said as a determination rather than a shrug."""
     seed = seed or {}
+    isbn = seed.get("isbn")
+    if source == "isbn":
+        return (f"no DOI; the work is identified by ISBN {isbn}, which Zotero's own "
+                f"translators resolved to a catalogue record")
     key = (held or {}).get("key")
     where = f"your Zotero record {key}" if key else "your library"
-    isbn = seed.get("isbn")
     if isbn:
         return f"no DOI; {where} identifies it by ISBN {isbn}"
     return f"no DOI; {where} records none, and is itself the identity"
+
+
+def _identifier_check(ident: dict) -> Check:
+    """What Zotero's translators said, with the three answers kept apart.
+
+    `bridge_unavailable` is the one that matters. It is the same distinction
+    `_bbt_rpc` already draws between "no such rung on this machine" and "the
+    rung ran and found nothing": a determination needs a positive finding, and
+    "couldn't tell" is not one. Telling an author his book does not exist
+    because Zotero was closed is exactly the failure the preflight discipline
+    forbids.
+    """
+    isbn = ident.get("isbn") or "that identifier"
+    status = ident.get("status")
+    if status == "found":
+        r = ident.get("record") or {}
+        where = ", ".join(str(x) for x in (r.get("publisher"), r.get("year")) if x)
+        return Check("identifier", True,
+                     f"ISBN {isbn} resolves to {r.get('title')!r}"
+                     + (f" ({where})" if where else "")
+                     + ", through Zotero's own translators. Nothing was saved")
+    if status == "bridge_unavailable":
+        return Check("identifier", False,
+                     f"{isbn} could not be looked up at all: Zotero is not running, or the "
+                     "cli-bridge add-on is not installed. That is a machine to fix and NOT a "
+                     "finding about the book. Start Zotero and try again")
+    if status == "not_an_identifier":
+        return Check("identifier", False,
+                     f"Zotero does not read {isbn} as an identifier. Check the digits, or "
+                     "search by title instead")
+    return Check("identifier", False,
+                 f"Zotero's translators ran and no catalogue holds {isbn}. Check the digits, "
+                 "or search by title instead")
 
 
 def _generated_bib(bib_path, root, produced=None) -> str | None:
@@ -1658,13 +1881,15 @@ class ZoteroLibrary:
                 self._client = None
         return self._client
 
-    def find(self, *, doi=None, title=None):
+    def find(self, *, doi=None, title=None, isbn=None):
         c = self.client
         if c is None:
             return None
         key = None
         if doi:
             key = c.search_by_doi(doi)
+        if not key and isbn:
+            key = c.search_by_isbn(isbn)
         if not key and title:
             key = c.search_by_title(title)
         if not key:
@@ -1683,6 +1908,29 @@ class ZoteroLibrary:
             "address": item.place, "edition": item.edition, "volume": item.volume,
             "issue": item.issue, "pages": item.pages, "citation_key": item.citation_key,
         }
+
+    def lookup_isbn(self, isbn):
+        """Zotero's own translators, read-only, saving nothing.
+
+        Deliberately NOT routed through `self.client`, which is None whenever
+        pyzotero could not be imported. The bridge is plain HTTP and does not
+        need pyzotero, so gating it on that would report "the bridge is not
+        installed" about a bridge that is running -- the exact conflation this
+        whole path exists to avoid.
+
+        Returns a plain dict rather than the dataclass so the boundary matches
+        `find`, and so a test double is a literal.
+        """
+        try:
+            from manuscriptor.evidence.zotero import ZoteroClient
+            look = ZoteroClient().lookup_identifier(isbn)
+        except ZoteroError as exc:
+            return {"status": "absent", "record": None,
+                    "detail": f"Zotero answered with an error: {exc}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "bridge_unavailable", "record": None,
+                    "detail": f"{type(exc).__name__}: {exc}"}
+        return {"status": look.status, "record": look.record, "detail": look.detail}
 
     def add_by_doi(self, doi):
         out = self._cli(["import", "doi", doi])

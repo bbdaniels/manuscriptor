@@ -116,20 +116,54 @@ class FakeNet:
         return self.openalex.get(doi)
 
 
+def _digits(v):
+    import re as _re
+    return _re.sub(r"[^0-9Xx]", "", str(v or "")).upper()
+
+
 class FakeLibrary:
-    def __init__(self, items=None, fail_add=False):
+    def __init__(self, items=None, fail_add=False, bridge=None):
         self.items = list(items or [])
         self.added: list[str] = []
         self.removed: list[str] = []
+        self.looked_up: list[str] = []
         self.fail_add = fail_add
+        self.bridge = bridge or {
+            "status": "bridge_unavailable", "record": None,
+            "detail": "no cli-bridge in this test",
+        }
 
-    def find(self, *, doi=None, title=None):
+    def find(self, *, doi=None, title=None, isbn=None):
         for it in self.items:
             if doi and (it.get("doi") or "").lower() == doi.lower():
                 return it
-            if title and it.get("title", "").lower() == title.lower():
+            # ISBN matching is a LITERAL SUBSTRING match, exactly as Zotero's
+            # quicksearch is, because that limitation is the bug this fake
+            # exists to reproduce: `9780743258234` does not match a stored
+            # `978-0-7432-5823-4`. Verified against the live library. A fake
+            # that normalized both sides would be more capable than the real
+            # client and would pass a test the real thing fails.
+            if isbn and str(isbn) in str(it.get("isbn") or ""):
                 return it
+            # Title matching is tolerant, as `search_by_title`/`titles_close`
+            # is: the live library holds Rogers as "Diffusion of innovations,
+            # 5th edition" and `search_by_title("Diffusion of innovations")`
+            # returns it. A fake demanding equality would be less capable than
+            # the real client and would fail a test the real thing passes.
+            if title:
+                a, b = it.get("title", "").lower().strip(), title.lower().strip()
+                if a and b and (a == b or a.startswith(b) or b.startswith(a)):
+                    return it
         return None
+
+    def lookup_isbn(self, isbn):
+        """Zotero's translators, faked. `bridge` is set by the tests that need it.
+
+        Default is the honest one for a library that has no bridge configured in
+        the test: the bridge was never asked, which is not a finding.
+        """
+        self.looked_up.append(isbn)
+        return dict(self.bridge)
 
     def add_by_doi(self, doi):
         if self.fail_add:
@@ -1074,6 +1108,256 @@ def test_a_doi_less_work_that_is_not_in_the_library_still_fails_the_doi_row(repo
     assert not plan.ok
     assert plan.failed_check == "doi"
     assert [c for c in plan.checks if c.name == "doi"][0].state == "fail"
+
+
+# ==================================== a book the library does NOT yet hold
+#
+# The gap the library-first fix of `5a3720a` left open. Crossref and OpenAlex
+# are DOI-shaped and have nothing to say about a trade book, so a book not
+# already in Zotero could not be cited at all. Zotero's own translators -- the
+# ones behind "Add Item by Identifier" -- resolve an ISBN properly, and the
+# cli-bridge can run one with `libraryID: false`, returning the item instead of
+# saving it. Nothing here saves, and nothing here may learn how.
+
+ROGERS_ISBN = "978-0-7432-5823-4"
+
+# What the live bridge returns for that ISBN, in the vocabulary the lookup
+# hands back.
+ROGERS_CATALOGUE = {
+    "title": "Diffusion of innovations",
+    "authors": ["Rogers, Everett M."],
+    "year": 2003,
+    "publisher": "Free Press",
+    "address": "New York London Toronto Sydney",
+    "edition": "Fifth edition",
+    "isbn": "9780743258234",
+    "type": "book",
+}
+
+# Sen's *Poverty and Famines* is a 1981 book. This is the record a catalogue
+# actually holds for it, and the year in it is a printing.
+SEN_REPRINT = {
+    "title": "Poverty and famines: an essay on entitlement and deprivation",
+    "authors": ["Sen, Amartya"],
+    "year": 2010,
+    "edition": "Reprinted",
+    "publisher": "Oxford Univ. Press",
+    "isbn": "9780198284635",
+    "type": "book",
+}
+
+
+def bridge(status, record=None, detail=""):
+    return {"status": status, "record": dict(record) if record else None, "detail": detail}
+
+
+def isbn_library(record=ROGERS_CATALOGUE, status="found", items=None):
+    return FakeLibrary(items=items, bridge=bridge(status, record))
+
+
+def test_an_isbn_for_a_book_not_in_the_library_resolves(repo):
+    lib = isbn_library()
+    plan = cite_plan(repo, net=FakeNet(), library=lib, query=ROGERS_ISBN)
+    assert plan.ok, plan.blocked
+    assert lib.looked_up == [ROGERS_ISBN]
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert entry.lstrip().startswith("@book{")
+    assert "Diffusion of innovations" in entry
+    assert "publisher = {Free Press}" in entry
+    assert "isbn = {9780743258234}" in entry
+    assert "doi" not in entry
+
+
+def test_the_library_is_asked_before_the_translators(repo):
+    """Zotero is the source of truth. A book he already holds must resolve to
+    HIS record and HIS citation key, never to a fresh catalogue record."""
+    held = dict(ROGERS, isbn=ROGERS_ISBN)
+    lib = isbn_library(items=[held])
+    plan = cite_plan(repo, net=FakeNet(), library=lib, query=ROGERS_ISBN)
+    assert lib.looked_up == [], "the bridge was asked about a book already in the library"
+    assert plan.cite_key == "rogers2003diffusion"
+    assert "A4A5CXWE" in " ".join(c.detail for c in plan.checks)
+
+
+def test_a_plainly_typed_isbn_still_finds_the_hyphenated_record_he_holds(repo):
+    """Zotero quicksearch is a LITERAL SUBSTRING match, so `9780743258234`
+    cannot match a stored `978-0-7432-5823-4` -- verified against the live
+    library, where the first query returns nothing and the second returns
+    A4A5CXWE. Left there, "the library is checked first" would be true only for
+    the spelling the author happened to type: he would get a fresh catalogue
+    record with a different citation key for a book he already owns, and his
+    bibliography would carry the same work twice.
+
+    The title the translators resolve is what closes it. The library is asked
+    again with that title, through `search_by_title`, and a record whose ISBN is
+    the same ISBN wins -- his key, his metadata, no new entry.
+    """
+    held = dict(ROGERS, isbn="978-0-7432-5823-4",
+                title="Diffusion of innovations, 5th edition")
+    lib = isbn_library(items=[held])
+    plan = cite_plan(repo, net=FakeNet(), library=lib, query="9780743258234")
+    assert plan.cite_key == "rogers2003diffusion", plan.cite_key
+    assert "A4A5CXWE" in " ".join(c.detail for c in plan.checks)
+    # HIS record, so HIS key and HIS metadata -- not the catalogue's. The entry
+    # is still written, because being in Zotero is not being in the .bib.
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert entry.lstrip().startswith("@book{rogers2003diffusion,")
+    assert "5th edition" in entry            # the title the library holds
+    assert "Fifth edition" not in entry      # and not the catalogue's edition
+    # It is his record, so the library rows say so rather than naming citekit.
+    zot = [c for c in plan.checks if c.name == "zotero"][0]
+    assert zot.ok and "A4A5CXWE" in zot.detail
+    # And no date guard, because the year is his, not a catalogue's.
+    assert "date" not in {c.name for c in plan.checks}
+
+
+def test_a_different_book_with_a_similar_title_is_not_claimed_as_his(repo):
+    """The ISBN has to agree. A title alone would bind the citation to whatever
+    edition of the work the library happens to hold."""
+    other = dict(ROGERS, key="OTHER111", isbn="978-0-02-926650-2",
+                 title="Diffusion of innovations", citation_key="rogers1995diffusion")
+    lib = isbn_library(items=[other])
+    plan = cite_plan(repo, net=FakeNet(), library=lib, query="9780743258234")
+    assert plan.cite_key != "rogers1995diffusion"
+    assert any(w.kind == "append" for w in plan.writes)
+
+
+def test_the_rows_an_isbn_work_cannot_answer_do_not_read_as_passes(repo):
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(), query=ROGERS_ISBN)
+    state = {c.name: c.state for c in plan.checks}
+    assert state["doi"] == "n/a", state
+    assert state["crossref"] == "n/a", state
+    assert state["openalex"] == "n/a", state
+    assert state["agreement"] == "n/a", state
+    assert state["identifier"] == "pass", state
+    doi_row = [c for c in plan.checks if c.name == "doi"][0]
+    assert "9780743258234" in doi_row.detail
+    # The `n/a` rows must not claim a library record for a work the library does
+    # not hold. That sentence is right for the library case and false here.
+    agree_row = [c for c in plan.checks if c.name == "agreement"][0]
+    assert "your library record" not in agree_row.detail, agree_row.detail
+    assert "ISBN" in agree_row.detail
+    # It is not in the library, and that is said plainly rather than ticked.
+    zot = [c for c in plan.checks if c.name == "zotero"][0]
+    assert not zot.ok
+    assert "citekit" in zot.detail
+
+
+def test_a_missing_bridge_never_reads_as_a_missing_book(repo):
+    plan = cite_plan(repo, net=FakeNet(),
+                     library=isbn_library(status="bridge_unavailable", record=None),
+                     query=ROGERS_ISBN)
+    assert not plan.ok
+    assert plan.failed_check == "identifier"
+    row = [c for c in plan.checks if c.name == "identifier"][0]
+    assert "not installed" in row.detail or "not running" in row.detail
+    assert "no such" not in row.detail.lower()
+    assert "could not" in row.detail.lower()
+
+
+def test_a_bridge_that_answered_and_found_nothing_says_that_instead(repo):
+    plan = cite_plan(repo, net=FakeNet(),
+                     library=isbn_library(status="absent", record=None),
+                     query=ROGERS_ISBN)
+    assert not plan.ok
+    assert plan.failed_check == "identifier"
+    row = [c for c in plan.checks if c.name == "identifier"][0]
+    assert "no catalogue" in row.detail
+    # And emphatically not the sentence the unavailable case gets.
+    assert "not installed" not in row.detail
+
+
+# ---------------------------------------------- the printing-year guard
+#
+# A catalogue's date is a HOLDINGS date. Sen's *Poverty and Famines* (1981)
+# comes back as 2010, and *Development as Freedom* (1999) as 2001. Writing
+# either into an `@book` unchallenged puts a wrong year into a manuscript that
+# nobody re-reads.
+
+
+def test_a_printing_year_is_refused_and_the_edition_string_is_the_reason(repo):
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(record=SEN_REPRINT),
+                     query="9780198284635")
+    assert not plan.ok
+    assert plan.failed_check == "date"
+    row = [c for c in plan.checks if c.name == "date"][0]
+    assert "2010" in row.detail
+    assert "Reprinted" in row.detail
+    assert "printing" in row.detail
+    assert plan.writes == ()
+
+
+def test_the_author_can_give_the_publication_year_and_it_wins(repo):
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(record=SEN_REPRINT),
+                     query="9780198284635 1981")
+    assert plan.ok, plan.blocked
+    row = [c for c in plan.checks if c.name == "date"][0]
+    assert row.ok and row.state == "pass"
+    assert "1981" in row.detail
+    # And it says WHAT it discarded. "you gave 1981, so the catalogue's 1981 was
+    # not used" is a sentence that reports the override by quoting the override,
+    # which tells the author nothing about what he avoided.
+    assert "2010" in row.detail, row.detail
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert "year = {1981}" in entry
+    assert "2010" not in entry
+
+
+def test_an_unmarked_catalogue_year_is_flagged_without_blocking(repo):
+    """The edition tell is sufficient, not necessary: *Development as Freedom*
+    (1999) comes back dated 2001 with no edition field at all. An unmarked
+    catalogue year is therefore unconfirmed, and an unconfirmed row may not
+    render as a tick -- `ok=False, blocking=False` is the `!` the viewer draws.
+    """
+    freedom = {"title": "Development As Freedom", "authors": ["Sen, Amartya"],
+               "year": 2001, "publisher": "Oxford University Press USA - OSO",
+               "isbn": "9780198297581", "type": "book"}
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(record=freedom),
+                     query="9780198297581")
+    assert plan.ok, plan.blocked
+    row = [c for c in plan.checks if c.name == "date"][0]
+    assert not row.ok and not row.blocking
+    assert row.state == "fail"          # never a ✓
+    assert "2001" in row.detail
+    assert "9780198297581 1999" in row.detail   # how to override, spelled out
+
+
+def test_a_real_edition_does_not_trip_the_printing_guard(repo):
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(), query=ROGERS_ISBN)
+    row = [c for c in plan.checks if c.name == "date"][0]
+    assert plan.ok, plan.blocked
+    assert "Fifth edition" in row.detail
+
+
+def test_the_edition_string_is_written_exactly_as_the_catalogue_wrote_it(repo):
+    """Not normalized. BibTeX has no canonical edition form and the author's
+    `.bib` is Zotero-exported, so a second opinion held here would diverge from
+    Zotero's the first time either changed."""
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(), query=ROGERS_ISBN)
+    entry = [w for w in plan.writes if w.kind == "append"][0].preview
+    assert "edition = {Fifth edition}" in entry
+
+
+# ------------------------------------------- the generated-bib refusal still first
+
+
+def test_perfect_isbn_metadata_still_cannot_touch_a_generated_bib(repo):
+    (repo / "latex" / "references.bib").write_text(GENERATED_BIB, encoding="utf-8")
+    plan = cite_plan(repo, net=FakeNet(), library=isbn_library(), query=ROGERS_ISBN)
+    assert not plan.ok
+    assert plan.checks[0].name == "bibliography", [c.name for c in plan.checks]
+    assert plan.failed_check == "bibliography"
+    assert "make-bib.py" in plan.blocked
+    assert plan.writes == ()
+
+
+def test_nothing_in_the_isbn_path_ever_saves_to_zotero(repo):
+    lib = isbn_library()
+    plan = cite_plan(repo, net=FakeNet(), library=lib, query=ROGERS_ISBN)
+    assert plan.ok, plan.blocked
+    assert plan.library_add is None
+    ins.apply(plan, root=repo / "latex", library=lib)
+    assert lib.added == []
 
 
 # ------------------------------------------------- what each entry type emits

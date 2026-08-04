@@ -6,6 +6,7 @@ attach, etc.) live in `repair.py` and are invoked only by the explicit
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -21,6 +22,11 @@ log = logging.getLogger(__name__)
 ZOTERO_LOCAL_ROOT = "http://localhost:23119"
 ZOTERO_LOCAL_BASE = f"{ZOTERO_LOCAL_ROOT}/api/users/0"
 BBT_RPC = f"{ZOTERO_LOCAL_ROOT}/better-bibtex/json-rpc"
+# The cli-bridge add-on (`cli-bridge@cli-anything.dev`). It evaluates a snippet
+# inside Zotero's own process, which is the only way to reach the translators
+# that "Add Item by Identifier" uses. Read-only here, always: see
+# `lookup_identifier`.
+CLI_BRIDGE_EVAL = f"{ZOTERO_LOCAL_ROOT}/cli-bridge/eval"
 
 # How alike two cite keys must be before one is called a drifted spelling of
 # the other rather than a different paper. A BBT key is derived from author,
@@ -42,6 +48,29 @@ class CitekeyLookup:
     status: str
     item_key: Optional[str] = None
     library_citekey: Optional[str] = None
+
+
+@dataclass
+class IdentifierLookup:
+    """What Zotero's own translators had to say about an identifier.
+
+    `status` is one of:
+      bridge_unavailable — Zotero is not running, or cli-bridge is not installed
+      not_an_identifier  — the bridge ran; Zotero does not read this as an id
+      absent             — the bridge translated it and no catalogue held it
+      found              — a record came back, in `record`
+
+    The first three are all "no metadata", and keeping them apart is the point.
+    A determination needs a positive finding; "couldn't tell" is not one, and
+    must never render as "there is no such book".
+    """
+    status: str
+    record: Optional[dict] = None
+    detail: str = ""
+
+    @property
+    def found(self) -> bool:
+        return self.status == "found"
 
 
 class ZoteroError(RuntimeError):
@@ -135,6 +164,123 @@ class ZoteroClient:
             return r.json().get("result") or []
         except ValueError as exc:
             raise ZoteroError(f"Better BibTeX RPC returned non-JSON: {exc}") from exc
+
+    # ---- an identifier, through Zotero's own translators ------------------
+
+    def _bridge_eval(self, script: str):
+        """Run a snippet inside Zotero. None means the bridge is not there.
+
+        Exactly `_bbt_rpc`'s treatment, and for exactly its reason: None and an
+        empty answer are different facts. "The add-on is not installed" and "the
+        catalogues hold no such book" must not arrive as the same sentence,
+        because the first is a machine to fix and the second is a book to
+        double-check.
+
+        A bridge that ran and threw is neither: that is a defect, and it is
+        raised rather than folded into either.
+        """
+        try:
+            r = requests.post(CLI_BRIDGE_EVAL, data=script.encode("utf-8"),
+                              headers={"Content-Type": "text/plain"}, timeout=45)
+        except requests.RequestException as exc:
+            log.info("Zotero cli-bridge not reachable (%s)", exc)
+            return None
+        if r.status_code in (404, 501):
+            log.info("Zotero cli-bridge is not installed (HTTP %s)", r.status_code)
+            return None
+        if r.status_code != 200:
+            detail = ""
+            try:
+                detail = str((r.json() or {}).get("error") or "")
+            except ValueError:
+                pass
+            raise ZoteroError(
+                f"Zotero cli-bridge returned HTTP {r.status_code}"
+                + (f": {detail}" if detail else ""))
+        try:
+            return r.json()
+        except ValueError as exc:
+            raise ZoteroError(f"Zotero cli-bridge returned non-JSON: {exc}") from exc
+
+    def lookup_identifier(self, identifier: str) -> "IdentifierLookup":
+        """Resolve an identifier to metadata. NEVER saves, and cannot.
+
+        `libraryID: false` is the whole of that guarantee: it runs the same
+        translation "Add Item by Identifier" runs and hands the item back
+        INSTEAD of writing it to a library. There is no save path in this module
+        and none may be added -- `~/.claude/hooks/zotero-write-guard.py` blocks
+        `zotero-cli import` and connector saves on purpose, and a save routed
+        through the bridge would be that guard's own defeat. A record that
+        should be kept goes through `citekit.py add`, which checks duplicates.
+
+        WHAT IT ACCEPTS is whatever `extractIdentifiers` accepts -- ISBN, DOI,
+        PMID, arXiv id -- because restricting it here would be a second opinion
+        about what an identifier is, held in Python, alongside Zotero's. The
+        caller decides what to route: the insert path sends ISBNs only, since a
+        DOI already has a better road (Crossref and OpenAlex corroborating each
+        other) and sending one here as well would be two implementations of one
+        identification.
+        """
+        script = _IDENTIFIER_SCRIPT % json.dumps(str(identifier or ""))
+        answer = self._bridge_eval(script)
+        if answer is None:
+            return IdentifierLookup(
+                "bridge_unavailable",
+                detail=("Zotero is not running, or the cli-bridge add-on is not installed, "
+                        "so the identifier could not be looked up at all"))
+        if isinstance(answer, dict):
+            if answer.get("not_an_identifier"):
+                return IdentifierLookup(
+                    "not_an_identifier",
+                    detail=f"Zotero does not read {identifier!r} as an identifier")
+            if answer.get("no_translator"):
+                return IdentifierLookup(
+                    "absent",
+                    detail=f"Zotero has no translator that can resolve {identifier!r}")
+            if answer.get("error"):
+                raise ZoteroError(f"Zotero cli-bridge: {answer['error']}")
+            answer = []
+        items = [i for i in (answer or []) if isinstance(i, dict)]
+        if not items:
+            return IdentifierLookup(
+                "absent",
+                detail=f"Zotero's translators ran and no catalogue holds {identifier}")
+        return IdentifierLookup("found", record=_from_translator(items[0]),
+                                detail=f"{identifier} resolved by Zotero's own translators")
+
+    def search_by_isbn(self, isbn: str) -> Optional[str]:
+        """Find an item in the library by ISBN. Returns item key or None.
+
+        The library is asked BEFORE the translators, always: a book the author
+        already holds must resolve to his own record, with his own citation key,
+        rather than to a fresh catalogue record that would key it differently.
+
+        Both sides go through `_isbn_digits` because a library stores
+        `978-0-7432-5823-4` and a user types `9780743258234`, and quicksearch is
+        a literal substring match, so each spelling is queried.
+        """
+        if not isbn or self.zot is None:
+            return None
+        want = _isbn_digits(isbn)
+        if not want:
+            return None
+        seen = set()
+        for query in (isbn.strip(), want):
+            if not query or query in seen:
+                continue
+            seen.add(query)
+            try:
+                results = self.zot.items(q=query, qmode="everything",
+                                         itemType="-attachment", limit=10)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Zotero ISBN search failed for %r (%s: %s)",
+                            query, type(exc).__name__, exc)
+                raise ZoteroError(f"ISBN search failed: {exc}") from exc
+            for it in results:
+                cand = _first_isbn(it.get("data", {}).get("ISBN"))
+                if cand and _isbn_digits(cand) == want:
+                    return it["key"]
+        return None
 
     def search_by_citekey(self, citekey: str) -> CitekeyLookup:
         """Resolve a .bib cite key against Better BibTeX's own keyspace.
@@ -375,6 +521,106 @@ class ZoteroClient:
             return self.fulltext_of(self.pdf_attachments(key))
         except ZoteroError:
             return ""
+
+
+# The snippet the bridge evaluates. `%s` is a JSON-encoded string, so the
+# identifier arrives as escaped string DATA and cannot close the literal and
+# become code. `libraryID: false` is load bearing and is asserted in the tests.
+_IDENTIFIER_SCRIPT = """\
+var ids = Zotero.Utilities.Internal.extractIdentifiers(%s);
+if (!ids.length) return {not_an_identifier: true};
+var t = new Zotero.Translate.Search();
+t.setIdentifier(ids[0]);
+var tr = await t.getTranslators();
+if (!tr || !tr.length) return {no_translator: true};
+t.setTranslator(tr);
+return await t.translate({libraryID: false});
+"""
+
+# Zotero's item format on the left, the vocabulary `_from_library` and
+# `_from_crossref` already speak on the right. Only fields a bib entry can use:
+# a translator also hands back `abstractNote`, which is kilobytes of table of
+# contents and would land verbatim in a `.bib` field.
+_TRANSLATOR_FIELDS = (
+    ("title", "title"), ("publisher", "publisher"), ("place", "address"),
+    ("edition", "edition"), ("volume", "volume"), ("issue", "issue"),
+    ("pages", "pages"), ("publicationTitle", "journal"), ("bookTitle", "booktitle"),
+)
+
+
+def _from_translator(item: dict) -> dict:
+    """A translator's item as the metadata the insert path speaks.
+
+    Only the fields the record actually carries -- a missing `publisher` stays
+    missing rather than becoming an empty `publisher = {}` in a bib entry.
+    """
+    out: dict = {}
+    for src, dst in _TRANSLATOR_FIELDS:
+        value = str(item.get(src) or "").strip()
+        if value:
+            out[dst] = value
+    kind = str(item.get("itemType") or "").strip()
+    if kind:
+        out["type"] = kind
+    doi = str(item.get("DOI") or "").strip()
+    if doi:
+        out["doi"] = doi
+    isbn = _first_isbn(item.get("ISBN"))
+    if isbn:
+        out["isbn"] = isbn
+    authors = []
+    for c in item.get("creators") or []:
+        if c.get("creatorType") not in (None, "", "author"):
+            continue
+        last = str(c.get("lastName") or c.get("name") or "").strip()
+        first = str(c.get("firstName") or "").strip()
+        if last:
+            authors.append(f"{last}, {first}" if first else last)
+    if authors:
+        out["authors"] = authors
+    year = _extract_year(str(item.get("date") or ""))
+    if year:
+        out["year"] = year
+    return out
+
+
+# WHETHER AN EDITION STRING MARKS A PRINTING RATHER THAN AN EDITION, decided
+# here and nowhere else. This is a CLASSIFIER and never a rewriter: edition
+# strings are passed through to BibTeX exactly as the catalogue wrote them (see
+# the module docstring of `manuscriptor/source/insert.py` for why), and the only
+# question asked of them is whether the year beside them is a printing year.
+#
+# Measured: Sen's *Poverty and Famines* (1981) comes back dated 2010 with
+# edition "Reprinted", and a catalogue's date is a holdings date, not a
+# publication date. `Fifth edition`, `4th ed`, `2. ed` and `1. Aufl` are real
+# editions and must not fire -- a false positive here blocks a citation that was
+# perfectly good.
+_PRINTING_RE = re.compile(r"""(?ix)
+      \b re (?: print (?:ed|ing|s)? | impr (?:esi[oó]n|ession|\.)? ) \b
+    | \b repr \.
+    | \b nachdr (?: uck | \. )
+    | \b ristampa \b
+    | \b \d+ \s* \.? \s* (?: st|nd|rd|th )? \s* print (?:ing)? \b
+""")
+
+
+def printing_marker(edition) -> Optional[str]:
+    """The part of an edition string saying the year beside it is a PRINTING.
+
+    None means the string does not say so -- which is NOT the same as saying the
+    year is a publication year. Plenty of catalogue records carry a printing
+    year with no edition field at all (Sen's *Development as Freedom*, 1999,
+    comes back dated 2001 and undifferentiated). The caller must treat an
+    unmarked catalogue year as unconfirmed rather than as confirmed; this
+    function only supplies the cases that are certain.
+    """
+    m = _PRINTING_RE.search(str(edition or ""))
+    return m.group(0).strip() if m else None
+
+
+def _isbn_digits(value) -> str:
+    """An ISBN reduced to what two spellings of it have in common."""
+    return re.sub(r"[^0-9Xx]", "", str(value or "")).upper()
 
 
 def _item_key(bbt_item: dict) -> Optional[str]:
