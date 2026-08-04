@@ -153,7 +153,8 @@ def mark(manuscript_dir: Path, chat_id: str, state: str, *, edit: dict | None = 
     return chat.append(paths.comments(manuscript_dir), rec)
 
 
-def comment(manuscript_dir: Path, *, body: str, quote: str = "", author: str = "bb",
+def comment(manuscript_dir: Path, *, body: str, quote: str = "",
+            author: str = chat.AUTHOR,
             doc: str = "", check: str = "", block: str = "",
             review: bool = False) -> dict | None:
     """Append a comment from outside the page: a check's finding, usually.

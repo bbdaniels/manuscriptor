@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .server import gitcmd, paths
+from .server import chat, gitcmd, paths
 
 _NOT_YET = "not implemented yet (lands with {milestone}); see the Phase 1 design in the vault"
 
@@ -1020,7 +1020,8 @@ def main(argv: list[str] | None = None) -> int:
     p_comment.add_argument("manuscript", help="Path to the manuscript directory")
     p_comment.add_argument("body", nargs="+", help="The comment text")
     p_comment.add_argument("--quote", help="The exact sentence it concerns; this is what anchors it")
-    p_comment.add_argument("--author", default="bb", help="Who is saying it (e.g. proofreader)")
+    p_comment.add_argument("--author", default=chat.AUTHOR,
+                           help="Who is saying it (e.g. proofreader)")
     p_comment.add_argument("--doc", help="The document it belongs to (e.g. main.tex)")
     p_comment.add_argument("--check", help="The check it came from (e.g. consistency-check)")
     p_comment.add_argument("--review", action="store_true",

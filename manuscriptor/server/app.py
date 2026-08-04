@@ -632,7 +632,7 @@ class Session:
             return self._todos_frame()
         n = sum(1 for r in chat.read_records(self.log) if r.get("kind") == "todo")
         chat.append(self.log, {"id": f"t-{n + 1:04d}", "kind": "todo",
-                               "text": text, "doc": self.doc, "author": "bb"})
+                               "text": text, "doc": self.doc, "author": chat.AUTHOR})
         return self._todos_frame()
 
     async def on_todo_toggle(self, todo_id: str, done: bool) -> dict:
@@ -672,14 +672,14 @@ class Session:
                 # is re-found after the edit that answers it changes the id.
                 "quote": (build_mod.quote_for(block, self.build.blocks) if block else ""),
                 "body": body,
-                "author": "bb",
+                "author": chat.AUTHOR,
             },
         )
         return {
             "type": "chat",
             "block": block_id,
             "message": {
-                "id": rec["id"], "who": "bb", "body": body,
+                "id": rec["id"], "who": rec["author"], "body": body,
                 "ts": rec["ts"], "state": "queued",
             },
         }

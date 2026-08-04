@@ -11,7 +11,7 @@ there is one history rather than two.
 
     {"id":"c-0007","kind":"comment","block":"b-3f2a","file":"main.tex",
      "lines":[212,212],"quote":"first 120 chars of the anchored source",
-     "body":"you say this twice, tighten","author":"bb","ts":"..."}
+     "body":"you say this twice, tighten","author":"Ben","ts":"..."}
     {"id":"c-0007","kind":"state","state":"working","ts":"..."}
     {"id":"c-0007","kind":"state","state":"done","edit":{...},"ts":"..."}
 
@@ -36,6 +36,19 @@ State = Literal["queued", "working", "done", "orphaned", "review"]
 
 TERMINAL = {"done", "orphaned"}
 
+# The author's display name: what a bubble he wrote is labelled with on the
+# page, and what lands in the `author` field of every record the server writes
+# on his behalf. It lives here, once, because `comments.jsonl` is durable,
+# git-tracked and read by coauthors, so this string is part of a shared record
+# rather than a local preference -- which is also why it is a constant and not
+# read from git's `user.name`. A derived name would differ on a machine with
+# different config and would change silently when config did, writing two names
+# into one append-only file that can never be reconciled; `drain.comment` also
+# dedupes findings on `author`, so a name that drifts would quietly re-raise
+# every open finding as new. Records already written keep whatever name they
+# carry: this renames nobody's past, only what is appended next.
+AUTHOR = "Ben"
+
 
 @dataclass(frozen=True)
 class Chat:
@@ -47,7 +60,7 @@ class Chat:
     body: str
     quote: str
     state: State
-    author: str = "bb"
+    author: str = AUTHOR
     ts: str = ""
     # The document the comment was left on, when the directory holds several
     # (the paper, the appendix, a response to reviewers). "" is a record from
@@ -133,7 +146,9 @@ def read_chats(log: Path, *, doc: str | None = None) -> tuple[Chat, ...]:
             body=rec.get("body", ""),
             quote=rec.get("quote", ""),
             state=state.get(cid, "queued"),
-            author=rec.get("author", "bb"),
+            # A record from before the field existed is the author's own; an
+            # older record that names him is left saying exactly what it says.
+            author=rec.get("author", AUTHOR),
             ts=rec.get("ts", ""),
             doc=str(rec.get("doc", "")),
             check=str(rec.get("check", "")),
