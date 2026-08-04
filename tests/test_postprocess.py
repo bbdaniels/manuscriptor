@@ -622,6 +622,55 @@ def test_a_chain_of_empty_anchors_does_not_strand_the_hoist(tmp_path, harvester)
     assert out["unanchored"] == []
 
 
+def test_two_markers_in_one_empty_paragraph_do_not_fight_over_the_heading(
+    tmp_path,
+):
+    # The same shape as the chain above, except the two markers COALESCE into
+    # one paragraph, because `\newpage` and the `\subsection*` that follows it
+    # on the very next line are one LaTeX paragraph and `\newpage` renders
+    # nothing between them. covet-india writes every one of its six exhibits
+    # that way, so pandoc emits `<p>⟦MXnewpage⟧\n⟦MXheading⟧</p><h2>`.
+    #
+    # `harvest` hands one element to one block, so the FIRST marker took the
+    # paragraph and the heading was reported unanchored; then the hoist moved
+    # the PAGE BREAK's id onto the <h2>. The author clicked "Fig. 2." and the
+    # inspector showed him `\newpage` under the name of Fig. 1 (2026-08-03).
+    # The nearest preceding anchor must still win the element, and no block may
+    # lose its anchor to a neighbour that shares its paragraph.
+    #
+    # No harvester double here: the double attaches every marker to the nearest
+    # preceding open tag and would write two data-mx into one <p>, which the
+    # real harvest refuses to do. The defect lives in the seam between the real
+    # harvest and the hoist, so both must be real.
+    html = (
+        f"<p>{mark(A)}Prose.</p>"
+        f'<p>{mark(B)}\n{mark(C)}</p><h1 id="x">Heading</h1>'
+    )
+    out = postprocess(
+        html, blocks=(FakeBlock(A), FakeBlock(B), FakeBlock(C)),
+        manuscript_dir=tmp_path, output_dir=tmp_path / "out", labels={},
+    )
+    page = out["html"]
+    assert f'<h1 id="x" data-mx="{C}">' in page, page
+    assert f'<p data-mx="{B}"></p>' in page, page
+    assert out["unanchored"] == []
+
+
+def test_a_coalesced_marker_run_keeps_document_order(tmp_path):
+    # Splitting the run must not reorder it: the page break precedes the
+    # heading in the source and must precede it in the DOM, or the margin
+    # renders its pins in an order the manuscript does not have.
+    out = postprocess(
+        f'<p>{mark(A)}{mark(B)}{mark(C)}</p><h1 id="x">Heading</h1>',
+        blocks=(FakeBlock(A), FakeBlock(B), FakeBlock(C)),
+        manuscript_dir=tmp_path, output_dir=tmp_path / "out", labels={},
+    )
+    page = out["html"]
+    assert out["unanchored"] == []
+    order = re.findall(r'data-mx="([^"]+)"', page)
+    assert order == [A, B, C], order
+
+
 # ---------------------------------------------------------------- PDF figures
 #
 # Pandoc emits <embed> for a PDF figure, the asset copier only knew <img>,

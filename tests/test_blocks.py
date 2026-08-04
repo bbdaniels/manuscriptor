@@ -875,6 +875,56 @@ def test_a_paragraph_that_is_only_markup_falls_back_to_its_heading(tmp_path):
     assert blocks_mod.label(markup) == "Front matter"
 
 
+def test_a_page_break_is_named_for_itself_not_for_the_exhibit_above_it(tmp_path):
+    r"""A page break sits BETWEEN two headings and belongs inside neither.
+
+    `parent_heading` is the heading above, and what the reader sees against a
+    page break is whatever follows it, so the fallback names it after the wrong
+    one of the two -- reliably, every time, in the one place a manuscript puts
+    page breaks. covet-india sets each exhibit as `\newpage` then
+    `\subsection*{Fig. 2. ...}`, so the break before Fig. 2 answered to
+    "Fig. 1. Technical quality of TB care by study round and case" while the
+    highlight sat on Fig. 2's heading. The author read the inspector as telling
+    him he had Fig. 1 selected (2026-08-03).
+
+    A name borrowed from a neighbour is worse than a plain one, because it says
+    something false about what an edit would touch. So a break names itself.
+    """
+    blocks = seg(
+        tmp_path,
+        "\\subsection{Fig. 1. Quality of care}\nProse.\n\n\\newpage\n"
+        "\\subsection{Fig. 2. Item curves}\nMore prose.",
+    )
+    brk = next(b for b in blocks if b.source_text.strip() == "\\newpage")
+    assert brk.parent_heading == "Fig. 1. Quality of care"
+    assert blocks_mod.label(brk) == "\\newpage"
+
+
+def test_spacing_and_clearpage_name_themselves_too(tmp_path):
+    r"""The same argument, and covet-india uses all three between exhibits."""
+    blocks = seg(
+        tmp_path,
+        "\\subsection{Table 3. IPC}\nProse.\n\n\\clearpage\n\n\\vspace{0.5em}\n\n"
+        "\\subsection{Fig. 1. Quality}\nMore.",
+    )
+    named = {b.source_text.strip(): blocks_mod.label(b) for b in blocks}
+    assert named["\\clearpage"] == "\\clearpage"
+    assert named["\\vspace{0.5em}"] == "\\vspace{0.5em}"
+
+
+def test_a_markup_paragraph_that_is_not_a_break_still_takes_its_heading(tmp_path):
+    r"""The narrowing is deliberate. `\noindent\includegraphics{f2.pdf}` is the
+    body of the exhibit its heading names, so the heading IS its name, and
+    naming it `\noindent` would be a plain answer that is also a worse one."""
+    blocks = seg(
+        tmp_path,
+        "\\subsection{Fig. 2. Item curves}\n"
+        "\\noindent\\includegraphics[width=\\textwidth]{exhibits/f2.pdf}",
+    )
+    fig = next(b for b in blocks if "includegraphics" in b.source_text)
+    assert blocks_mod.label(fig) == "Fig. 2. Item curves"
+
+
 def test_a_captionless_exhibit_still_falls_back_to_its_heading(tmp_path):
     """Its own words are column specs and ampersands, which name nothing."""
     blocks = seg(

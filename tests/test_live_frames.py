@@ -226,6 +226,74 @@ A paragraph citing \citep{smith2020} and running on long enough to be a real blo
     assert remainder.strip() == "", f"markup no frame can reach: {remainder!r}"
 
 
+EXHIBIT_PAGES = r"""\documentclass{article}
+\begin{document}
+\section{Results}
+A paragraph of ordinary prose, running on long enough to be a real block of text.
+
+\newpage
+\subsection*{Fig. 1. Technical quality of TB care by study round and case}
+
+A note under the first exhibit, long enough that pandoc gives it a paragraph.
+
+\newpage
+\subsection*{Fig. 2. Item characteristic curves for three families of behavior}
+
+A note under the second exhibit, also long enough to come back as its own block.
+\end{document}
+"""
+
+
+def test_an_exhibit_heading_is_clickable_as_itself_not_as_the_page_break(tmp_path):
+    r"""What the author clicks and what the inspector then names must agree.
+
+    covet-india sets every exhibit as `\newpage` and `\subsection*{Fig. N. ...}`
+    on the very next line. That is one LaTeX paragraph with a marker at each
+    end, pandoc coalesced both markers into one `<p>`, `harvest` gave the
+    element to the first and orphaned the second, and the hoist then moved the
+    PAGE BREAK's id onto the `<h2>`. On the page the author clicked "Fig. 2."
+    and got a block whose source was `\newpage` -- carrying, because the
+    fallback names a markup-only block after the heading ABOVE it, the title
+    "Fig. 1." Three things disagreeing at once (2026-08-03), from one lost
+    anchor.
+
+    Asserted on the page the server actually serves, and on the panel the author
+    actually reads. jsdom does no layout, so this is about which element carries
+    which id and what the panel says -- never about where anything sits.
+    """
+    session, page = served(tmp_path, EXHIBIT_PAGES)
+    ids = {b.id: b for b in session.build.blocks}
+    fig2 = next(b for b in ids.values()
+                if b.kind == "heading" and "Fig. 2." in b.source_text)
+    brk = [b for b in ids.values() if b.source_text.strip() == "\\newpage"]
+    assert len(brk) == 2, "the fixture moved"
+
+    out = pagedriver.drive(page, [], tmp_path=tmp_path,
+                           steps=["select:" + fig2.id], source=[fig2.id])
+
+    # The heading owns its own element. Before the fix the <h2> carried the id
+    # of the page break above it and Fig. 2's heading was not on the page at all.
+    assert fig2.id in out["blocks"], \
+        f"Fig. 2's heading has no element to click: {sorted(out['blocks'])}"
+    assert "<h2" in out["blocks"][fig2.id], out["blocks"][fig2.id]
+    assert "Item characteristic curves" in out["blocks"][fig2.id]
+
+    # And a page break never takes an exhibit's element hostage.
+    for b in brk:
+        if b.id in out["blocks"]:
+            assert "<h2" not in out["blocks"][b.id], \
+                f"the page break owns a heading: {out['blocks'][b.id]}"
+
+    # And the source editor -- what the next save is diffed against, so what an
+    # edit would actually write -- holds Fig. 2's heading. Not `\newpage`, which
+    # is what the author was shown while the highlight sat on Fig. 2.
+    (step,) = out["trail"]
+    assert step["block"] == fig2.id, step
+    assert "Item characteristic curves" in step["value"], step
+    assert step["value"].strip() != "\\newpage", step
+    assert out["source"][fig2.id].startswith("\\subsection*{Fig. 2."), out["source"]
+
+
 def test_an_edit_the_render_does_not_show_still_reaches_the_source_editor(tmp_path):
     """The rule has to be about the render OR the source, not the render alone.
 

@@ -72,6 +72,45 @@ def _simple_math_to_html(html: str) -> str:
     )
 
 
+# A paragraph pandoc built out of nothing but markers. Bare `<p>` only: the
+# shape pandoc actually emits for one, and duplicating a `<p id=...>` across the
+# split would mint duplicate ids in the document.
+_MARKER_RUN_RE = re.compile(
+    r"<p>\s*((?:" + anchors.MARKER_RE.pattern + r"\s*){2,})</p>"
+)
+
+
+def _split_marker_runs(html: str) -> str:
+    r"""Give each marker in an all-marker paragraph a paragraph of its own.
+
+    `harvest` hands one element to one block, by design -- two ids on one
+    element is two blocks fighting over one click. So a paragraph holding two
+    markers is a paragraph in which one block loses its anchor, and it is the
+    LATER one that loses, which is the worst of the two to lose: the hoist below
+    then promotes the earlier marker onto the following visible element, and the
+    author clicks a heading and selects the page break in front of it.
+
+    covet-india writes every one of its six exhibits as `\newpage` with
+    `\subsection*{Fig. 2. ...}` on the very next line. No blank line between
+    them, so LaTeX reads one paragraph and `\newpage` renders nothing inside it;
+    pandoc emits `<p>MXnewpage\nMXheading</p><h2>`. All six headings came back
+    unanchored and all six `<h2>`s carried the id of the page break above them.
+    Reported 2026-08-03 as an inspector showing `\newpage` while the highlight
+    sat on Fig. 2.
+
+    Splitting restores the shape the rest of the pass was written for -- a run
+    of consecutive empty anchors, which `_hoist_empty_anchors` already resolves
+    correctly by giving the element to the NEAREST preceding one. Nothing
+    downstream needs to learn about coalescing, and document order is preserved,
+    so the margin still pins in the order the manuscript has.
+    """
+    return _MARKER_RUN_RE.sub(
+        lambda m: "".join(f"<p>⟦MX{mid}⟧</p>"
+                          for mid in anchors.MARKER_RE.findall(m.group(1))),
+        html,
+    )
+
+
 _EMPTY_ANCHOR_RE = re.compile(
     r'<p\s+data-mx="([^"]+)"\s*>\s*</p>\s*(<([a-zA-Z][-\w]*)\b([^>]*)>)'
 )
@@ -401,6 +440,9 @@ def postprocess(
     """
     ids = [_block_id(b) for b in blocks]
 
+    # Before the harvest, because the harvest is what loses the second marker
+    # of a coalesced pair and it cannot get it back afterwards.
+    html = _split_marker_runs(html)
     html, reported = _harvest(html)
     html = promote_marked_headers(html)
     html = _hoist_empty_anchors(html)

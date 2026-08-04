@@ -244,6 +244,25 @@ def block_id(source_text: str) -> str:
 # the caption-then-heading rule.
 _SELF_NAMED = {"paragraph", "list_item", "heading"}
 
+# Commands that move the page rather than say anything on it. A block made only
+# of these sits BETWEEN two headings and is inside neither, so `parent_heading`
+# -- the heading above -- is not merely uninformative for it but wrong: what the
+# reader sees against a page break is whatever comes AFTER it. See `label`.
+_BREAK_CMDS = {
+    "newpage", "clearpage", "cleardoublepage", "pagebreak", "nopagebreak",
+    "vspace", "vfill", "vskip", "smallskip", "medskip", "bigskip",
+    "newline", "linebreak", "par", "noindent", "thispagestyle",
+}
+_BREAK_ONLY_RE = re.compile(
+    r"\A(?:\s|%[^\n]*\n|\\(?:" + "|".join(sorted(_BREAK_CMDS)) + r")\*?"
+    r"(?:\s*\{[^{}]*\}|\s*\[[^\[\]]*\])*)+\Z"
+)
+
+
+def _is_break_only(source_text: str) -> bool:
+    """True when the block is nothing but page-breaking and spacing commands."""
+    return bool(source_text.strip()) and bool(_BREAK_ONLY_RE.match(source_text))
+
 
 def label(block: Block) -> str | None:
     """What to call this block in front of the author.
@@ -282,6 +301,17 @@ def label(block: Block) -> str | None:
         # the blocks the heading was always the right answer for.
         if own and not _MARKUP_RE.search(own):
             return own
+        # A block that is only a page break or a spacing command is the one case
+        # where the heading is not just a weak name but a false one. It sits at
+        # the boundary between two headings, so the heading above it is the one
+        # the reader is NOT looking at: covet-india's `\newpage` before
+        # `\subsection*{Fig. 2. ...}` answered to Fig. 1 while the page
+        # highlighted Fig. 2, and the author read that as having Fig. 1 selected
+        # (2026-08-03). Name it for what it is. This is narrow on purpose --
+        # `\maketitle` and `\noindent\includegraphics{}` are content sitting
+        # inside the section that names them, and they keep the heading.
+        if _is_break_only(block.source_text):
+            return _clip(" ".join(block.source_text.split()))
     return block.parent_heading
 
 
