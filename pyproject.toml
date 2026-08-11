@@ -11,6 +11,10 @@ requires-python = ">=3.10"
 authors = [{ name = "Benjamin Daniels", email = "bdaniels@g.harvard.edu" }]
 license = { text = "MIT" }
 dependencies = [
+    # The HTTP server, the routes and the websocket the live page holds open are
+    # all aiohttp. It is imported at module scope in `server/app.py`, so an
+    # install without it fails at `manuscriptor serve`, not at some later branch.
+    "aiohttp>=3.9",
     "pylatexenc>=2.10",
     "bibtexparser>=1.4",
     "anthropic>=0.40",
@@ -26,7 +30,6 @@ dependencies = [
     "pyzotero>=1.5",
     "requests>=2.31",
     "watchdog>=4.0",
-    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]

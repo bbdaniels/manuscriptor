@@ -31,7 +31,7 @@ breaks it. `naturemag-doi.bst` wrapped the bare `10.1016/S0140-6736(71)92410-X`
 in `\\url{}`, and the class loads hyperref with `colorlinks`, so all 53 entries
 became live `/URI` annotations with no scheme -- which a PDF viewer resolves
 against the directory the PDF is sitting in. Clicking one asked for
-`file:///Users/bbdaniels/Desktop/10.1016/...`. One check catches a style that
+`file:///path/to/the/pdfs/folder/10.1016/...`. One check catches a style that
 throws the DOI away; this one catches a style that keeps it and breaks it, and
 neither is visible in a compile that exits 0.
 

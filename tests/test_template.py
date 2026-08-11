@@ -34,21 +34,21 @@ NODE = shutil.which("node")
 # JSON: straight quotes, LaTeX backslashes, a script close tag, an em dash, a
 # non-ASCII letter, and the sentinel codepoints the marker contract uses.
 HOSTILE_SOURCE = (
-    'He wrote "p=\\input{exhibits/correct_p2_wb}" \\& 90\\% of ⟦MX3f2a91c0de⟧ '
+    'He wrote "p=\\input{exhibits/adherence_sd}" \\& 90\\% of ⟦MX3f2a91c0de⟧ '
     "cases — see Brøndum “et al.” </script><script>alert(1)</script> "
-    "\\citep{nishtar2018time}\\\\"
+    "\\citep{doe2020example}\\\\"
 )
 
 
 def fixture_blob() -> dict:
     return {
-        "title": "Relational contracting in primary care",
+        "title": "Named nurses and the annual check in Marovia",
         "html": (
             '<h2 data-mx="b-aa00bb11cc">Introduction</h2>\n'
-            '<p data-mx="b-3f2a91c0de">Effective primary healthcare requires '
-            '<span class="citation" data-cites="nishtar2018time">(Nishtar et al. 2018)</span>.</p>\n'
-            '<p data-mx="b-91c4ff0011">Ordering rose by '
-            '<span class="val" data-key="test_ordering_pp">10.4pp</span>.</p>\n'
+            '<p data-mx="b-3f2a91c0de">A register is a claim about who is missing '
+            '<span class="citation" data-cites="doe2020example">(Doe et al. 2020)</span>.</p>\n'
+            '<p data-mx="b-91c4ff0011">Completion rose by '
+            '<span class="val" data-key="review_rate_pp">12.7pp</span>.</p>\n'
             '<div data-mx="b-ee55dd44cc"><table><tr><td>0.071</td></tr></table></div>\n'
         ),
         "blocks": {
@@ -71,11 +71,11 @@ def fixture_blob() -> dict:
                 "file": "main.tex",
                 "line_start": 212,
                 "line_end": 212,
-                "source": "Effective primary healthcare requires \\citep{nishtar2018time}.",
+                "source": "A register is a claim about who is missing \\citep{doe2020example}.",
                 "editable": True,
                 "parent_heading": "Introduction",
                 "includes": [],
-                "cites": ["nishtar2018time"],
+                "cites": ["doe2020example"],
                 "values": [],
             },
             "b-91c4ff0011": {
@@ -89,15 +89,15 @@ def fixture_blob() -> dict:
                 "parent_heading": "Introduction",
                 "includes": [
                     {
-                        "directive": "\\input{exhibits/correct_p2_wb}",
-                        "target": "exhibits/correct_p2_wb.tex",
+                        "directive": "\\input{exhibits/adherence_sd}",
+                        "target": "exhibits/adherence_sd.tex",
                     }
                 ],
-                "cites": ["nishtar2018time"],
+                "cites": ["doe2020example"],
                 "values": [
                     {
-                        "key": "test_ordering_pp",
-                        "path": "exhibits/test_ordering_pp.tex",
+                        "key": "review_rate_pp",
+                        "path": "exhibits/review_rate_pp.tex",
                         "producer": "code/09_did_main.R",
                         "description": "Effect on ordering the new test, in percentage points.",
                     }
@@ -197,16 +197,7 @@ def test_data_mx_ids_survive_into_the_real_markup():
 
 def test_title_reaches_the_page():
     page = render(ms=fixture_blob())
-    assert "Relational contracting in primary care" in page
-
-
-def test_renders_without_a_blob_for_the_static_export():
-    # manuscriptor/evidence/render.py renders this same template with the older
-    # variable names. It must degrade to a readable page, not raise.
-    page = render(title="Some paper", manuscript_html='<p data-mx="b-1234567890">Hi.</p>')
-    blob = embedded_blob(page)
-    assert blob["blocks"] == {}
-    assert 'data-mx="b-1234567890"' in without_blob(page)
+    assert "Named nurses and the annual check in Marovia" in page
 
 
 # --------------------------------------------------------------------------
@@ -694,12 +685,12 @@ def test_viewer_js_loads_outside_a_browser():
 @pytest.mark.parametrize(
     "text,reason_fragment",
     [
-        ("The effect was \\citep{nishtar2018time}.", None),
+        ("The effect was \\citep{doe2020example}.", None),
         ("Costs rose by 90\\% and \\{this\\} is escaped.", None),
         ("A comment % with an unclosed { brace\nis fine.", None),
         ("It ends with a float here.\\clearpage", None),
         ("\\begin{itemize}\\item a\\end{itemize}", None),
-        ("The effect was \\citep{nishtar2018time", "brace"),
+        ("The effect was \\citep{doe2020example", "brace"),
         ("The effect was \\citep{", "brace"),
         ("Closed too many}", "brace"),
         ("Half a command \\citep", "command"),

@@ -214,10 +214,12 @@ class ZoteroClient:
         `libraryID: false` is the whole of that guarantee: it runs the same
         translation "Add Item by Identifier" runs and hands the item back
         INSTEAD of writing it to a library. There is no save path in this module
-        and none may be added -- `~/.claude/hooks/zotero-write-guard.py` blocks
-        `zotero-cli import` and connector saves on purpose, and a save routed
-        through the bridge would be that guard's own defeat. A record that
-        should be kept goes through `citekit.py add`, which checks duplicates.
+        and none may be added. Writing to the library is deliberately kept out of
+        every automatic path, because a lookup nobody is watching must not be
+        able to leave a record behind, and a save routed through the bridge would
+        undo that in the one place nobody would think to check. A record worth
+        keeping is added by a separate command the author runs on purpose, which
+        checks for duplicates first.
 
         WHAT IT ACCEPTS is whatever `extractIdentifiers` accepts -- ISBN, DOI,
         PMID, arXiv id -- because restricting it here would be a second opinion

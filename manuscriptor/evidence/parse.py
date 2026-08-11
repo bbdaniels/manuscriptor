@@ -1,4 +1,4 @@
-"""Stage 01 — parse LaTeX into claims.json + a pandoc-rendered manuscript.html.
+r"""Stage 01 — parse LaTeX into claims.json + a pandoc-rendered manuscript.html.
 
 Walks main.tex with pylatexenc to find every `\cite*` command, extracts the
 enclosing sentence and section context, and runs pandoc separately to produce
@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Iterable
 
 from pylatexenc.latexwalker import LatexWalker, LatexMacroNode
+
+# Which citation style a manuscript gets is decided in `render/pandoc.py` and
+# nowhere else. This module used to carry its own copy, which globbed unsorted.
+from manuscriptor.render import pandoc
 
 CITE_MACROS = {
     "cite",
@@ -347,7 +351,7 @@ def _run_pandoc(main_tex: Path, bib_file: Path) -> str:
 
 
 def _invoke_pandoc(tex_path: Path, bib_path: Path) -> str:
-    csl = _find_csl(tex_path.parent)
+    csl = pandoc.find_csl(tex_path.parent)
     cmd = [
         "pandoc",
         str(tex_path),
@@ -384,12 +388,3 @@ def _invoke_pandoc_with_fallback(tex_path: Path, bib_path: Path) -> str:
             pass
 
 
-def _find_csl(directory: Path) -> Path | None:
-    candidates = list(directory.glob("*.csl"))
-    if not candidates:
-        # Try ~/.csl/ econ.csl as a global fallback
-        global_csl = Path.home() / ".csl" / "econ.csl"
-        if global_csl.exists():
-            return global_csl
-        return None
-    return candidates[0]

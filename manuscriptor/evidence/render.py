@@ -1,7 +1,17 @@
 """Stage 05 — render the interactive index.html viewer.
 
 Wraps pandoc's citation spans with click handlers and per-cite status badges,
-then renders the Jinja2 template with embedded JSON data.
+then renders `templates/evidence.html.j2` with embedded JSON data.
+
+THE TEMPLATE IS THIS STAGE'S OWN, and the export shares no file with the served
+editor. It used to: both were `index.html.j2` over `static/styles.css` and
+`static/viewer.js`, and 1af705e wrote the editor over all three names. This
+module kept passing evidence variables to a template that had stopped consuming
+any of them, so the export silently shed every quote, every piece of citation
+metadata and all four counts, painted the manuscript through the editor's
+compatibility fallback, and inlined 200KB of websocket client into a page with
+no server behind it. It rendered without error the whole time, which is why it
+survived. Anything added here must stay inside this stage's own files.
 """
 from __future__ import annotations
 
@@ -28,6 +38,14 @@ def run(*, output_dir: Path, main_tex: Path) -> None:
     citations_by_key = {c["cite_key"]: c for c in citations}
     evidence_by_pair = _index_evidence(evidence)
 
+    # Decide each pair's status ONCE, here, and stamp it into the record every
+    # surface reads. The page has two of them -- the click-through panel and the
+    # server-rendered index under the manuscript -- and a second derivation in
+    # either is how they come to disagree about the same pair.
+    for by_key in evidence_by_pair.values():
+        for record in by_key.values():
+            record["pair_status"] = _pair_status(record)
+
     augmented_html = _augment_html(
         manuscript_html, claims, citations_by_key, evidence_by_pair
     )
@@ -48,19 +66,20 @@ def run(*, output_dir: Path, main_tex: Path) -> None:
         if evidence_by_pair.get(c["claim_id"], {}).get(k, {}).get("quotes")
     )
 
-    template_src = resources.files("manuscriptor.templates").joinpath("index.html.j2").read_text(encoding="utf-8")
-    styles_css = resources.files("manuscriptor.templates.static").joinpath("styles.css").read_text(encoding="utf-8")
-    viewer_js = resources.files("manuscriptor.templates.static").joinpath("viewer.js").read_text(encoding="utf-8")
+    template_src = resources.files("manuscriptor.templates").joinpath("evidence.html.j2").read_text(encoding="utf-8")
 
-    rendered = Template(template_src).render(
+    # autoescape, because a title or a quote is arbitrary text off a PDF and a
+    # `<` in one of them would otherwise rewrite the page. The manuscript body
+    # and the pre-serialized JSON are marked `| safe` in the template, which is
+    # the whole list of things allowed through raw.
+    rendered = Template(template_src, autoescape=True).render(
         title=title,
-        title_json=json.dumps(title),
+        title_json=_json_for_script(title),
         manuscript_html=augmented_html,
-        styles_css=styles_css,
-        viewer_js=viewer_js,
-        claims_json=json.dumps(claims, ensure_ascii=False),
-        citations_by_key_json=json.dumps(citations_by_key, ensure_ascii=False),
-        evidence_by_pair_json=json.dumps(evidence_by_pair, ensure_ascii=False),
+        claims_json=_json_for_script(claims),
+        citations_by_key_json=_json_for_script(citations_by_key),
+        evidence_by_pair_json=_json_for_script(evidence_by_pair),
+        pairs=_index_rows(claims, citations_by_key, evidence_by_pair),
         n_pairs=n_pairs,
         n_verbatim=n_verbatim,
         n_paraphrase=n_paraphrase,
@@ -83,6 +102,81 @@ def _index_evidence(evidence: list[dict]) -> dict[str, dict[str, dict]]:
     for r in evidence:
         by_pair.setdefault(r["claim_id"], {})[r["cite_key"]] = r
     return by_pair
+
+
+def _json_for_script(value) -> str:
+    """Serialize for embedding inside a `<script>` element.
+
+    `json.dumps` leaves `</` alone, so a quote containing a literal `</script>`
+    -- arbitrary text lifted out of a PDF, which is exactly what these payloads
+    are -- would close the block early and take the rest of the page with it.
+    Escaping the slash is invisible to `JSON.parse` and to the JS parser.
+    """
+    return json.dumps(value, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _pair_status(evidence: dict | None) -> str:
+    """The status of ONE claim/cite pair: the strongest quote it carries.
+
+    The single answer to "how well is this pair supported". The page's panel,
+    its server-rendered index, and the underline colour of every citation span
+    all read this one function's verdict.
+    """
+    quotes = (evidence or {}).get("quotes") or []
+    if any(q.get("status") == "verbatim" for q in quotes):
+        return "verbatim"
+    if any(q.get("status") == "paraphrase" for q in quotes):
+        return "paraphrase"
+    return "missing"
+
+
+def _index_rows(
+    claims: list[dict],
+    citations_by_key: dict[str, dict],
+    evidence_by_pair: dict[str, dict[str, dict]],
+) -> list[dict]:
+    """Flatten the payload into the rows the page renders server-side.
+
+    Same data as the JSON blob, shaped for the template rather than for the
+    script, so the export is a complete record of the pass even when nothing
+    runs -- opened off disk, printed, or read by anything that is not a browser.
+    """
+    rows: list[dict] = []
+    for claim in claims:
+        cites = []
+        for key in claim.get("cite_keys") or []:
+            cit = citations_by_key.get(key) or {}
+            ev = evidence_by_pair.get(claim["claim_id"], {}).get(key)
+            if ev:
+                reason = ev.get("reasoning") or "Model returned no supporting passage."
+            elif cit.get("has_fulltext") is False:
+                reason = "No indexed fulltext available for this paper."
+            else:
+                reason = "No evidence record; the extract stage may not have run."
+            cites.append({
+                "cite_key": key,
+                "title": cit.get("title") or "(no title)",
+                "authors": ", ".join((cit.get("authors") or [])[:4]),
+                "year": cit.get("year") or "",
+                "journal": cit.get("journal") or "",
+                "doi": cit.get("doi") or "",
+                "status": _pair_status(ev),
+                "quotes": (ev or {}).get("quotes") or [],
+                "reason": reason,
+            })
+        rows.append({
+            "claim_id": claim["claim_id"],
+            "sentence": claim.get("sentence") or "",
+            "section": _humanize_section(claim.get("section") or ""),
+            "cites": cites,
+        })
+    return rows
+
+
+def _humanize_section(section: str) -> str:
+    """`sec:Results` reads as `Results`. The label prefix is a LaTeX artefact."""
+    _, sep, tail = section.partition(":")
+    return tail if sep else section
 
 
 _CITATION_SPAN_RE = re.compile(
@@ -175,24 +269,21 @@ def _aggregate_status(
     verbatim if any cite_key has at least one verbatim quote.
     paraphrase if no verbatim but at least one paraphrase quote.
     missing otherwise.
+
+    Per-pair the verdict is `_pair_status`'s, never re-derived here: this is the
+    strongest of them, and nothing more. A span whose underline disagreed with
+    the panel it opens would be the same defect the two templates were.
     """
     if claim is None:
         return "missing"
-    has_verbatim = False
-    has_paraphrase = False
     keys_to_check = claim["cite_keys"] or span_keys
-    for key in keys_to_check:
-        ev = evidence_by_pair.get(claim["claim_id"], {}).get(key)
-        if not ev:
-            continue
-        for q in ev.get("quotes") or []:
-            if q.get("status") == "verbatim":
-                has_verbatim = True
-            elif q.get("status") == "paraphrase":
-                has_paraphrase = True
-    if has_verbatim:
+    seen = {
+        _pair_status(evidence_by_pair.get(claim["claim_id"], {}).get(key))
+        for key in keys_to_check
+    }
+    if "verbatim" in seen:
         return "verbatim"
-    if has_paraphrase:
+    if "paraphrase" in seen:
         return "paraphrase"
     return "missing"
 

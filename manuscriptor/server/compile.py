@@ -32,12 +32,15 @@ manuscript does exactly that: twelve `Missing } inserted` and 119 pages of
 output. `-halt-on-error` would therefore fail a paper that builds fine for its
 author. Success is a PDF this run wrote, judged by the file.
 
-**The Word conversion delegates to `~/.claude/skills/pandoc-docx`.** That skill
-carries work that is not worth repeating and would be got wrong: it launders the
-conversion through an intermediate format because pandoc's direct LaTeX-to-docx
-OOXML is rejected by Word, and its `format_docx.py` is a publication pass over
-the OOXML itself. What this module owns is the running order. See the note at
-`compile_docx` for the one place the skill's recipe cannot be followed literally.
+**The Word conversion delegates to an external set of scripts, the `pandoc-docx`
+pipeline.** Those scripts carry work that is not worth repeating and would be got
+wrong: they launder the conversion through an intermediate format because
+pandoc's direct LaTeX-to-docx OOXML is rejected by Word, and `format_docx.py` is
+a publication pass over the OOXML itself. What this module owns is the running
+order. They are not bundled here, so Word conversion is the one thing this module
+cannot do on its own; `MANUSCRIPTOR_PANDOC_DOCX_DIR` says where they are. See the
+note at `compile_docx` for the one place their recipe cannot be followed
+literally.
 """
 from __future__ import annotations
 
@@ -53,15 +56,42 @@ from pathlib import Path
 from manuscriptor.render import refs as refs_mod
 from manuscriptor.server import build as build_mod, pagination, paths
 
-# ------------------------------------------------------------------- the skill
+# ---------------------------------------------------- the Word conversion scripts
 
+# Set this to the directory holding the pandoc-docx scripts. It is read at CALL
+# time, never at import, so a process that is already running picks up a change
+# and a test can set it without reimporting this module.
+PANDOC_DOCX_DIR_ENV = "MANUSCRIPTOR_PANDOC_DOCX_DIR"
+
+# The default, which is where the author's own copy lives. The environment
+# variable overrides it; nothing else does.
 SKILL_DIR = Path("~/.claude/skills/pandoc-docx").expanduser()
-SKILL_SCRIPTS = {
-    "format": SKILL_DIR / "scripts" / "format_docx.py",
-    "merge_bib": SKILL_DIR / "scripts" / "merge_csl_bib.py",
-    "resolve_refs": SKILL_DIR / "scripts" / "resolve_refs.py",
-    "plain": SKILL_DIR / "filters" / "plain.lua",
+
+# What the conversion needs from that directory, and where inside it each piece
+# sits. One list, so `skill_scripts()` and the default map below cannot drift.
+_SKILL_RELPATHS = {
+    "format": ("scripts", "format_docx.py"),
+    "merge_bib": ("scripts", "merge_csl_bib.py"),
+    "resolve_refs": ("scripts", "resolve_refs.py"),
+    "plain": ("filters", "plain.lua"),
 }
+
+# The default paths, spelled out so a reader can see what is wanted. Running code
+# asks `skill_scripts()` instead, because only that applies the override.
+SKILL_SCRIPTS = {name: SKILL_DIR.joinpath(*rel) for name, rel in _SKILL_RELPATHS.items()}
+
+
+def skill_dir() -> Path:
+    """Where the pandoc-docx scripts are, this call."""
+    override = os.environ.get(PANDOC_DOCX_DIR_ENV, "").strip()
+    return Path(override).expanduser() if override else SKILL_DIR
+
+
+def skill_scripts() -> dict:
+    """The scripts the Word conversion shells out to, under the current directory."""
+    base = skill_dir()
+    return {name: base.joinpath(*rel) for name, rel in _SKILL_RELPATHS.items()}
+
 
 # nonstopmode so nothing waits for a keystroke, file-line-error so a failure
 # names a file and a line. NOT halt-on-error: see the module docstring.
@@ -579,15 +609,15 @@ def _read(path: Path) -> str:
 def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = None,
                  deliver_out: bool = True,
                  on_step=None, runner=None, read_only: bool = False) -> Result:
-    """LaTeX to a Word file that opens, by way of the `pandoc-docx` skill.
+    """LaTeX to a Word file that opens, by way of the `pandoc-docx` scripts.
 
-    THE SKILL HAS NO SINGLE ENTRY POINT. It is a recipe plus four bundled
-    assets, so the only thing to shell out to is each script in turn:
-    `merge_csl_bib.py` for the split numeric bibliography and `format_docx.py`
-    for the publication pass over the OOXML. Those are shelled out to here, not
-    rewritten.
+    THE PIPELINE HAS NO SINGLE ENTRY POINT. It is a recipe plus four assets, so
+    the only thing to shell out to is each script in turn: `merge_csl_bib.py`
+    for the split numeric bibliography and `format_docx.py` for the publication
+    pass over the OOXML. Those are shelled out to here, not rewritten. They are
+    external to this package and `skill_dir()` says where to find them.
 
-    ONE STEP OF THE RECIPE CANNOT BE FOLLOWED LITERALLY. The skill feeds
+    ONE STEP OF THE RECIPE CANNOT BE FOLLOWED LITERALLY. The recipe feeds
     `main.tex` to pandoc and lets pandoc expand the includes, and on this pandoc
     (3.1.1) it does expand them -- the project's older note that it "follows
     neither `\\input` nor `\\include`" no longer holds and was measured again
@@ -599,13 +629,13 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     `normalize_for_pandoc` is what neutralizes that, and it can only neutralize
     what it can see, so the includes have to be resolved BEFORE it runs rather
     than by pandoc afterwards. That is `flatten()`, and it is the same order the
-    render already uses. The skill's own appendix says the same thing in its own
+    render already uses. The recipe's own appendix says the same thing in its own
     words: inline the includes yourself if the cleaning has to reach inside the
     exhibit files.
 
     Cross-references are resolved from the `.aux` first, which is the job
-    `resolve_refs.py` does in the skill, done on the flattened text so it reaches
-    the appendices and so `\\pageref` has somewhere to come from.
+    `resolve_refs.py` does there, done on the flattened text so it reaches the
+    appendices and so `\\pageref` has somewhere to come from.
     """
     from manuscriptor.render import pandoc as pandoc_mod
     from manuscriptor.render import refs as refs_mod
@@ -617,13 +647,37 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     steps: list[Step] = []
     notes: list[str] = []
 
-    missing = [str(p) for p in (SKILL_DIR, SKILL_SCRIPTS["format"], SKILL_SCRIPTS["merge_bib"])
-               if not p.exists()]
+    scripts = skill_scripts()
+    if not skill_dir().is_dir():
+        # The whole directory is absent, so naming each script inside it would be
+        # three lines saying one thing.
+        missing = [(skill_dir(), "the directory the conversion scripts are looked up inside")]
+    else:
+        missing = [(p, why) for p, why in (
+            (scripts["merge_bib"], ("puts each reference's number back on the same line "
+                                    "as its text")),
+            (scripts["format"], ("the publication pass over the Word file: table rules, "
+                                 "figure captions, heading styles, page numbers")),
+        ) if not p.exists()]
     if missing:
+        source = os.environ.get(PANDOC_DOCX_DIR_ENV, "").strip()
+        where = (f"{PANDOC_DOCX_DIR_ENV} points at {source}"
+                 if source else f"nothing set {PANDOC_DOCX_DIR_ENV}, so the default was used")
         return Result(
             kind="docx", ok=False, output=None, seconds=0.0, steps=[],
-            error=("the pandoc-docx skill is not installed, and the Word conversion is "
-                   "its work rather than this module's. Missing: " + ", ".join(missing)),
+            error=(
+                "Word conversion needs the pandoc-docx scripts, and they are not here.\n"
+                + "\n".join(f"  missing: {p}\n           {why}" for p, why in missing)
+                + f"\n\n{where}. Set {PANDOC_DOCX_DIR_ENV} to a directory holding "
+                  "scripts/format_docx.py and scripts/merge_csl_bib.py, or put them at "
+                  f"{SKILL_DIR}, which is where they are looked for by default.\n"
+                  "They are the pandoc-docx pipeline, distributed as a Claude Code skill of "
+                  "that name, and they are not bundled with this package. They exist because "
+                  "pandoc's own LaTeX-to-Word output is rejected by Word: the conversion goes "
+                  "through HTML instead and is then repaired at the OOXML level, which is work "
+                  "this module deliberately does not reimplement.\n"
+                  "PDF compilation needs none of this and is unaffected."
+            ),
             log=None,
         )
 
@@ -699,7 +753,7 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
            f"--resource-path={root}", "-o", str(inter_html)]
     if bib_path is not None:
         cmd += ["--citeproc", f"--bibliography={bib_path}"]
-        csl = _find_csl(root)
+        csl = pandoc_mod.find_csl(root)
         if csl:
             cmd.append(f"--csl={csl}")
     code, output = run(cmd, cwd=root, env=None)
@@ -711,7 +765,7 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     # A numeric CSL emits each reference as two divs and pandoc turns each into
     # its own paragraph, so every reference number lands on a line by itself.
     t0 = time.monotonic()
-    code, output = run(["python3", str(SKILL_SCRIPTS["merge_bib"]), str(inter_html)], cwd=out)
+    code, output = run(["python3", str(scripts["merge_bib"]), str(inter_html)], cwd=out)
     record("merge the bibliography", code == 0, t0, output.strip()[:200])
 
     t0 = time.monotonic()
@@ -726,10 +780,10 @@ def compile_docx(manuscript_dir, *, main: str | None = None, bib: str | None = N
     run(["xattr", "-c", str(docx)], cwd=out)
 
     t0 = time.monotonic()
-    code, output = run(["python3", str(SKILL_SCRIPTS["format"]), str(docx), str(docx)], cwd=out)
+    code, output = run(["python3", str(scripts["format"]), str(docx), str(docx)], cwd=out)
     record("publication formatting", code == 0, t0, output.strip()[-200:])
     if code != 0:
-        notes.append("the skill's formatting pass failed; the file opens but is not formatted")
+        notes.append("the formatting pass failed; the file opens but is not formatted")
 
     # textutil is Apple's own OOXML reader and is as strict as Word, which
     # python-docx is not. It is the only check here that means anything.
@@ -778,14 +832,6 @@ def _rasterize_pdf_figures(source: str, root: Path, out: Path, run) -> tuple[str
 
     swapped = _GRAPHICS_RE.sub(one, source)
     return swapped, sum(1 for v in made.values() if v)
-
-
-def _find_csl(directory: Path) -> Path | None:
-    found = sorted(Path(directory).glob("*.csl"))
-    if found:
-        return found[0]
-    home = Path.home() / ".csl" / "econ.csl"
-    return home if home.exists() else None
 
 
 # ------------------------------------------------------------------ revealing

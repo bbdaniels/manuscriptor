@@ -1,0 +1,680 @@
+{#-
+  The evidence export: a static, self-contained page for `manuscriptor evidence`.
+
+  It is NOT the served app. `index.html.j2` renders the live editor and takes a
+  single `ms` blob backed by a websocket; this one takes the evidence pass's own
+  variables and must keep working when opened straight off disk with no server
+  behind it, so its CSS and its script are written here rather than pulled from
+  `templates/static/`.
+
+  That separation is the whole point of this file existing. The evidence viewer
+  and the editor once shared BOTH names -- `index.html.j2`, `static/styles.css`
+  and `static/viewer.js` -- and in 1af705e the editor was written over the top of
+  all three. `evidence/render.py` went on passing this page's variables to a
+  template that consumed none of them, so for every release since, the static
+  export embedded the editor's 200KB of websocket client, painted the manuscript
+  through a compatibility fallback, and dropped 100% of the extracted evidence:
+  no quotes, no citation metadata, no counts. It rendered, so nothing raised.
+  Distinct filenames are what make that collision unrepeatable.
+
+  Variables, all supplied by `manuscriptor/evidence/render.py`:
+
+      title                    str   -- document title, plain text
+      manuscript_html          str   -- augmented body; citation spans carry
+                                        data-claim-id and data-status
+      title_json               str   -- pre-serialized JSON, for the script block
+      claims_json              str   -- [{claim_id, sentence, section, cite_keys}]
+      citations_by_key_json    str   -- {cite_key: {title, authors, year, ...}}
+      evidence_by_pair_json    str   -- {claim_id: {cite_key: {quotes, pair_status}}}
+      pairs                    list  -- the same evidence, flattened and ordered,
+                                        for the server-rendered index below
+      n_pairs, n_verbatim, n_paraphrase, n_missing   int
+      generated_at             str
+
+  The `*_json` values arrive pre-serialized and are emitted with `| safe`; every
+  other value goes through autoescaping, which `render.py` switches on. The
+  evidence index under the manuscript is rendered server-side on purpose: it is
+  what keeps the page honest if the script never runs, and it is the surface a
+  test can assert a quote actually reached.
+-#}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} — evidence</title>
+  <style>
+:root {
+  --bg: #fafaf6;
+  --bg-panel: #ffffff;
+  --bg-topbar: #ffffff;
+  --text: #1f1d1a;
+  --text-mute: #6b6660;
+  --border: #d8d2c5;
+  --border-strong: #b6ad97;
+  --link: #2a4d75;
+  --link-hover: #173b62;
+  --verbatim: #1b6b3d;
+  --verbatim-bg: #d3ecd9;
+  --paraphrase: #876200;
+  --paraphrase-bg: #f7e7b3;
+  --missing: #962a2a;
+  --missing-bg: #f3cccc;
+  --highlight: #fff3a8;
+  --serif: "Source Serif Pro", "Source Serif 4", "Charter", Georgia, "Times New Roman", serif;
+  --sans: -apple-system, "Inter", "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.55;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg-topbar);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 28px 10px;
+  font-family: var(--sans);
+}
+.topbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 8px;
+}
+.topbar-row:last-child { margin-bottom: 0; }
+.doc-title {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.01em;
+}
+.topbar-stats { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stat {
+  font-size: 13px;
+  color: var(--text-mute);
+  padding-right: 6px;
+  border-right: 1px solid var(--border);
+}
+.badge {
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.badge-verbatim { background: var(--verbatim-bg); color: var(--verbatim); }
+.badge-paraphrase { background: var(--paraphrase-bg); color: var(--paraphrase); }
+.badge-missing { background: var(--missing-bg); color: var(--missing); }
+
+#filter-input {
+  font-family: var(--sans);
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+  min-width: 320px;
+  flex: 1 1 auto;
+  max-width: 600px;
+}
+#filter-input:focus {
+  outline: 2px solid var(--link);
+  outline-offset: -1px;
+}
+.topbar-meta {
+  font-size: 12px;
+  color: var(--text-mute);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.topbar-meta a { color: var(--text-mute); text-decoration: underline; text-decoration-style: dotted; }
+.meta-sep { opacity: 0.4; }
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 440px);
+  gap: 0;
+  align-items: flex-start;
+  min-height: calc(100vh - 86px);
+}
+
+.manuscript {
+  padding: 28px 48px 80px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+.manuscript h1 {
+  font-size: 28px;
+  margin-top: 32px;
+  margin-bottom: 16px;
+  line-height: 1.2;
+}
+.manuscript h2 { font-size: 22px; margin-top: 28px; }
+.manuscript h3 { font-size: 18px; margin-top: 24px; }
+.manuscript p { margin: 0 0 14px; }
+.manuscript figure { margin: 14px 0; }
+.manuscript img { max-width: 100%; height: auto; }
+.manuscript table { border-collapse: collapse; margin: 14px 0; font-size: 14px; }
+.manuscript table th, .manuscript table td {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.manuscript .citation {
+  cursor: pointer;
+  border-bottom: 2px solid var(--border-strong);
+  padding-bottom: 1px;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.manuscript .citation:hover {
+  background: var(--highlight);
+}
+.manuscript .citation.status-verbatim   { border-bottom-color: var(--verbatim); }
+.manuscript .citation.status-paraphrase { border-bottom-color: var(--paraphrase); }
+.manuscript .citation.status-missing    { border-bottom-color: var(--missing); border-bottom-style: dashed; }
+.manuscript .citation.is-active {
+  background: var(--highlight);
+  box-shadow: 0 0 0 2px var(--highlight);
+}
+.manuscript .citation.is-faded { opacity: 0.25; }
+
+.panel {
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  position: sticky;
+  top: 86px;
+  align-self: flex-start;
+  height: calc(100vh - 86px);
+  overflow-y: auto;
+  padding: 22px 24px;
+  font-family: var(--sans);
+  font-size: 14px;
+}
+.panel-placeholder {
+  color: var(--text-mute);
+  margin-top: 20vh;
+  text-align: center;
+  font-style: italic;
+}
+.panel-placeholder p { margin: 0 0 12px; }
+.panel-placeholder .hint { font-size: 12px; }
+
+.panel-claim {
+  background: #f6f1e2;
+  border-left: 3px solid var(--border-strong);
+  padding: 12px 14px;
+  margin: -4px 0 18px;
+  border-radius: 0 4px 4px 0;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.panel-claim .label {
+  display: block;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-bottom: 6px;
+}
+.panel-claim .section {
+  margin-top: 8px;
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.cite-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 16px;
+  background: #fff;
+}
+.cite-card.status-verbatim { border-left: 4px solid var(--verbatim); }
+.cite-card.status-paraphrase { border-left: 4px solid var(--paraphrase); }
+.cite-card.status-missing { border-left: 4px solid var(--missing); }
+
+.cite-head {
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.cite-key {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  display: block;
+  margin-bottom: 4px;
+}
+.cite-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.35;
+  margin: 0;
+}
+.cite-meta {
+  font-size: 12px;
+  color: var(--text-mute);
+  margin: 4px 0 0;
+}
+.cite-meta a { color: var(--link); }
+.cite-meta a:hover { color: var(--link-hover); }
+
+.quote-list { padding: 6px 14px 12px; }
+.quote {
+  padding: 8px 0;
+  border-top: 1px dotted var(--border);
+}
+.quote:first-child { border-top: none; }
+.quote-text {
+  font-family: var(--serif);
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0 0 4px;
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
+  font-style: italic;
+}
+.quote-text.is-paraphrase {
+  background: rgba(247, 231, 179, 0.4);
+  border-left-color: var(--paraphrase);
+}
+.quote-foot {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-mute);
+  padding-left: 10px;
+}
+.quote-foot .quote-status { font-weight: 500; }
+.quote-foot .quote-status.is-verbatim { color: var(--verbatim); }
+.quote-foot .quote-status.is-paraphrase { color: var(--paraphrase); }
+
+.quote-empty {
+  font-family: var(--sans);
+  font-size: 13px;
+  color: var(--missing);
+  padding: 6px 14px 12px;
+}
+.quote-empty .reason {
+  display: block;
+  font-style: italic;
+  color: var(--text-mute);
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.cite-foot {
+  border-top: 1px solid var(--border);
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--text-mute);
+  display: flex;
+  justify-content: space-between;
+}
+
+/* The server-rendered evidence index. Everything the panel can show, listed
+   once in the document itself, so the page is still a complete record when the
+   script does not run. */
+.evidence-index {
+  margin-top: 64px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-family: var(--sans);
+  font-size: 14px;
+}
+.evidence-index h2 { font-family: var(--serif); font-size: 20px; margin: 0 0 4px; }
+.evidence-index .lede { color: var(--text-mute); font-size: 13px; margin: 0 0 18px; }
+.ev-claim { margin-bottom: 22px; }
+.ev-claim > .sentence {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.45;
+  margin: 0 0 6px;
+  padding-left: 10px;
+  border-left: 3px solid var(--border-strong);
+}
+.ev-claim > .where { font-size: 11px; color: var(--text-mute); margin: 0 0 8px 10px; }
+.ev-pair {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  padding: 8px 12px;
+  margin: 0 0 8px 10px;
+}
+.ev-pair.status-verbatim { border-left: 4px solid var(--verbatim); }
+.ev-pair.status-paraphrase { border-left: 4px solid var(--paraphrase); }
+.ev-pair.status-missing { border-left: 4px solid var(--missing); }
+.ev-pair .head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ev-pair .key { font-family: var(--mono); font-size: 11px; color: var(--text-mute); }
+.ev-pair .src { font-family: var(--serif); font-size: 14px; }
+.ev-pair .who { font-size: 12px; color: var(--text-mute); margin: 2px 0 0; }
+.ev-pair .who a { color: var(--link); }
+.ev-pair blockquote {
+  font-family: var(--serif);
+  font-size: 13.5px;
+  font-style: italic;
+  margin: 6px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.ev-pair blockquote .loc { font-style: normal; font-size: 11px; color: var(--text-mute); }
+.ev-pair .none { font-size: 12.5px; color: var(--missing); margin: 4px 0 0; }
+.ev-pair .none .reason { color: var(--text-mute); font-style: italic; }
+
+.about {
+  margin-top: 80px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+  color: var(--text-mute);
+}
+.about h2 { color: var(--text); font-size: 18px; }
+.about ul { padding-left: 20px; }
+.about li { margin-bottom: 6px; }
+.about .badge { vertical-align: baseline; }
+.about .caveat { background: #fdf3d6; padding: 10px 12px; border-radius: 4px; color: var(--text); font-size: 13px; }
+
+@media (max-width: 980px) {
+  .split { grid-template-columns: 1fr; }
+  .panel { position: relative; height: auto; max-height: 60vh; }
+  .manuscript { padding: 20px 24px 40px; }
+}
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row">
+      <h1 class="doc-title">{{ title }}</h1>
+      <div class="topbar-stats">
+        <span class="stat">{{ n_pairs }} cite-instances</span>
+        <span class="badge badge-verbatim">{{ n_verbatim }} verbatim</span>
+        <span class="badge badge-paraphrase">{{ n_paraphrase }} paraphrase</span>
+        <span class="badge badge-missing">{{ n_missing }} missing</span>
+      </div>
+    </div>
+    <div class="topbar-row">
+      <input type="search" id="filter-input" placeholder="Filter citations by key, author, or title…" autocomplete="off">
+      <div class="topbar-meta">
+        <span>{{ generated_at }}</span>
+        <span class="meta-sep">·</span>
+        <a href="#about-tool">about this tool</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="split">
+    <article class="manuscript" id="manuscript">
+      {{ manuscript_html | safe }}
+
+      <section id="evidence-index" class="evidence-index">
+        <h2>Evidence</h2>
+        <p class="lede">
+          Every claim the pass examined, with the passages it found in each cited
+          paper. Click a citation above to bring the same record up beside it.
+        </p>
+        {%- for claim in pairs %}
+        <div class="ev-claim">
+          <p class="sentence">{{ claim.sentence }}</p>
+          {%- if claim.section %}
+          <p class="where">{{ claim.section }}</p>
+          {%- endif %}
+          {%- for pair in claim.cites %}
+          <div class="ev-pair status-{{ pair.status }}">
+            <div class="head">
+              <span class="key">{{ pair.cite_key }}</span>
+              <span class="src">{{ pair.title }}</span>
+              <span class="badge badge-{{ pair.status }}">{{ pair.status }}</span>
+            </div>
+            {%- if pair.authors or pair.year or pair.journal or pair.doi %}
+            <p class="who">
+              {%- if pair.authors %}{{ pair.authors }}{% endif -%}
+              {%- if pair.year %} ({{ pair.year }}){% endif -%}
+              {%- if pair.journal %} · {{ pair.journal }}{% endif -%}
+              {%- if pair.doi %} · <a href="https://doi.org/{{ pair.doi }}">https://doi.org/{{ pair.doi }}</a>{% endif -%}
+            </p>
+            {%- endif %}
+            {%- if pair.quotes %}
+            {%- for q in pair.quotes %}
+            <blockquote>{{ q.text }}
+              {%- if q.location_hint %} <span class="loc">— {{ q.location_hint }}</span>{% endif %}
+            </blockquote>
+            {%- endfor %}
+            {%- else %}
+            <p class="none">No supporting passage found.
+              {%- if pair.reason %} <span class="reason">{{ pair.reason }}</span>{% endif %}
+            </p>
+            {%- endif %}
+          </div>
+          {%- endfor %}
+        </div>
+        {%- else %}
+        <p class="lede">This manuscript has no citations, so there is nothing to check.</p>
+        {%- endfor %}
+      </section>
+
+      <section id="about-tool" class="about">
+        <h2>About this view</h2>
+        <p>
+          Each citation in this manuscript is linked to verbatim quotes extracted from
+          the cited paper's fulltext. Click any citation to open the evidence panel.
+        </p>
+        <ul>
+          <li><span class="badge badge-verbatim">verbatim</span> the quoted passage is an exact substring of the cited paper.</li>
+          <li><span class="badge badge-paraphrase">paraphrase</span> the model reported a supporting passage, but the exact text could not be matched in the cited paper. Treat with care.</li>
+          <li><span class="badge badge-missing">missing</span> no supporting passage was found, or the cited paper has no indexed fulltext in the local library.</li>
+        </ul>
+        <p class="caveat">
+          This is a review aid. The verbatim check catches hallucinated quotes but does not
+          guarantee that a verbatim quote is used in a context that supports the claim.
+          Read the cited paper before relying on any claim flagged here.
+        </p>
+      </section>
+    </article>
+
+    <aside class="panel" id="evidence-panel">
+      <div class="panel-placeholder">
+        <p>Click any citation in the manuscript to see the supporting evidence.</p>
+        <p class="hint">Citation borders show the strongest evidence status across the cited papers.</p>
+      </div>
+    </aside>
+  </main>
+
+  <script id="cite-evidence-data">
+    window.CITE_EVIDENCE = {
+      title: {{ title_json | safe }},
+      claims: {{ claims_json | safe }},
+      citations_by_key: {{ citations_by_key_json | safe }},
+      evidence_by_pair: {{ evidence_by_pair_json | safe }}
+    };
+  </script>
+  <script>
+(function () {
+  const data = window.CITE_EVIDENCE || {};
+  const panel = document.getElementById('evidence-panel');
+  const manuscript = document.getElementById('manuscript');
+  const filterInput = document.getElementById('filter-input');
+  if (!panel || !manuscript) return;
+
+  const claimsByKey = new Map();
+  for (const claim of data.claims || []) {
+    claimsByKey.set(claim.claim_id, claim);
+  }
+
+  manuscript.addEventListener('click', (e) => {
+    const cite = e.target.closest('.citation');
+    if (!cite) return;
+    e.preventDefault();
+    activateCite(cite);
+  });
+
+  // The spans are focusable and carry role="button", so the keyboard has to
+  // reach what the mouse reaches.
+  manuscript.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const cite = e.target.closest('.citation');
+    if (!cite) return;
+    e.preventDefault();
+    activateCite(cite);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') clearActive();
+  });
+
+  function activateCite(cite) {
+    clearActive();
+    cite.classList.add('is-active');
+    const claimId = cite.dataset.claimId;
+    const claim = claimsByKey.get(claimId);
+    if (!claim) {
+      panel.innerHTML = '<div class="panel-placeholder"><p>No claim record found for this citation.</p></div>';
+      return;
+    }
+    panel.innerHTML = renderPanel(claim);
+    panel.scrollTop = 0;
+  }
+
+  function clearActive() {
+    for (const node of manuscript.querySelectorAll('.citation.is-active')) {
+      node.classList.remove('is-active');
+    }
+  }
+
+  function renderPanel(claim) {
+    const sectionLabel = claim.section ? humanizeSection(claim.section) : '';
+    const parts = [];
+    parts.push('<div class="panel-claim">');
+    parts.push('<span class="label">claim</span>');
+    parts.push(escapeHtml(claim.sentence || ''));
+    if (sectionLabel) parts.push(`<div class="section">${escapeHtml(sectionLabel)}</div>`);
+    parts.push('</div>');
+    for (const key of claim.cite_keys || []) {
+      parts.push(renderCard(claim.claim_id, key));
+    }
+    return parts.join('');
+  }
+
+  function renderCard(claimId, citeKey) {
+    const cit = (data.citations_by_key || {})[citeKey] || {};
+    const evidence = ((data.evidence_by_pair || {})[claimId] || {})[citeKey];
+    // `pair_status` is computed once, in evidence/render.py, and read here and
+    // by the server-rendered index below it. Deriving it a second time in this
+    // file is what let the two surfaces disagree before.
+    const status = evidence ? (evidence.pair_status || 'missing') : 'missing';
+    const title = cit.title || '(no title)';
+    const authors = (cit.authors || []).slice(0, 4).join(', ');
+    const yr = cit.year ? ` (${cit.year})` : '';
+    const journal = cit.journal ? ` · ${cit.journal}` : '';
+    // The URL is its own visible text: this page is printed and read off disk,
+    // and a link whose target is hidden behind friendly words cannot be checked.
+    const doi = cit.doi
+      ? `<a href="https://doi.org/${escapeAttr(cit.doi)}">https://doi.org/${escapeHtml(cit.doi)}</a>`
+      : '';
+    const zot = cit.zotero_key
+      ? `<a href="zotero://select/library/items/${escapeAttr(cit.zotero_key)}" title="Open in Zotero">open in Zotero</a>`
+      : '';
+    const sourceLabel = cit.fulltext_source ? `<span title="fulltext source">${escapeHtml(cit.fulltext_source)}</span>` : '';
+
+    const head = `
+      <div class="cite-head">
+        <span class="cite-key">${escapeHtml(citeKey)}</span>
+        <p class="cite-title">${escapeHtml(title)}</p>
+        <p class="cite-meta">${escapeHtml(authors)}${escapeHtml(yr)}${escapeHtml(journal)}</p>
+        <p class="cite-meta">${doi}${doi && zot ? ' · ' : ''}${zot}</p>
+      </div>
+    `;
+
+    let body;
+    if (!evidence) {
+      const reason = cit.has_fulltext === false
+        ? `No indexed fulltext available for this paper${cit.zotero_key ? ' in Zotero.' : '; not in your Zotero library.'}`
+        : 'No evidence record yet — has the extract stage been run?';
+      body = `<div class="quote-empty">No supporting passage found.<span class="reason">${escapeHtml(reason)}</span></div>`;
+    } else if (!evidence.quotes || evidence.quotes.length === 0) {
+      const reason = evidence.reasoning || 'Model returned no supporting passage.';
+      body = `<div class="quote-empty">No supporting passage found.<span class="reason">${escapeHtml(reason)}</span></div>`;
+    } else {
+      const qs = evidence.quotes.map((q) => {
+        const cls = q.status === 'paraphrase' ? ' is-paraphrase' : '';
+        const statusCls = q.status === 'verbatim' ? 'is-verbatim' : 'is-paraphrase';
+        const hint = q.location_hint ? `<span class="quote-loc">${escapeHtml(q.location_hint)}</span>` : '<span></span>';
+        return `<div class="quote">
+          <p class="quote-text${cls}">${escapeHtml(q.text)}</p>
+          <div class="quote-foot">
+            <span class="quote-status ${statusCls}">${escapeHtml(q.status)}</span>${hint}
+          </div>
+        </div>`;
+      }).join('');
+      body = `<div class="quote-list">${qs}</div>`;
+    }
+
+    const foot = `<div class="cite-foot"><span>status: ${escapeHtml(status)}</span>${sourceLabel}</div>`;
+
+    return `<div class="cite-card status-${escapeAttr(status)}">${head}${body}${foot}</div>`;
+  }
+
+  function humanizeSection(s) {
+    const idx = s.indexOf(':');
+    if (idx === -1) return s;
+    return s.slice(idx + 1);
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+  function escapeAttr(s) {
+    return escapeHtml(s);
+  }
+
+  if (filterInput) {
+    filterInput.addEventListener('input', () => {
+      const q = filterInput.value.trim().toLowerCase();
+      const cites = manuscript.querySelectorAll('.citation');
+      if (!q) {
+        cites.forEach((c) => c.classList.remove('is-faded'));
+        return;
+      }
+      cites.forEach((c) => {
+        const claimId = c.dataset.claimId;
+        const claim = claimsByKey.get(claimId);
+        const keys = (claim ? claim.cite_keys : []).join(' ').toLowerCase();
+        let hay = keys;
+        if (claim) {
+          for (const k of claim.cite_keys || []) {
+            const cit = (data.citations_by_key || {})[k] || {};
+            hay += ' ' + (cit.title || '').toLowerCase();
+            hay += ' ' + (cit.authors || []).join(' ').toLowerCase();
+          }
+        }
+        c.classList.toggle('is-faded', !hay.includes(q));
+      });
+    });
+  }
+})();
+  </script>
+</body>
+</html>

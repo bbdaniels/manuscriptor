@@ -1297,10 +1297,10 @@ WRAPPED_DOC = r"""\documentclass{article}
 \section{Results}
 A first paragraph, present so the finding lands on the second.
 
-This division matters for the controls
-available to a program deploying a DSP.
-Generation differences are fixed before the encounter
-and can be corrected by one-time review.
+This split matters for the levers
+available to a program running neighborhood teams.
+Roster gaps are visible before the first visit
+and can be closed by a single scheduling pass.
 \end{document}
 """
 
@@ -1314,8 +1314,8 @@ def test_a_finding_anchors_when_its_quote_is_a_sentence_not_source_bytes(tmp_pat
     # any manuscript whose author presses return mid-sentence.
     d, _bid, b = setup(tmp_path, WRAPPED_DOC)
     target = [x.id for x in b.blocks if x.kind == "paragraph"][1]
-    quote = ("This division matters for the controls available to a program "
-             "deploying a DSP.")
+    quote = ("This split matters for the levers available to a program "
+             "running neighborhood teams.")
     assert "\n" in b.by_id[target].source_text  # the fixture really is wrapped
     rec = drain.comment(d, quote=quote, body="Answer the older-tools objection.",
                         author="proofreader", doc="main.tex", review=True)
@@ -1567,21 +1567,21 @@ TWO_TABLES = r"""\documentclass{article}
 \begin{document}
 \section{Results}
 \paragraph{Socioeconomic status.}
-Education mapped to occupation almost deterministically.
+Household wealth tracked clinic distance almost exactly.
 
 \input{outputs/tab_results}
 \end{document}
 """
 
 TABLES = r"""\begin{table}[h!]
-\caption{Case generation: demographic variation. Cells report means.}
+\caption{Team assignment: household variation. Cells report means.}
 \begin{tabular}{ll}
 A & B \\
 \end{tabular}
 \end{table}
 
 \begin{table}[h!]
-\caption{Demographic variation in conversations. Cells report means.}
+\caption{Household variation in visit length. Cells report means.}
 \begin{tabular}{ll}
 C & D \\
 \end{tabular}
@@ -1616,18 +1616,18 @@ def test_two_exhibits_under_one_heading_are_not_called_the_same_thing(tmp_path):
 
     q = build_mod.queue_view(paths.comments(tmp_path), b.blocks)
     names = [e["section"] for e in q]
-    assert names == ["Case generation: demographic variation.",
-                     "Demographic variation in conversations."], names
+    assert names == ["Team assignment: household variation.",
+                     "Household variation in visit length."], names
 
     t = build_mod.ticker_view(paths.comments(tmp_path), b.blocks)
-    assert [e["section"] for e in t] == ["Demographic variation in conversations."]
+    assert [e["section"] for e in t] == ["Household variation in visit length."]
 
 
 def test_the_block_record_carries_the_name_the_page_shows(tmp_path):
     b, tables = two_tables(tmp_path)
     recs = [b.blob["blocks"][t.id] for t in tables]
-    assert [r["label"] for r in recs] == ["Case generation: demographic variation.",
-                                          "Demographic variation in conversations."]
+    assert [r["label"] for r in recs] == ["Team assignment: household variation.",
+                                          "Household variation in visit length."]
     assert [r["parent_heading"] for r in recs] == ["Socioeconomic status."] * 2, \
         "the heading is still reported; it is a fact about where the block sits"
 
@@ -1643,4 +1643,4 @@ def test_the_agent_is_told_which_table_it_is(tmp_path):
          "body": "add the r2", "author": "bb", "ts": ago_iso(60)},
     )
     (item,) = drain.collect(tmp_path)
-    assert item.section == "Demographic variation in conversations."
+    assert item.section == "Household variation in visit length."

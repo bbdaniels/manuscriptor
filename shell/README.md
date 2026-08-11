@@ -30,7 +30,7 @@ Move or symlink the bundle into `/Applications` if you want it in Spotlight.
 Neither is required: the app runs from `shell/build`.
 
 The app runs `manuscriptor serve` as a child, so the command has to be
-installed (`pip install -e ~/Projects/manuscriptor`). A Finder-launched app
+installed (`pip install -e .` from a clone of this repository). A Finder-launched app
 inherits `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so the app searches
 `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`, and every
 `~/Library/Python/*/bin` itself, and hands the same directories to the child so
@@ -116,5 +116,5 @@ resolutions agreeing. Every one of those guards was broken on purpose and
 watched to fail.
 
 Rendering, the jump, window persistence, and the child dying with its parent are
-not unit tested. They were checked by running the app against
-`~/Projects/manuscriptor-demo/latex` and reading the result.
+not unit tested. They were checked by running the app against a scratch copy of
+a real manuscript and reading the result.

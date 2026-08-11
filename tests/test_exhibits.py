@@ -53,8 +53,8 @@ def test_cmidrule_does_not_become_a_row_of_numbers(tmp_path):
         doc(
             "\\begin{tabular}{lcc}\n\\toprule\n"
             "Variable & Means & Diff \\\\\n"
-            "\\cmidrule(lr){2-3}\\cmidrule(lr){4-5}\n"
-            "Age & 68.7 & -0.643 \\\\\n\\bottomrule\n\\end{tabular}\n"
+            "\\cmidrule(lr){2-3}\\cmidrule(lr){4-6}\n"
+            "Age & 54.2 & -1.157 \\\\\n\\bottomrule\n\\end{tabular}\n"
         ),
         cwd=tmp_path,
         bib=None,
@@ -62,7 +62,7 @@ def test_cmidrule_does_not_become_a_row_of_numbers(tmp_path):
     body = cells(html)
     assert not any("(lr)" in c for c in body), f"cmidrule leaked: {body}"
     assert not any(re.fullmatch(r"[\d\-\s]+", c) and "-" in c and len(c) < 5 for c in body)
-    assert "68.7" in " ".join(body), "and the real data survives"
+    assert "54.2" in " ".join(body), "and the real data survives"
 
 
 def test_cline_is_dropped_too(tmp_path):
@@ -82,15 +82,15 @@ def test_phantom_does_not_reach_the_page(tmp_path):
     It is print geometry, and a reader must never see the braces."""
     html = render_document(
         doc(
-            "\\begin{tabular}{lc}\nAge & -0.643$^{*}$\\phantom{*}\\phantom{*} \\\\\n"
-            "Male & 0.016\\phantom{-} \\\\\n\\end{tabular}\n"
+            "\\begin{tabular}{lc}\nAge & -1.157$^{*}$\\phantom{*}\\phantom{*} \\\\\n"
+            "Male & 0.094\\phantom{-} \\\\\n\\end{tabular}\n"
         ),
         cwd=tmp_path,
         bib=None,
     )
     text = " ".join(cells(html))
     assert "phantom" not in text.lower(), text
-    assert "-0.643" in text and "0.016" in text
+    assert "-1.157" in text and "0.094" in text
 
 
 # ------------------------------------------------------ repeated longtable heads
@@ -105,8 +105,8 @@ def test_a_longtable_header_appears_once(tmp_path):
             "\\caption{Balance} \\\\\n\\hline\n"
             "Variable & Control & Treatment \\\\\n"
             "\\hline\n\\endfirsthead\n"
-            "Age & 68.7 & 67.3 \\\\\n"
-            "Male & 0.436 & 0.462 \\\\\n"
+            "Age & 54.2 & 53.9 \\\\\n"
+            "Male & 0.518 & 0.507 \\\\\n"
             "\\end{longtable}\n"
         ),
         cwd=tmp_path,
@@ -115,7 +115,7 @@ def test_a_longtable_header_appears_once(tmp_path):
     r = [x for x in rows(html) if x]
     header_like = [x for x in r if "Variable" in x and "Control" in x]
     assert len(header_like) <= 1, f"header repeated {len(header_like)}x: {r}"
-    assert any("68.7" in x for x in r), "and the data is still there"
+    assert any("54.2" in x for x in r), "and the data is still there"
 
 
 def test_a_table_declaring_both_heads_only_keeps_one(tmp_path):
@@ -251,18 +251,18 @@ def test_makecell_does_not_shatter_the_table(tmp_path):
         doc(
             "\\begin{tabular}{lcc}\n\\toprule\n"
             "Variable & Design & IV \\\\\n\\midrule\n"
-            "ECM patient & \\makecell{-0.021$^{*}$ \\\\ (0.011)} & \\makecell{-0.025 \\\\ (0.015)} \\\\\n"
+            "NCT patient & \\makecell{-0.138$^{*}$ \\\\ (0.062)} & \\makecell{-0.117 \\\\ (0.071)} \\\\\n"
             "\\bottomrule\n\\end{tabular}\n"
         ),
         cwd=tmp_path,
         bib=None,
     )
     body = [r for r in rows(html) if r]
-    data = [r for r in body if "ECM patient" in r]
+    data = [r for r in body if "NCT patient" in r]
     assert len(data) == 1, f"the row was split: {body}"
     row = data[0]
-    assert "0.021" in row and "(0.011)" in row, f"coefficient and SE lost: {row}"
-    assert "0.025" in row and "(0.015)" in row, f"later columns emptied: {row}"
+    assert "0.138" in row and "(0.062)" in row, f"coefficient and SE lost: {row}"
+    assert "0.117" in row and "(0.071)" in row, f"later columns emptied: {row}"
     assert "makecell" not in row.lower()
 
 
@@ -299,16 +299,16 @@ def test_a_negative_coefficient_stays_negative(tmp_path):
     html = render_document(
         doc(
             "\\begin{tabular}{lc}\n"
-            "ECM patient & \\makecell{\\text{-}0.021$^{*}$ \\\\ (0.011)} \\\\\n"
-            "Age & \\text{-}0.003 \\\\\n"
+            "NCT patient & \\makecell{\\text{-}0.138$^{*}$ \\\\ (0.062)} \\\\\n"
+            "Age & \\text{-}0.086 \\\\\n"
             "\\end{tabular}\n"
         ),
         cwd=tmp_path,
         bib=None,
     )
     text = " ".join(cells(html))
-    assert "0.021" in text and "0.003" in text
-    for value in ("0.021", "0.003"):
+    assert "0.138" in text and "0.086" in text
+    for value in ("0.138", "0.086"):
         i = text.index(value)
         assert text[i - 1] in "-−", f"the minus before {value} was dropped: {text!r}"
 
@@ -316,9 +316,9 @@ def test_a_negative_coefficient_stays_negative(tmp_path):
 def test_the_sign_survives_the_whole_pipeline():
     from manuscriptor.render.pandoc import normalize_for_pandoc
 
-    out = normalize_for_pandoc("A & \\makecell{\\text{-}0.021 \\\\ (0.011)} \\\\\n")
-    assert "0.021" in out
-    assert "-0.021" in out or "−0.021" in out, out
+    out = normalize_for_pandoc("A & \\makecell{\\text{-}0.138 \\\\ (0.062)} \\\\\n")
+    assert "0.138" in out
+    assert "-0.138" in out or "−0.138" in out, out
 
 
 def test_text_braces_do_not_reach_the_reader(tmp_path):
@@ -340,10 +340,10 @@ def test_significance_stars_are_superscripts_not_latex():
     cell of every regression table."""
     from manuscriptor.render.postprocess import _simple_math_to_html
 
-    out = _simple_math_to_html('<td>-0.021<span class="math inline">\\(^{*}\\)</span> (0.011)</td>')
+    out = _simple_math_to_html('<td>-0.138<span class="math inline">\\(^{*}\\)</span> (0.062)</td>')
     assert "<sup>*</sup>" in out
     assert "\\(" not in out and "math inline" not in out
-    assert "-0.021" in out and "(0.011)" in out
+    assert "-0.138" in out and "(0.062)" in out
 
 
 def test_three_stars_and_subscripts_too():
@@ -546,7 +546,7 @@ def test_a_spanning_header_row_keeps_its_colspan(tmp_path):
     html = _rendered(
         "\\begin{tabular}{lcc}\n\\toprule\n"
         " & \\multicolumn{2}{c}{Means} \\\\\n & (1) & (2) \\\\\n\\midrule\n"
-        "Age & 68.7 & 67.3 \\\\\n\\bottomrule\n\\end{tabular}\n",
+        "Age & 54.2 & 53.9 \\\\\n\\bottomrule\n\\end{tabular}\n",
         tmp_path,
     )
     assert 'colspan="2"' in html, html
@@ -555,17 +555,18 @@ def test_a_spanning_header_row_keeps_its_colspan(tmp_path):
 
 
 def test_a_panel_row_mid_body_stays_in_the_body(tmp_path):
-    r"""covet-india's Table 1 puts `\multicolumn{6}{l}{\textit{Patna}}` in the
-    middle of the body. It looks like a header row and must not become one."""
+    r"""covet-india's Table 1 puts a `\multicolumn{6}{l}{\textit{...}}` place
+    name in the middle of the body, as a panel label. It looks like a header row
+    and must not become one. The fixture below is that shape, invented."""
     html = _rendered(
         "\\begin{tabular}{lc}\n\\toprule\nVariable & Value \\\\\n\\midrule\n"
-        "\\multicolumn{2}{l}{\\textit{Patna}} \\\\\n"
+        "\\multicolumn{2}{l}{\\textit{Kembe district}} \\\\\n"
         "Age & 41 \\\\\n\\bottomrule\n\\end{tabular}\n",
         tmp_path,
     )
     head = re.search(r"<thead>(.*?)</thead>", html, re.S)
-    assert head is not None and "Patna" not in head.group(1), html
-    assert "Patna" in html
+    assert head is not None and "Kembe district" not in head.group(1), html
+    assert "Kembe district" in html
 
 
 def test_a_longtable_with_both_heads_promotes_once(tmp_path):
@@ -579,13 +580,13 @@ def test_a_longtable_with_both_heads_promotes_once(tmp_path):
         "\\endfirsthead\n\\hline\n"
         "Variable & Control & Treatment \\\\\n & (1) & (2) \\\\\n\\hline\n"
         "\\endhead\n"
-        "Age & 68.7 & 67.3 \\\\\n\\end{longtable}\n",
+        "Age & 54.2 & 53.9 \\\\\n\\end{longtable}\n",
         tmp_path,
     )
     head = _head_rows(html)
     assert len(head) == 2, head
     assert " ".join(cells(html)).count("Control") == 1, "the head must not double"
-    assert "68.7" in " ".join(cells(html))
+    assert "54.2" in " ".join(cells(html))
 
 
 def test_a_header_row_that_opens_with_a_multicolumn_keeps_its_text(tmp_path):
@@ -599,7 +600,7 @@ def test_a_header_row_that_opens_with_a_multicolumn_keeps_its_text(tmp_path):
     html = _rendered(
         "\\begin{tabular}{lcc}\n\\toprule\n"
         "\\multicolumn{2}{c}{Panel A} & Total \\\\\n(1) & (2) & (3) \\\\\n"
-        "\\midrule\nAge & 68.7 & 67.3 \\\\\n\\bottomrule\n\\end{tabular}\n",
+        "\\midrule\nAge & 54.2 & 53.9 \\\\\n\\bottomrule\n\\end{tabular}\n",
         tmp_path,
     )
     assert "Panel A" in " ".join(cells(html)), html
@@ -619,15 +620,15 @@ def test_a_row_under_a_multirow_is_still_promoted(tmp_path):
         "\\begin{tabular}{lcccc}\n\\hline\n"
         "\\multirow{2}{*}{\\textbf{Variable}} & \\multicolumn{2}{c}{Means} "
         "& \\multicolumn{2}{c}{Effect} \\\\\n"
-        " & Any & Count & Any & Count \\\\\n"
+        " & Share & Visits & Share & Visits \\\\\n"
         " & (1) & (2) & (3) & (4) \\\\\n\\hline\n"
-        "ECM inclusion & 0.049 & 0.027 & 0.764 & 0.453 \\\\\n"
+        "NCT enrollment & 0.312 & 0.186 & 0.541 & 0.298 \\\\\n"
         "\\hline\n\\end{tabular}\n",
         tmp_path,
     )
     head = _head_rows(html)
     assert len(head) == 3, head
-    assert "0.049" not in " ".join(head), "a data row must not be promoted"
+    assert "0.312" not in " ".join(head), "a data row must not be promoted"
 
 
 def test_no_token_survives_even_when_the_table_did_not(tmp_path):

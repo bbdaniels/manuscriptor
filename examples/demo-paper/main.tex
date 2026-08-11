@@ -1,0 +1,67 @@
+% A small invented paper, for trying Manuscriptor on something disposable.
+% Nothing here is real: the study, the numbers and the references are made up.
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{natbib}
+
+\title{Free Coffee and the Length of Meetings}
+\author{A. Nonymous}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper examines whether a free coffee machine changes how long staff
+meetings run. A fictional office of 120 people received a machine in half of
+its meeting rooms. Meetings in rooms with a machine ran 7 minutes shorter, off
+a base of 52 minutes. Attendance was unchanged.
+\end{abstract}
+
+\section{Background}
+\label{sec:background}
+
+Meeting length is usually treated as a function of the agenda rather than of
+the room \citep{doe2020example}. \citet{roe2019placeholder} instead argue that
+small frictions in the room set the pace, and that anything reducing the cost
+of staying alert should shorten the meeting rather than lengthen it. The two
+accounts predict opposite signs, so a coffee machine is a clean test.
+
+\section{Data and design}
+\label{sec:design}
+
+We observe 480 invented meetings over one invented quarter. Half of the rooms
+were assigned a machine at random. Table~\ref{tab:main} reports the means.
+
+\begin{table}[ht]
+\centering
+\caption{Meeting length and attendance, by room}
+\label{tab:main}
+\begin{tabular}{lcc}
+\toprule
+ & No machine & Machine \\
+\midrule
+Length (minutes) & 52.0 & 45.1 \\
+Attendance (people) & 6.2 & 6.3 \\
+Meetings & 240 & 240 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Results}
+\label{sec:results}
+
+Meetings in a room with a machine ran 6.9 minutes shorter, a decline of 13
+percent against the 52 minute base in Table~\ref{tab:main}. Attendance moved by
+0.1 people and is a precise zero. The estimate is
+$\hat{\beta} = -6.9$ with a standard error of $1.4$.
+
+We read this as support for the account in \citet{roe2019placeholder}, with one
+limit: rooms were assigned the machine, and people chose the room, so a team
+that already ran short meetings may have booked its way into treatment
+\citep{smith2021fictitious}.
+
+\bibliographystyle{plainnat}
+\bibliography{refs}
+
+\end{document}
