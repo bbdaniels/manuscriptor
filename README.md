@@ -4,7 +4,7 @@ A live manuscript editor. LaTeX renders to a page where every block knows which 
 
 Replaces the loop of compiling to PDF, marking up the PDF, and typing the markup back into the source.
 
-**[Interface demo](https://bbdaniels.github.io/manuscriptor/interface-mockup.html)**, no install needed. Every word in it is invented.
+**[Interface demo](https://bbdaniels.github.io/manuscriptor/demo/)**, no install needed. A synthetic paper, rendered by the real renderer, carrying a real agent session: three comments, two landed edits and an answer about a citation. Every word in it is invented.
 
 ## What it does
 
