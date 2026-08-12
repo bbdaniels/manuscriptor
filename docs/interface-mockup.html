@@ -1,4 +1,4 @@
-<title>Manuscriptor — planned interface</title>
+<title>Manuscriptor interface demo</title>
 <style>
   :root {
     --h:214; --sat:1;
@@ -328,16 +328,11 @@
   .blk.dirty { position:relative; }
 </style>
 
-<div class="note">
-  <h1>Manuscriptor, planned interface</h1>
-  <p>Real prose from <span class="kbd">estonia-ecm</span> and <span class="kbd">qutub-india</span>. Everything is clickable and each thing opens a different inspector: citations show their evidence, violet numbers and exhibits show the code and data behind them, paragraphs show their unflattened source and their thread. Insert lives on the paragraph editor, under the source box, because that is the only surface with a cursor. Try the table, the violet numbers, the <span class="kbd">R2</span> pin, and <span class="kbd">Read in comments</span>, then scroll the middle column while the inspector stays put.</p>
-</div>
-
 <div class="app" data-skin="instrument">
   <div class="titlebar">
     <div class="dots"><i></i><i></i><i></i></div>
     <span class="name">Manuscriptor</span>
-    <span class="path">estonia-ecm/latex/main.tex</span>
+    <span class="path">demo-paper/latex/main.tex</span>
     <span class="live"><span class="pulse"></span> watching · 3 comments open</span>
   </div>
 
@@ -360,9 +355,9 @@
         <h3>Manuscript</h3>
         <div class="outline">
           <a href="#" class="on">Introduction <span class="n">2</span></a>
-          <a href="#">Conceptual model</a>
-          <a href="#">Context and intervention</a>
-          <a href="#">Data and approach <span class="n">1</span></a>
+          <a href="#">Why a roster</a>
+          <a href="#">Setting and program</a>
+          <a href="#">Data and design <span class="n">1</span></a>
           <a href="#">Results</a>
           <a href="#">Discussion</a>
           <a href="#">Appendix A–G</a>
@@ -383,8 +378,8 @@
           <label><input type="checkbox" checked> <s>Rewrite the opening on mechanism</s></label>
           <label><input type="checkbox" checked> <s>Resolve the 3 red citations</s></label>
           <label><input type="checkbox"> Answer R2 on identification <em>11</em></label>
-          <label><input type="checkbox"> Add female subsample to Table 2</label>
-          <label><input type="checkbox"> Re-run 12_sp_quality after filter fix</label>
+          <label><input type="checkbox"> Add the rural subsample to Table 2</label>
+          <label><input type="checkbox"> Re-run 06_adherence after the filter fix</label>
           <label><input type="checkbox"> Cut Discussion by 400 words</label>
         </div>
         <button class="tb" type="button" style="margin-top:.45rem;width:100%;font-size:.7rem">Add a task</button>
@@ -395,7 +390,7 @@
         <div class="feed">
           <div class="ev now"><b>Working</b> on your note at ¶4<time>now</time></div>
           <div class="ev">Rewrote ¶2, one sentence<time>2 min ago</time></div>
-          <div class="ev">Reloaded, <b>table2_cross.tex</b> changed on disk<time>14 min ago</time></div>
+          <div class="ev">Reloaded, <b>table2_review.tex</b> changed on disk<time>14 min ago</time></div>
           <div class="ev">Flattened 24 files, 0 unresolved<time>16 min ago</time></div>
         </div>
       </div>
@@ -408,23 +403,23 @@
 
         <p class="blk" data-kind="para" data-id="b-3f2a" tabindex="0">
           <span class="tag">¶1 · 212</span>
-          Effective primary healthcare requires high-quality curative care, but as the global burden of non-communicable diseases grows, that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes <span class="cite" data-kind="cite" data-key="nishtar2018time" tabindex="0">(Nishtar et al. 2018)</span>. A key element of the implicit contract in much of healthcare has been the responsiveness of healthcare providers to patient signals of acute ill-health. A well-known problem that this creates is the lack of attention to prevention of disease <span class="cite para" data-kind="cite" data-key="rose1992strategy" tabindex="0">(Kenkel 2011; Fineberg 2013; Rose 1992)</span>.
+          Marovia's public clinics have offered a free annual check to every registered household since 2004, and roughly one household in fifteen has ever taken one <span class="cite" data-kind="cite" data-key="doe2020example" tabindex="0">(Doe et al. 2020)</span>. A clinic day is organized around whoever walks through the door, which is a reasonable way to run a waiting room and a poor way to find the people who never arrive. The households that go unchecked are, predictably, the ones with nothing yet wrong enough to bring them in <span class="cite para" data-kind="cite" data-key="roe2019sample" tabindex="0">(Roe 2019; Lee 2018; Tan 2022)</span>.
         </p>
 
         <p class="blk" data-kind="para" data-id="b-91c4" tabindex="0">
           <span class="tag">¶2 · 214</span>
           <span class="pin done" title="resolved">✓</span>
-          While the program ran, ordering the new test rose by <span class="val" data-kind="value" data-key="test_ordering_pp" tabindex="0">10.4pp</span> against a control mean of <span class="val" data-kind="value" data-key="test_ordering_base" tabindex="0">4.1%</span>, and correct case management improved by <span class="val" data-kind="value" data-key="correct_p2_wb" tabindex="0">0.096</span> standard deviations. Three years after the subsidy was withdrawn, only the test-ordering effect persisted.
+          Over the two years of the pilot, completion of the annual check rose by <span class="val" data-kind="value" data-key="review_rate_pp" tabindex="0">12.7pp</span> from a control mean of <span class="val" data-kind="value" data-key="review_rate_base" tabindex="0">6.8%</span>, and recorded medication adherence rose by <span class="val" data-kind="value" data-key="adherence_sd" tabindex="0">0.153</span> standard deviations. Two years after the enrollment bonus ended, the check-completion gain was the only one still visible.
         </p>
 
         <div class="exhibit" data-kind="exhibit" data-id="b-tab2" tabindex="0">
-          <div class="cap"><b>Table 2.</b> Cross-sectional impacts on chronic care management</div>
+          <div class="cap"><b>Table 2.</b> Cross-sectional impacts on annual check completion</div>
           <table class="mini">
-            <thead><tr><th>Outcome</th><th>Control</th><th>ECM</th><th>Diff</th></tr></thead>
+            <thead><tr><th>Outcome</th><th>Control</th><th>NCT</th><th>Diff</th></tr></thead>
             <tbody>
-              <tr><td>Any chronic consult</td><td>0.412</td><td>0.483</td><td>0.071<span class="sup">***</span></td></tr>
-              <tr><td>Hyperlipidemia dx</td><td>0.187</td><td>0.230</td><td>0.043<span class="sup">**</span></td></tr>
-              <tr><td>Statin prescription</td><td>0.094</td><td>0.122</td><td>0.028<span class="sup">**</span></td></tr>
+              <tr><td>Any annual check</td><td>0.355</td><td>0.441</td><td>0.086<span class="sup">***</span></td></tr>
+              <tr><td>Blood pressure recorded</td><td>0.204</td><td>0.259</td><td>0.055<span class="sup">**</span></td></tr>
+              <tr><td>Repeat prescription issued</td><td>0.118</td><td>0.147</td><td>0.029<span class="sup">**</span></td></tr>
             </tbody>
           </table>
         </div>
@@ -433,29 +428,29 @@
           <span class="tag">¶3 · 198</span>
           <span class="pin working" title="being addressed">●</span>
           <span class="pin ext" title="from Reviewer 2" data-open="review:r2">R2</span>
-          Inadequate prevention or delayed detection leads to worse health for patients and higher costs and foregone economic benefits for society, yet it remains neglected by multiple actors within the health system <span class="cite miss" data-kind="cite" data-key="unmatched2019" tabindex="0">(Aiyar and Sen 2019)</span>.
+          A household that misses its check costs the system more later and is likelier to fall off the register altogether, and yet no line in the clinic payment schedule pays anyone to go looking for it <span class="cite miss" data-kind="cite" data-key="nobody2017missing" tabindex="0">(Nobody and Nowhere 2017)</span>.
         </p>
 
         <p class="blk" data-kind="para" data-id="b-c410" tabindex="0">
           <span class="tag">&para;4 &middot; 216</span>
-          The care relationship between doctors and patients may be critical because, in many health domains, timely identification and management of underlying health issues requires a more personal and structured understanding of an individual patient's overall health. Optimal treatment frequently begins before a patient raises acute symptomatic concerns or even experiences notable discomfort.
+          Naming a nurse for each household may matter here precisely because a check is so easy to put off. Nothing goes wrong today if it slips, and nothing in the clinic's own records makes the slip visible. A nurse who holds the list is the only person in the building with a standing reason to notice that an appointment was never kept.
         </p>
 
         <p class="blk" data-kind="para" data-id="b-2b8e" tabindex="0">
           <span class="tag">&para;5 &middot; 218</span>
-          The ECM program thereby attempts to shift patient care from an implicit &lsquo;reactive&rsquo; focus on salient ailments to an explicit contract between the patient and doctor based on a forward-looking and broader &lsquo;holistic&rsquo; conception of the welfare of the patient <span class="cite" data-kind="cite" data-key="nishtar2018time" tabindex="0">(World Bank 2017)</span>. This has dual potential effects on the relationship between doctors and their patients, analogous to the twin problems of clarity and credibility.
+          Neighborhood Care Teams are an attempt to convert the clinic from a queue, which serves whoever turns up, into a register that somebody is answerable for <span class="cite" data-kind="cite" data-key="smith2021demo" tabindex="0">(Smith and Tan 2021)</span>. That conversion cuts two ways, and the pilot was designed to separate them: a nurse who knows the household may be trusted more, and may also be resented for calling.
         </p>
 
-        <h2 style="margin-top:2rem"><span class="lbl">Section 2</span>A conceptual model</h2>
+        <h2 style="margin-top:2rem"><span class="lbl">Section 2</span>Why a roster</h2>
 
         <p class="blk" data-kind="para" data-id="b-9d31" tabindex="0">
           <span class="tag">&para;6 &middot; 224</span>
-          It may be natural to wonder why, if relational contracting is clearly beneficial, it is not already widely implemented. In some health systems, institutional features, such as fee-for-service payment for primary care physicians, may limit incentives to adopt this approach. But even where payers and providers have better-aligned incentives, our findings demonstrate that health systems may be forgoing important benefits.
+          The obvious question is why a register is not simply how every clinic already works. Where clinics are paid for each visit, a check that prevents a visit is a check that costs money, so the answer is easy. The Marovian network is salaried, that answer is unavailable, and the gap was there anyway.
         </p>
 
         <p class="blk" data-kind="para" data-id="b-5a77" tabindex="0">
           <span class="tag">&para;7 &middot; 226</span>
-          Inadequate prevention or delayed detection leads to worse health for patients and higher costs and foregone economic benefits for society. We estimate the implied return at <span class="val" data-kind="value" data-key="correct_p2_wb" tabindex="0">0.096</span> standard deviations per enrolled patient-year, which is small relative to the screening literature but concentrated among the mild-risk group.
+          Households that skip their checks are more expensive later and leave the register sooner. Our demonstration figure for the adherence gain is <span class="val" data-kind="value" data-key="adherence_sd" tabindex="0">0.153</span> standard deviations per enrolled household-year, modest beside the published screening estimates, and largest for the households the triage rule scores as low risk.
         </p>
       </div>
     </main>
@@ -464,8 +459,8 @@
     <aside class="insp">
       <div class="insp-head">
         <div class="eyebrow" id="eyebrow">Evidence <span class="chip v">verbatim</span></div>
-        <h4 id="ititle">Time to deliver on NCDs</h4>
-        <div class="sub" id="isub">nishtar2018time · main.tex:212</div>
+        <h4 id="ititle">A check nobody is asked to keep</h4>
+        <div class="sub" id="isub">doe2020example · main.tex:212</div>
         <button class="jump" id="jump" type="button" hidden>↑ back to the paragraph this belongs to</button>
       </div>
       <div class="tabs" id="tabs"></div>
@@ -524,115 +519,130 @@
 <script>
 (function () {
   var DATA = {
-    'cite:nishtar2018time': {
+    'cite:doe2020example': {
       eyebrow: 'Evidence', chip: ['v','verbatim'],
-      title: 'Time to deliver on non-communicable diseases',
-      sub: 'nishtar2018time · main.tex:212',
+      title: 'A check nobody is asked to keep',
+      sub: 'doe2020example · main.tex:212',
       tabs: [
         {name:'Evidence', n:2, body: [
-          {card:'Supporting passages', right:'Lancet 2018', html:
-            '<p class="quote">The rising burden of NCDs demands health systems that identify and manage chronic conditions continuously, rather than responding only to acute presentations.</p>' +
-            '<p class="quote p">Continuity of care between episodes is the weakest link in most primary care systems.</p>' +
+          {card:'Supporting passages', right:'J. Example Studies 2020', html:
+            '<p class="quote">Free at the point of use and almost never used: the annual check has been available to every registered household in the country for sixteen years, and fewer than seven percent have taken one.</p>' +
+            '<p class="quote p">Nobody in the clinic is accountable for the patients who do not arrive.</p>' +
             '<p class="meta">Verbatim check passed on passage 1. Passage 2 could not be matched in the indexed fulltext, so treat it with care.</p>'},
           {card:'Source', right:'Zotero', html:
-            '<p class="meta">Nishtar S, Niinistö S, Sirisena M, et al. <em>The Lancet</em>, 2018.<br>' +
-            '<a href="#">doi:10.1016/S0140-6736(18)30675-5</a> · <a href="#">open in Zotero</a> · <a href="#">open PDF at p.2</a></p>'}
+            '<p class="meta">Doe J, Roe A, Smith K. <em>Journal of Example Studies</em>, 2020.<br>' +
+            '<a href="#">doi:10.5555/example.2020.0114</a> · <a href="#">open in Zotero</a> · <a href="#">open PDF at p.2</a></p>'}
         ]},
         {name:'Claim', body:[{card:'The sentence this supports', html:
-          '<p class="quote" style="border-left-color:var(--accent)">…that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes.</p>' +
+          '<p class="quote" style="border-left-color:var(--accent)">…and roughly one household in fifteen has ever taken one.</p>' +
           '<p class="meta">Introduction, paragraph 1. Two other claims in this manuscript cite the same paper.</p>'}]},
-        {name:'Note', body:[{card:'Leave a note on this citation', html: composer('Is this the right cite for the continuity claim, or should it be Kruk?')}]}
+        {name:'Note', body:[{card:'Leave a note on this citation', html: composer('Is this the right cite for the take-up figure, or should it be the ministry report?')}]}
       ]
     },
-    'cite:rose1992strategy': {
+    'cite:roe2019sample': {
       eyebrow:'Evidence', chip:['p','paraphrase'],
-      title:'Three cited works, one claim', sub:'kenkel · fineberg · rose1992strategy · main.tex:212',
+      title:'Three cited works, one claim', sub:'roe2019sample · lee2018placeholder · tan2022nofulltext · main.tex:212',
       tabs:[{name:'Evidence', n:3, body:[
-        {card:'rose1992strategy', right:'verbatim', html:'<p class="quote">A large number of people at small risk may give rise to more cases of disease than the small number who are at high risk.</p>'},
-        {card:'kenkel', right:'paraphrase', html:'<p class="quote p">Preventive effort responds weakly to expected health returns.</p><p class="meta">Not matched verbatim. The cited chapter has no indexed fulltext in your library.</p>'},
-        {card:'fineberg', right:'no fulltext', html:'<p class="meta">Not in your Zotero library. <a href="#">Try to fetch</a> · <a href="#">search Crossref</a></p>'}
+        {card:'roe2019sample', right:'verbatim', html:'<p class="quote">Take-up of a free preventive service falls fastest in exactly the group for whom it has not yet become urgent.</p>'},
+        {card:'lee2018placeholder', right:'paraphrase', html:'<p class="quote p">Households discount a future benefit they cannot presently feel.</p><p class="meta">Not matched verbatim. The cited chapter has no indexed fulltext in your library.</p>'},
+        {card:'tan2022nofulltext', right:'no fulltext', html:'<p class="meta">Not in your Zotero library. <a href="#">Try to fetch</a> · <a href="#">search Crossref</a></p>'}
       ]}]
     },
-    'cite:unmatched2019': {
+    'cite:smith2021demo': {
+      eyebrow:'Evidence', chip:['v','verbatim'],
+      title:'Rosters, queues, and who gets seen', sub:'smith2021demo · main.tex:218',
+      tabs:[
+        {name:'Evidence', n:1, body:[
+          {card:'Supporting passage', right:'Rev. Placeholder Econ. 2021', html:
+            '<p class="quote">A queue serves the people standing in it. A register is a claim about the people who are not.</p>' +
+            '<p class="meta">Verbatim check passed. The phrase the sentence leans on appears on page 9 of the indexed fulltext.</p>'},
+          {card:'Source', right:'Zotero', html:
+            '<p class="meta">Smith K, Tan L. <em>Review of Placeholder Economics</em>, 2021.<br>' +
+            '<a href="#">doi:10.5555/example.2021.0092</a> · <a href="#">open in Zotero</a> · <a href="#">open PDF at p.9</a></p>'}
+        ]},
+        {name:'Note', body:[{card:'Leave a note on this citation', html: composer('Does this support the two-way claim, or only the first half of it?')}]}
+      ]
+    },
+    'cite:nobody2017missing': {
       eyebrow:'Evidence', chip:['m','missing'],
-      title:'No supporting passage found', sub:'unmatched2019 · main.tex:198',
+      title:'No supporting passage found', sub:'nobody2017missing · main.tex:198',
       tabs:[{name:'Evidence', body:[
         {card:'Why this is red', html:'<p class="meta">This key resolves to no item in your Zotero library, so no fulltext could be searched. The claim it supports is the strongest normative sentence in the introduction, which makes it worth resolving before submission.</p>'},
         {card:'Next', html:'<div class="row"><button class="btn pri">Search Crossref</button><button class="btn">Fetch into Zotero</button><button class="btn">Mark intentional</button></div>'}
       ]}]
     },
-    'value:correct_p2_wb': {
+    'value:adherence_sd': {
       eyebrow:'Provenance', chip:['c','computed'],
-      title:'0.096', sub:'exhibits/correct_p2_wb.tex · written by code/12_sp_quality.R',
+      title:'0.153', sub:'exhibits/adherence_sd.tex · written by code/06_adherence.R',
       tabs:[
         {name:'Code', body:[
-          {card:'What this is', html:'<p class="meta"><b>Effect on correct case management, in standard deviations.</b> The post &times; treat interaction from the standardized-patient quality model. Reported in &para;2 and again in &para;7 of the conceptual section.</p>'},
-          {card:'code/12_sp_quality.R', right:'lines 116–124', html:
+          {card:'What this is', html:'<p class="meta"><b>Effect on recorded medication adherence, in standard deviations.</b> The post &times; treat interaction from the household adherence model. Reported in &para;2 and again in &para;7 of the roster section.</p>'},
+          {card:'code/06_adherence.R', right:'lines 116–124', html:
             '<pre><span class="c">### Using feols() for faster clustered standard errors</span>\n' +
-            '<span class="hl">m2 = <span class="k">feols</span>(correct ~ post*treat | provider + round,\n' +
-            '          data = sp, cluster = ~provider)</span>\n\n' +
-            '<span class="k">write_frag</span>(<span class="s">"exhibits/correct_p2_wb.tex"</span>,\n' +
+            '<span class="hl">m2 = <span class="k">feols</span>(adherence ~ post*treat | household + wave,\n' +
+            '          data = hh, cluster = ~clinic)</span>\n\n' +
+            '<span class="k">write_frag</span>(<span class="s">"exhibits/adherence_sd.tex"</span>,\n' +
             '           <span class="k">fmt</span>(m2$coeftable[<span class="s">"post:treat"</span>, <span class="s">"Estimate"</span>], 3))</pre>'},
           {card:'What produced this value', html:
-            '<dl class="stat"><dt>Estimate</dt><dd>0.096</dd><dt>Std. error</dt><dd>0.041</dd><dt>p</dt><dd>0.019</dd>' +
-            '<dt>Observations</dt><dd>2,344</dd><dt>Clusters</dt><dd>394 providers</dd><dt>Fixed effects</dt><dd>provider, round</dd></dl>'}
+            '<dl class="stat"><dt>Estimate</dt><dd>0.153</dd><dt>Std. error</dt><dd>0.062</dd><dt>p</dt><dd>0.014</dd>' +
+            '<dt>Observations</dt><dd>2,860</dd><dt>Clusters</dt><dd>412 clinics</dd><dt>Fixed effects</dt><dd>household, wave</dd></dl>'}
         ]},
         {name:'Data', body:[
-          {card:'Estimation sample', right:'sp', html:
-            '<dl class="stat"><dt>Source</dt><dd>data/clean/sp_rounds.rds</dd><dt>Rows in</dt><dd>3,108</dd>' +
-            '<dt>Dropped</dt><dd>764 (no consent)</dd><dt>Rows used</dt><dd>2,344</dd><dt>Built by</dt><dd>code/03_sp_clean.R</dd></dl>' +
+          {card:'Estimation sample', right:'hh', html:
+            '<dl class="stat"><dt>Source</dt><dd>data/clean/household_waves.rds</dd><dt>Rows in</dt><dd>3,704</dd>' +
+            '<dt>Dropped</dt><dd>844 (no consent)</dd><dt>Rows used</dt><dd>2,860</dd><dt>Built by</dt><dd>code/02_clean_households.R</dd></dl>' +
             '<p class="meta" style="margin-top:.5rem"><a href="#">Open the sample</a> · <a href="#">Show the drop chain</a></p>'},
-          {card:'Ask about this estimate', html: composer('Re-run this without the round fixed effects and tell me if it moves.')}
+          {card:'Ask about this estimate', html: composer('Re-run this without the wave fixed effects and tell me if it moves.')}
         ]},
         {name:'History', body:[
           {card:'This value over time', html:
-            '<dl class="stat"><dt>today</dt><dd>0.096</dd><dt>12 Jul</dt><dd>0.094</dd><dt>28 Jun</dt><dd>0.088</dd><dt>03 Jun</dt><dd>0.111</dd></dl>' +
-            '<p class="meta" style="margin-top:.5rem">Changed when <b>03_sp_clean.R</b> tightened the consent filter on 28 June. The manuscript never had to be edited, because the number is an <b>\\input</b>.</p>'}
+            '<dl class="stat"><dt>today</dt><dd>0.153</dd><dt>12 Jul</dt><dd>0.149</dd><dt>28 Jun</dt><dd>0.141</dd><dt>03 Jun</dt><dd>0.168</dd></dl>' +
+            '<p class="meta" style="margin-top:.5rem">Changed when <b>02_clean_households.R</b> tightened the consent filter on 28 June. The manuscript never had to be edited, because the number is an <b>\\input</b>.</p>'}
         ]}
       ]
     },
-    'value:test_ordering_pp': {
+    'value:review_rate_pp': {
       eyebrow:'Provenance', chip:['c','computed'],
-      title:'10.4pp', sub:'exhibits/test_ordering_pp.tex · written by code/09_did_main.R',
+      title:'12.7pp', sub:'exhibits/review_rate_pp.tex · written by code/04_review_did.R',
       tabs:[{name:'Code', body:[
-        {card:'What this is', html:'<p class="meta"><b>Effect on ordering the new test in round 2, percentage points.</b> The round-2 term of the event-study interaction, taken while the subsidy was still running.</p>'},
-        {card:'code/09_did_main.R', right:'lines 78–84', html:
-          '<pre><span class="hl">did = <span class="k">feols</span>(ordered_xpert ~ i(round, treat, ref = 1) | provider + round,\n' +
-          '           data = panel, cluster = ~provider)</span>\n\n' +
-          '<span class="k">write_frag</span>(<span class="s">"exhibits/test_ordering_pp.tex"</span>, <span class="k">pp</span>(did, <span class="s">"round::2:treat"</span>))</pre>'},
-        {card:'Reported alongside', html:'<p class="meta">Control mean 4.1% comes from the same script, line 91. Both appear in this sentence, so a change to the sample moves them together.</p>'}
+        {card:'What this is', html:'<p class="meta"><b>Effect on completing the annual check in wave 2, percentage points.</b> The wave-2 term of the event-study interaction, taken while the enrollment bonus was still being paid.</p>'},
+        {card:'code/04_review_did.R', right:'lines 78–84', html:
+          '<pre><span class="hl">did = <span class="k">feols</span>(completed_check ~ i(wave, treat, ref = 1) | household + wave,\n' +
+          '           data = panel, cluster = ~clinic)</span>\n\n' +
+          '<span class="k">write_frag</span>(<span class="s">"exhibits/review_rate_pp.tex"</span>, <span class="k">pp</span>(did, <span class="s">"wave::2:treat"</span>))</pre>'},
+        {card:'Reported alongside', html:'<p class="meta">The control mean of 6.8% comes from the same script, line 91. Both appear in this sentence, so a change to the sample moves them together.</p>'}
       ]}]
     },
-    'value:test_ordering_base': {
+    'value:review_rate_base': {
       eyebrow:'Provenance', chip:['c','computed'],
-      title:'4.1%', sub:'exhibits/test_ordering_base.tex · written by code/09_did_main.R',
-      tabs:[{name:'Code', body:[{card:'What this is', html:'<p class="meta"><b>Control-group mean of test ordering at baseline.</b> The denominator the effect beside it is scaled against, so the two move together when the sample changes.</p>'},
-        {card:'code/09_did_main.R', right:'line 91', html:
-        '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/test_ordering_base.tex"</span>,\n' +
-        '           <span class="k">pct</span>(<span class="k">mean</span>(panel$ordered_xpert[panel$treat == 0 &amp; panel$round == 1])))</span></pre>'}]}]
+      title:'6.8%', sub:'exhibits/review_rate_base.tex · written by code/04_review_did.R',
+      tabs:[{name:'Code', body:[{card:'What this is', html:'<p class="meta"><b>Control-group mean of check completion at baseline.</b> The denominator the effect beside it is scaled against, so the two move together when the sample changes.</p>'},
+        {card:'code/04_review_did.R', right:'line 91', html:
+        '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/review_rate_base.tex"</span>,\n' +
+        '           <span class="k">pct</span>(<span class="k">mean</span>(panel$completed_check[panel$treat == 0 &amp; panel$wave == 1])))</span></pre>'}]}]
     },
     'exhibit:b-tab2': {
       eyebrow:'Provenance', chip:['c','generated'],
-      title:'Table 2', sub:'latex/tables/table2_cross.tex · \\include from main.tex:198',
+      title:'Table 2', sub:'latex/tables/table2_review.tex · \\include from main.tex:198',
       tabs:[
         {name:'Code', body:[
-          {card:'code/07_table2_cross.R', right:'lines 116–133', html:
+          {card:'code/08_table2_review.R', right:'lines 116–133', html:
             '<pre><span class="c">### Using feols() for faster clustered standard errors</span>\n' +
-            '<span class="hl">m1 = <span class="k">feols</span>(var_dummy ~ age + gender + var_pre_dummy + ecm_include_patient\n' +
-            '           | block_categorical, data = d, cluster = ~clinic)</span>\n' +
-            'm2 = <span class="k">feols</span>(var ~ age + gender + var_pre + ecm_include_patient\n' +
-            '           | block_categorical, data = d, cluster = ~clinic)\n\n' +
-            '<span class="k">esttab</span>(m1, m2, file = <span class="s">"latex/tables/table2_cross.tex"</span>)</pre>'},
+            '<span class="hl">m1 = <span class="k">feols</span>(any_check ~ age + hh_size + check_pre + nct_enrolled\n' +
+            '           | strata, data = d, cluster = ~clinic)</span>\n' +
+            'm2 = <span class="k">feols</span>(bp_recorded ~ age + hh_size + bp_pre + nct_enrolled\n' +
+            '           | strata, data = d, cluster = ~clinic)\n\n' +
+            '<span class="k">esttab</span>(m1, m2, file = <span class="s">"latex/tables/table2_review.tex"</span>)</pre>'},
           {card:'Chain', html:
-            '<dl class="stat"><dt>Data</dt><dd>data/clean/patients.rds</dd><dt>Built by</dt><dd>code/01_id_clean.R</dd>' +
-            '<dt>Model</dt><dd>OLS, clinic-clustered</dd><dt>Sample</dt><dd>18,204 patients</dd><dt>Last run</dt><dd>14 min ago</dd></dl>'}
+            '<dl class="stat"><dt>Data</dt><dd>data/clean/households.rds</dd><dt>Built by</dt><dd>code/01_build_roster.R</dd>' +
+            '<dt>Model</dt><dd>OLS, clinic-clustered</dd><dt>Sample</dt><dd>16,930 households</dd><dt>Last run</dt><dd>14 min ago</dd></dl>'}
         ]},
         {name:'Source', body:[
           {card:'This block is generated', html:
-            '<div class="locked"><span>⊘</span><div><b>Not editable here.</b> This file is written by <b>code/07_table2_cross.R</b>. Editing it would hardcode a result into the manuscript. Change the script and the table will rebuild.</div></div>' +
+            '<div class="locked"><span>⊘</span><div><b>Not editable here.</b> This file is written by <b>code/08_table2_review.R</b>. Editing it would hardcode a result into the manuscript. Change the script and the table will rebuild.</div></div>' +
             '<div class="row" style="margin-top:.6rem"><button class="btn pri">Open the script</button><button class="btn">Re-run it</button></div>'}
         ]},
-        {name:'Note', body:[{card:'Leave a note on this exhibit', html: composer('Add the female subsample as a third panel, and move the p-values to a note.')}]}
+        {name:'Note', body:[{card:'Leave a note on this exhibit', html: composer('Add the rural subsample as a third panel, and move the p-values to a note.')}]}
       ]
     },
     'para:b-91c4': {
@@ -641,7 +651,7 @@
       tabs:[
         {name:'Source', body:[
           {card:'main.tex:214', right:'editable', html:
-            '<div class="src" contenteditable="true" spellcheck="false">While the program ran, ordering the new test rose by <span class="inputtok">\\input{exhibits/test_ordering_pp}</span> against a control mean of <span class="inputtok">\\input{exhibits/test_ordering_base}</span>, and correct case management improved by <span class="inputtok">\\input{exhibits/correct_p2_wb}</span> standard deviations. Three years after the subsidy was withdrawn, only the test-ordering effect persisted.</div>' +
+            '<div class="src" contenteditable="true" spellcheck="false">Over the two years of the pilot, completion of the annual check rose by <span class="inputtok">\\input{exhibits/review_rate_pp}</span> from a control mean of <span class="inputtok">\\input{exhibits/review_rate_base}</span>, and recorded medication adherence rose by <span class="inputtok">\\input{exhibits/adherence_sd}</span> standard deviations. Two years after the enrollment bonus ended, the check-completion gain was the only one still visible.</div>' +
             '<div class="insbar"><span>At cursor</span><button class="ins" type="button" data-open="insert:cite">Citation</button><button class="ins" type="button" data-open="insert:value">Number</button><button class="ins" type="button" data-open="insert:cite">Footnote</button><em>or type / in the box</em></div><div class="insbar"><span>After this &para;</span><button class="ins" type="button" data-open="insert:exhibit">Exhibit</button><button class="ins" type="button" data-open="insert:exhibit">New paragraph</button><em>a new block, not an edit to this one</em></div>' +
             '<p class="meta" style="padding:.5rem .7rem .6rem">You are holding the unflattened source, so the three <b>\\input</b> directives survive your edit. The values shown in the page are read from those files.</p>'},
           {card:'', html:'<div class="savestate"><i></i><span><b>Saved</b> to main.tex, 2s ago. Writes on a pause, not a button.</span></div>' + '<div class="savestate held"><i></i><span><b>Held</b> when the LaTeX will not parse, so a half-typed \\citep{ never reaches the file or the compiler.</span></div>' + '<div class="row" style="padding:0 .7rem .6rem"><button class="btn">Revert to last good</button><button class="btn">History</button></div>'}
@@ -657,15 +667,15 @@
         ]},
         {name:'References', n:3, body:[
           {card:'Computed values', right:'3', html:
-            '<div class="hit" data-open="value:test_ordering_pp"><b>10.4pp &middot; test_ordering_pp</b>' +
-            '<span>Effect on ordering the new test in round 2, in percentage points. The round-2 term of the event-study interaction.</span>' +
-            '<span class="ok">09_did_main.R:78 &middot; feols, provider-clustered</span></div>' +
-            '<div class="hit" data-open="value:test_ordering_base"><b>4.1% &middot; test_ordering_base</b>' +
-            '<span>Control-group mean of test ordering at baseline. The denominator for the effect reported beside it.</span>' +
-            '<span class="ok">09_did_main.R:91 &middot; sample mean</span></div>' +
-            '<div class="hit" data-open="value:correct_p2_wb"><b>0.096 &middot; correct_p2_wb</b>' +
-            '<span>Effect on correct case management, in standard deviations. The post &times; treat interaction.</span>' +
-            '<span class="ok">12_sp_quality.R:120 &middot; feols, two-way FE</span></div>' +
+            '<div class="hit" data-open="value:review_rate_pp"><b>12.7pp &middot; review_rate_pp</b>' +
+            '<span>Effect on completing the annual check in wave 2, in percentage points. The wave-2 term of the event-study interaction.</span>' +
+            '<span class="ok">04_review_did.R:78 &middot; feols, clinic-clustered</span></div>' +
+            '<div class="hit" data-open="value:review_rate_base"><b>6.8% &middot; review_rate_base</b>' +
+            '<span>Control-group mean of check completion at baseline. The denominator for the effect reported beside it.</span>' +
+            '<span class="ok">04_review_did.R:91 &middot; sample mean</span></div>' +
+            '<div class="hit" data-open="value:adherence_sd"><b>0.153 &middot; adherence_sd</b>' +
+            '<span>Effect on recorded medication adherence, in standard deviations. The post &times; treat interaction.</span>' +
+            '<span class="ok">06_adherence.R:120 &middot; feols, two-way FE</span></div>' +
             '<p class="meta" style="margin-top:.5rem">Two scripts feed this paragraph. Re-running either changes what it says, with the manuscript untouched.</p>'},
           {card:'Citations', right:'0', html:
             '<p class="meta">None. A results paragraph reporting three effects with no citation is normal, but worth a look if you meant to benchmark against prior estimates.</p>' +
@@ -680,25 +690,25 @@
         {name:'Find it', body:[
           {card:'', html: chooser('cite')},
           {card:'Search', right:'your library first', html:
-            '<div class="composer"><textarea style="min-height:2.4rem">persistence of provider behavior change after subsidy withdrawal</textarea></div>' +
+            '<div class="composer"><textarea style="min-height:2.4rem">persistence of household take-up after an enrollment bonus ends</textarea></div>' +
             '<p class="meta" style="margin-top:.5rem">Searches your Zotero library first, then Crossref and OpenAlex for anything it does not already hold.</p>'},
           {card:'In your library', right:'2 of 2,140', html:
-            '<div class="hit"><b>Das, Holla, Mohpal &amp; Muralidharan (2016)</b><span>Quality and accountability in health care delivery. <em>AER</em> 106(12).</span>' +
+            '<div class="hit"><b>Doe &amp; Roe (2020)</b><span>A check nobody is asked to keep. <em>Journal of Example Studies</em> 44(3).</span>' +
             '<span class="ok">has indexed fulltext</span></div>' +
-            '<div class="hit"><b>Mohanan et al. (2021)</b><span>Effect of a large-scale training program on provider practice. <em>JHE</em> 78.</span>' +
+            '<div class="hit"><b>Smith et al. (2021)</b><span>Rosters, queues, and who gets seen. <em>Review of Placeholder Economics</em> 12.</span>' +
             '<span class="ok">has indexed fulltext</span></div>'},
           {card:'Not in your library', right:'Crossref', html:
-            '<div class="hit"><b>Björkman Nyqvist &amp; Svensson (2024)</b><span>Sustaining provider effort after donor exit. <em>JDE</em> 168.</span>' +
+            '<div class="hit"><b>Tan &amp; Okafor (2024)</b><span>Take-up after the bonus stops. <em>Example Development Review</em> 40.</span>' +
             '<span class="warn">would be created: Zotero record + PDF fetch</span></div>'}
         ]},
         {name:'What gets written', n:3, body:[
           {card:'Three coordinated writes', html:
-            '<dl class="stat"><dt>main.tex:214</dt><dd>\\citep{dasholla2016quality}</dd>' +
+            '<dl class="stat"><dt>main.tex:214</dt><dd>\\citep{doeroe2020check}</dd>' +
             '<dt>references.bib</dt><dd>+1 entry, from the Crossref record</dd>' +
             '<dt>Zotero</dt><dd>unchanged, already held</dd></dl>' +
             '<p class="meta" style="margin-top:.5rem">A text editor could only do the first line. Doing all three is why insertion lives here.</p>'},
           {card:'Identity gate', right:'must pass', html:
-            '<dl class="stat"><dt>DOI</dt><dd>10.1257/aer.20151138</dd><dt>Crossref</dt><dd>agrees</dd>' +
+            '<dl class="stat"><dt>DOI</dt><dd>10.5555/example.2020.0114</dd><dt>Crossref</dt><dd>agrees</dd>' +
             '<dt>OpenAlex</dt><dd>agrees</dd><dt>Zotero</dt><dd>present, fulltext indexed</dd></dl>' +
             '<p class="meta" style="margin-top:.5rem">Nothing is inserted on a key that fails this. A citation you cannot resolve is a citation you cannot check.</p>'},
           {card:'Then, immediately', html:
@@ -716,25 +726,25 @@
           {card:'You cannot type it', html:
             '<div class="locked"><span>⊘</span><div><b>There is no field for a literal number.</b> A value enters the manuscript only as an <b>\\input</b> of a file that some script wrote. That is your standing rule, enforced by there being no other way to do it.</div></div>'},
           {card:'From a model you have already run', right:'3 fitted', html:
-            '<div class="hit"><b>did · code/09_did_main.R:78</b><span>ordered_xpert ~ i(round, treat) | provider + round</span>' +
+            '<div class="hit"><b>did · code/04_review_did.R:78</b><span>completed_check ~ i(wave, treat) | household + wave</span>' +
             '<span class="ok">14 estimable quantities</span></div>' +
-            '<div class="hit"><b>m2 · code/12_sp_quality.R:120</b><span>correct ~ post*treat | provider + round</span>' +
+            '<div class="hit"><b>m2 · code/06_adherence.R:120</b><span>adherence ~ post*treat | household + wave</span>' +
             '<span class="ok">9 estimable quantities</span></div>' +
-            '<div class="hit"><b>m1 · code/07_table2_cross.R:116</b><span>var_dummy ~ age + gender + ecm | block</span>' +
+            '<div class="hit"><b>m1 · code/08_table2_review.R:116</b><span>any_check ~ age + hh_size + nct | strata</span>' +
             '<span class="ok">22 estimable quantities</span></div>'},
           {card:'Or describe one that does not exist yet', html:
-            '<div class="composer"><textarea style="min-height:2.6rem">the control-group mean of statin prescription in the year before enrollment</textarea>' +
+            '<div class="composer"><textarea style="min-height:2.6rem">the control-group mean of repeat prescriptions in the year before enrollment</textarea>' +
             '<div class="row"><button class="btn pri">Write the code for it</button></div></div>' +
             '<p class="meta">Claude adds the estimation to the right script, runs it, and the fragment appears. You review the code, not the number.</p>'}
         ]},
         {name:'What gets written', n:3, body:[
           {card:'Three coordinated writes', html:
-            '<dl class="stat"><dt>exhibits/statin_base.tex</dt><dd>new file, the value alone</dd>' +
-            '<dt>code/07_table2_cross.R</dt><dd>+1 write_frag line, after the model</dd>' +
-            '<dt>main.tex:214</dt><dd>\\input{exhibits/statin_base}</dd></dl>'},
+            '<dl class="stat"><dt>exhibits/scrip_base.tex</dt><dd>new file, the value alone</dd>' +
+            '<dt>code/08_table2_review.R</dt><dd>+1 write_frag line, after the model</dd>' +
+            '<dt>main.tex:214</dt><dd>\\input{exhibits/scrip_base}</dd></dl>'},
           {card:'The line added to the script', html:
-            '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/statin_base.tex"</span>,\n' +
-            '           <span class="k">pct</span>(<span class="k">mean</span>(d$statin_pre[d$ecm_include_patient == 0])))</span></pre>'},
+            '<pre><span class="hl"><span class="k">write_frag</span>(<span class="s">"exhibits/scrip_base.tex"</span>,\n' +
+            '           <span class="k">pct</span>(<span class="k">mean</span>(d$scrip_pre[d$nct_enrolled == 0])))</span></pre>'},
           {card:'', html:
             '<p class="meta">Inserting a number is a change to your analysis code. That is the point: the manuscript and the chain move together, and re-running the script updates the sentence.</p>' +
             '<div class="row" style="margin-top:.6rem"><button class="btn pri">Write, run, insert</button><button class="btn">Show me the diff first</button></div>'}
@@ -752,14 +762,14 @@
             '<div class="hit"><b>A model already fitted</b><span>Format an existing estimation into a new table.</span><span class="ok">3 fitted</span></div>' +
             '<div class="hit"><b>A description</b><span>Say what it should show and let Claude write the script.</span><span class="warn">new file in code/</span></div>'},
           {card:'Describe it', html:
-            '<div class="composer"><textarea style="min-height:2.6rem">Table 2 again but split by patient sex, with the interaction p-value in a note.</textarea>' +
+            '<div class="composer"><textarea style="min-height:2.6rem">Table 2 again but split urban and rural, with the interaction p-value in a note.</textarea>' +
             '<div class="row"><button class="btn pri">Draft the script</button></div></div>'}
         ]},
         {name:'What gets written', n:4, body:[
           {card:'Four coordinated writes', html:
-            '<dl class="stat"><dt>code/07b_table2_by_sex.R</dt><dd>new script, reusing 07\'s sample</dd>' +
-            '<dt>latex/tables/table2_by_sex.tex</dt><dd>generated output</dd>' +
-            '<dt>main.tex:215</dt><dd>a new block: float + \\include + caption + \\label{tab:by_sex}</dd>' +
+            '<dl class="stat"><dt>code/08b_table2_by_area.R</dt><dd>new script, reusing 08\'s sample</dd>' +
+            '<dt>latex/tables/table2_by_area.tex</dt><dd>generated output</dd>' +
+            '<dt>main.tex:215</dt><dd>a new block: float + \\include + caption + \\label{tab:by_area}</dd>' +
             '<dt>runfile.R</dt><dd>+1 line, so it rebuilds with everything else</dd></dl>'},
           {card:'Numbering', html:
             '<p class="meta">This is a <b>new block</b> spliced between ¶2 and what follows, not an edit to either. Where the float actually prints is up to LaTeX and its placement options, so it may appear a page away from where the source sits. Placing it here renumbers what follows. Every <b>\\ref</b> to a later exhibit is checked against the recompiled <b>.aux</b>, and anything that fails to resolve is flagged rather than left as a silent <b>??</b> in the PDF.</p>'},
@@ -779,8 +789,8 @@
             '<div class="row" style="margin-top:.65rem;flex-wrap:wrap"><button class="btn pri">Choose a file…</button>' +
             '<span class="hintline">.pdf · .docx · a response letter</span></div>'},
           {card:'Recently read in', right:'2 files', html:
-            '<dl class="stat"><dt>JPubE_R2.pdf</dt><dd>31 anchored · 2 unplaced</dd>' +
-            '<dt>hannah_track_changes.docx</dt><dd>18 anchored · 0 unplaced</dd></dl>' +
+            '<dl class="stat"><dt>referee_report_R2.pdf</dt><dd>31 anchored · 2 unplaced</dd>' +
+            '<dt>coauthor_track_changes.docx</dt><dd>18 anchored · 0 unplaced</dd></dl>' +
             '<p class="meta" style="margin-top:.5rem">Unplaced comments sit in a tray rather than guessing a paragraph. Nothing is attached to the wrong sentence.</p>'}
         ]},
         {name:'Export', body:[
@@ -794,20 +804,20 @@
     },
     'review:r2': {
       eyebrow:'Reviewer 2', chip:['c','imported'],
-      title:'On the neglect claim', sub:'JPubE_R2.pdf p.4 · anchored to main.tex:198',
+      title:'On the accountability claim', sub:'referee_report_R2.pdf p.4 · anchored to main.tex:198',
       tabs:[
         {name:'Comment', n:1, body:[
           {card:'What they highlighted', html:
-            '<p class="quote" style="border-left-color:var(--computed)">…yet it remains neglected by multiple actors within the health system.</p>' +
-            '<div class="msg" style="margin-top:.6rem"><div class="who">Reviewer 2 · JPubE_R2.pdf p.4</div>' +
-            '"Neglected by whom? The paper asserts this repeatedly but never distinguishes patient-side from provider-side underinvestment. The cited work does not settle it."</div>'},
+            '<p class="quote" style="border-left-color:var(--computed)">…and yet no line in the clinic payment schedule pays anyone to go looking for it.</p>' +
+            '<div class="msg" style="margin-top:.6rem"><div class="who">Reviewer 2 · referee_report_R2.pdf p.4</div>' +
+            '"Pays whom? The paper repeats this but never separates what the clinic is paid for from what the individual nurse is rewarded for. The cited work does not settle it."</div>'},
           {card:'Matched here because', html:
             '<p class="meta">The highlighted text matches this paragraph at 0.97 similarity. Page 4 of the PDF corresponds to <b>main.tex:198</b> through the same block map the margin uses, so the anchor survives you rewriting anything above it.</p>'},
           {card:'', html:'<div class="row" style="flex-wrap:wrap"><button class="btn pri">Address it</button><button class="btn">Draft a response</button><button class="btn">Defer to the letter</button></div>'}
         ]},
         {name:'All from R2', n:31, body:[
           {card:'Across the manuscript', html:
-            '<dl class="stat"><dt>Introduction</dt><dd>6</dd><dt>Data and approach</dt><dd>11</dd><dt>Results</dt><dd>9</dd>' +
+            '<dl class="stat"><dt>Introduction</dt><dd>6</dd><dt>Data and design</dt><dd>11</dd><dt>Results</dt><dd>9</dd>' +
             '<dt>Discussion</dt><dd>3</dd><dt>Unplaced</dt><dd>2</dd></dl>' +
             '<p class="meta" style="margin-top:.5rem">Eleven of thirty-one touch identification, which is where this revision will actually be won or lost.</p>'}
         ]}
@@ -818,16 +828,16 @@
       title:'Opening paragraph, ¶1', sub:'main.tex:212 · 2 citation groups',
       tabs:[
         {name:'Source', body:[{card:'main.tex:212', right:'editable', html:
-          '<div class="src" contenteditable="true" spellcheck="false">Effective primary healthcare requires high-quality curative care, but as the global burden of non-communicable diseases grows, that care increasingly requires the effective identification and treatment of underlying long-term health issues between acute care episodes \\citep{nishtar2018time}.</div>' + '<div class="insbar"><span>At cursor</span><button class="ins" type="button" data-open="insert:cite">Citation</button><button class="ins" type="button" data-open="insert:value">Number</button><button class="ins" type="button" data-open="insert:cite">Footnote</button><em>or type / in the box</em></div><div class="insbar"><span>After this &para;</span><button class="ins" type="button" data-open="insert:exhibit">Exhibit</button><button class="ins" type="button" data-open="insert:exhibit">New paragraph</button><em>a new block, not an edit to this one</em></div>'},
+          '<div class="src" contenteditable="true" spellcheck="false">Marovia\'s public clinics have offered a free annual check to every registered household since 2004, and roughly one household in fifteen has ever taken one \\citep{doe2020example}.</div>' + '<div class="insbar"><span>At cursor</span><button class="ins" type="button" data-open="insert:cite">Citation</button><button class="ins" type="button" data-open="insert:value">Number</button><button class="ins" type="button" data-open="insert:cite">Footnote</button><em>or type / in the box</em></div><div class="insbar"><span>After this &para;</span><button class="ins" type="button" data-open="insert:exhibit">Exhibit</button><button class="ins" type="button" data-open="insert:exhibit">New paragraph</button><em>a new block, not an edit to this one</em></div>'},
           {card:'', html:'<div class="savestate"><i></i><span><b>Saved</b> to main.tex, 2s ago. Writes on a pause, not a button.</span></div>' + '<div class="savestate held"><i></i><span><b>Held</b> when the LaTeX will not parse, so a half-typed \\citep{ never reaches the file or the compiler.</span></div>' + '<div class="row" style="padding:0 .7rem .6rem"><button class="btn">Revert to last good</button><button class="btn">History</button></div>'}]},
-        {name:'Chat', body:[{card:'Ask for a change here', right:'⌘↵', html: composer('Open on the mechanism rather than the burden. This reads like a WHO report.')}]},
+        {name:'Chat', body:[{card:'Ask for a change here', right:'⌘↵', html: composer('Open on the mechanism rather than the take-up figure. This reads like an annual report.')}]},
         {name:'References', n:4, body:[
           {card:'Citations', right:'4', html:
-            '<div class="hit" data-open="cite:nishtar2018time"><b>nishtar2018time</b>' +
-            '<span>Nishtar et al., <em>Lancet</em> 2018. Supports the continuity-of-care premise.</span>' +
+            '<div class="hit" data-open="cite:doe2020example"><b>doe2020example</b>' +
+            '<span>Doe et al., <em>Journal of Example Studies</em> 2020. Supports the low take-up premise.</span>' +
             '<span class="ok">verbatim</span></div>' +
-            '<div class="hit" data-open="cite:rose1992strategy"><b>kenkel &middot; fineberg &middot; rose1992strategy</b>' +
-            '<span>Three works on the underinvestment in prevention, cited as a group.</span>' +
+            '<div class="hit" data-open="cite:roe2019sample"><b>roe2019sample &middot; lee2018placeholder &middot; tan2022nofulltext</b>' +
+            '<span>Three works on who skips a preventive service, cited as a group.</span>' +
             '<span class="warn">1 verbatim &middot; 1 paraphrase &middot; 1 without fulltext</span></div>'},
           {card:'Computed values', right:'0', html:
             '<p class="meta">None. This paragraph makes only qualitative claims.</p>'},
@@ -836,7 +846,7 @@
     },
     'para:b-77ad': {
       eyebrow:'Paragraph', chip:null,
-      title:'Neglect claim, ¶3', sub:'main.tex:198 · being addressed',
+      title:'Accountability claim, ¶3', sub:'main.tex:198 · being addressed',
       tabs:[
         {name:'Chat', n:1, body:[{card:'', html:
           '<div class="chat">' +
@@ -986,7 +996,7 @@
     }
   });
 
-  render('cite:nishtar2018time', 0);
+  render('cite:doe2020example', 0);
 })();
 </script>
 <script>

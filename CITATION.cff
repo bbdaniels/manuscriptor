@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "Manuscriptor"
+type: software
+authors:
+  - family-names: Daniels
+    given-names: Benjamin B.
+    orcid: "https://orcid.org/0000-0001-9652-6653"
+license: MIT
+repository-code: "https://github.com/bbdaniels/manuscriptor"

@@ -96,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             presentAlert(
                 title: "manuscriptor is not installed",
                 detail: "The app runs `manuscriptor serve` as a child process and could not find "
-                      + "it. Install it with `pip install -e ~/Projects/manuscriptor`, or point the "
+                      + "it. Install it with `pip install -e .` from a clone of the repository, or point the "
                       + "app at a copy: defaults write com.bbdaniels.manuscriptor ServerBinary "
                       + "/path/to/manuscriptor")
             return

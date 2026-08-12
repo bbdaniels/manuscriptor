@@ -1222,7 +1222,7 @@ def test_a_plainly_typed_isbn_still_finds_the_hyphenated_record_he_holds(repo):
     assert entry.lstrip().startswith("@book{rogers2003diffusion,")
     assert "5th edition" in entry            # the title the library holds
     assert "Fifth edition" not in entry      # and not the catalogue's edition
-    # It is his record, so the library rows say so rather than naming citekit.
+    # It is his record, so the library rows say so rather than naming a remedy.
     zot = [c for c in plan.checks if c.name == "zotero"][0]
     assert zot.ok and "A4A5CXWE" in zot.detail
     # And no date guard, because the year is his, not a catalogue's.
@@ -1255,10 +1255,11 @@ def test_the_rows_an_isbn_work_cannot_answer_do_not_read_as_passes(repo):
     agree_row = [c for c in plan.checks if c.name == "agreement"][0]
     assert "your library record" not in agree_row.detail, agree_row.detail
     assert "ISBN" in agree_row.detail
-    # It is not in the library, and that is said plainly rather than ticked.
+    # It is not in the library, and that is said plainly rather than ticked. The
+    # row names the remedy without naming a tool only this machine has.
     zot = [c for c in plan.checks if c.name == "zotero"][0]
     assert not zot.ok
-    assert "citekit" in zot.detail
+    assert "Add it to Zotero yourself" in zot.detail
 
 
 def test_a_missing_bridge_never_reads_as_a_missing_book(repo):

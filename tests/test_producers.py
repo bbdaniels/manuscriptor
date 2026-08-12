@@ -25,18 +25,18 @@ def w(root: Path, rel: str, text: str) -> Path:
 
 PROSE = r"""
 \subsection{Conceptual framework}
-Effective primary healthcare requires high-quality curative care, but as the
-global burden of non-communicable diseases grows, that care increasingly
-requires identification of long-term issues between acute episodes.
+A clinic day organized around whoever arrives is a reasonable way to run a
+waiting room and a poor way to find the households that never arrive, which is
+the gap the Neighborhood Care Teams register is meant to close.
 """
 
 TABLE = r"""
 \begin{tabular}{lcc}
 \toprule
-Outcome & Control & ECM \\
+Outcome & Control & NCT \\
 \midrule
-Any chronic consult & 0.412 & 0.483 \\
-Statin prescription & 0.094 & 0.122 \\
+Any annual check & 0.355 & 0.441 \\
+Repeat prescription & 0.118 & 0.147 \\
 \bottomrule
 \end{tabular}
 """

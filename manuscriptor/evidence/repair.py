@@ -23,7 +23,8 @@ def run(*, build_dir: Path) -> int:
         return 0
 
     if not shutil.which("zotero-cli"):
-        print("ERROR: zotero-cli not found on PATH. Install it (see ~/.claude memory: reference_zotero_cli.md)")
+        print("ERROR: zotero-cli is not on PATH. This stage fetches each missing PDF "
+              "through it, so install zotero-cli and run the command again.")
         return 2
 
     print(f"attempting repair on {len(missing)} entries; this writes to your Zotero library")

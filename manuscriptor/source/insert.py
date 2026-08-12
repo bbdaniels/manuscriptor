@@ -480,9 +480,8 @@ def plan_citation(
         checks.append(Check(
             "zotero", False,
             "not in your library. It has no DOI, so it cannot be imported by one, and "
-            "nothing here ever writes to Zotero. Add it yourself -- "
-            "`~/.claude/skills/add-citation/scripts/citekit.py add`, which checks for "
-            "duplicates -- and the evidence pass will be able to quote it",
+            "nothing here ever writes to Zotero. Add it to Zotero yourself, checking "
+            "for duplicates as you go, and the evidence pass will be able to quote it",
             blocking=False))
         checks.append(Check(
             "fulltext", False,

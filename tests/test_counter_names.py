@@ -30,10 +30,10 @@ STEPPED = PREAMBLE + r"""\begin{document}
 
 An opening paragraph, here so the document has some prose in it before anything else.
 
-\refstepcounter{figure}\label{s:fig-sampling}
-\subsection*{Figure \thefigure. Facility sample and panel retention}
+\refstepcounter{figure}\label{s:fig-roster}
+\subsection*{Figure \thefigure. Team roster and district coverage}
 
-\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+\noindent\includegraphics[width=\textwidth]{roster.pdf}
 
 \refstepcounter{figure}\label{s:fig-visits}
 \subsection*{Figure \thefigure. Visits per facility, by round}
@@ -45,13 +45,13 @@ An opening paragraph, here so the document has some prose in it before anything 
 # The identical document with the numbers typed in, which is what main.tex does
 # and what the resolved names must be indistinguishable from.
 TYPED = STEPPED.replace(
-    "\\refstepcounter{figure}\\label{s:fig-sampling}\n", ""
+    "\\refstepcounter{figure}\\label{s:fig-roster}\n", ""
 ).replace(
     "\\refstepcounter{figure}\\label{s:fig-visits}\n", ""
-).replace("Figure \\thefigure. Facility", "Figure S1. Facility"
+).replace("Figure \\thefigure. Team", "Figure S1. Team"
           ).replace("Figure \\thefigure. Visits", "Figure S2. Visits")
 
-AUX = ("\\newlabel{s:fig-sampling}{{S1}{2}{}{figure.1}{}}\n"
+AUX = ("\\newlabel{s:fig-roster}{{S1}{2}{}{figure.1}{}}\n"
        "\\newlabel{s:fig-visits}{{S2}{3}{}{figure.2}{}}\n")
 
 
@@ -81,7 +81,7 @@ def heading_names(b) -> list[str]:
 def test_the_outline_rail_prints_the_number(tmp_path):
     b = served(tmp_path)
     texts = [e["text"] for e in b.blob["outline"]]
-    assert "Figure S1. Facility sample and panel retention" in texts, texts
+    assert "Figure S1. Team roster and district coverage" in texts, texts
     assert "Figure S2. Visits per facility, by round" in texts, texts
     assert not any("Figure ." in t for t in texts), texts
 
@@ -89,7 +89,7 @@ def test_the_outline_rail_prints_the_number(tmp_path):
 def test_the_block_labels_print_it_too(tmp_path):
     """The queue, the ticker and the inspector title all read this one string."""
     got = names(served(tmp_path))
-    assert "Figure S1. Facility sample and panel retention" in got, got
+    assert "Figure S1. Team roster and district coverage" in got, got
     assert "Figure S2. Visits per facility, by round" in got, got
     assert not any("\\thefigure" in n for n in got), got
 
@@ -121,7 +121,7 @@ def test_a_resolved_counter_names_a_block_as_a_typed_number_would(tmp_path):
     assert [e["text"] for e in stepped.blob["outline"]] == \
            [e["text"] for e in typed.blob["outline"]]
     assert exhibit_names(stepped) == exhibit_names(typed) == [
-        "Figure S1. Facility sample and panel retention",
+        "Figure S1. Team roster and district coverage",
         "Figure S2. Visits per facility, by round",
     ]
     assert heading_names(stepped) == heading_names(typed)
@@ -136,7 +136,7 @@ def test_a_manuscript_with_no_aux_is_named_exactly_as_it_was(tmp_path):
     """
     b = served(tmp_path, STEPPED, aux=None)
     texts = [e["text"] for e in b.blob["outline"]]
-    assert "Figure . Facility sample and panel retention" in texts, texts
+    assert "Figure . Team roster and district coverage" in texts, texts
     assert not any("??" in t for t in texts), texts
     assert not any("S1" in n or "??" in n for n in names(b)), names(b)
 
@@ -208,5 +208,5 @@ def test_a_typed_number_is_never_touched(tmp_path):
     """main.tex numbers its exhibits by hand, and a build must not rewrite it."""
     b = served(tmp_path, TYPED, aux=AUX)
     texts = [e["text"] for e in b.blob["outline"]]
-    assert "Figure S1. Facility sample and panel retention" in texts, texts
+    assert "Figure S1. Team roster and district coverage" in texts, texts
     assert (tmp_path / "main.tex").read_text(encoding="utf-8") == TYPED

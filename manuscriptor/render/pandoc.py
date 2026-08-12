@@ -61,6 +61,7 @@ output has not been rendered ... could invalidate M2", and it was real.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -756,7 +757,7 @@ def _invoke(source: str, *, cwd: Path, bib: Path | None) -> str:
     if bib is not None:
         cmd.append("--citeproc")
         cmd.append(f"--bibliography={Path(bib).resolve()}")
-        csl = _find_csl(cwd)
+        csl = find_csl(cwd)
         if csl is not None:
             cmd.append(f"--csl={csl}")
     result = subprocess.run(
@@ -812,9 +813,42 @@ def _strip_definitions(preamble: str) -> str:
         cursor = end
 
 
-def _find_csl(directory: Path) -> Path | None:
-    candidates = sorted(directory.glob("*.csl"))
-    if candidates:
-        return candidates[0]
-    global_csl = Path.home() / ".csl" / "econ.csl"
-    return global_csl if global_csl.exists() else None
+# Set this to a `.csl` file to use for manuscripts that carry no style of their
+# own. Read at CALL time, never at import, so a running process picks up a change
+# and a test can set it without reimporting the module.
+CSL_ENV = "MANUSCRIPTOR_CSL"
+
+# The default, which is where the author's own copy lives. The environment
+# variable overrides it; nothing else does.
+DEFAULT_CSL = "~/.csl/econ.csl"
+
+
+def find_csl(directory: Path) -> Path | None:
+    """The citation style for this manuscript, or None to let pandoc choose.
+
+    A `.csl` beside the manuscript wins, always: it is the style that document
+    was written for, and it is the one a coauthor cloning the repository gets.
+    `MANUSCRIPTOR_CSL` is the machine-wide answer for the manuscripts carrying no
+    style of their own. With neither, it looks at `~/.csl/econ.csl` and then
+    gives up, which leaves pandoc to pick its own default.
+
+    THIS IS THE ONLY PLACE THAT ANSWERS THE QUESTION, and a guard in
+    `tests/test_csl_choice.py` fails if anything re-implements it. There were
+    three copies on 2026-08-11 -- here, in `server/compile.py` and in
+    `evidence/parse.py` -- and they had already diverged: `parse.py` globbed
+    UNSORTED, so a directory holding two `.csl` files got a filesystem-order pick
+    there and a deterministic one in the other two. Same manuscript, same
+    question, two answers, and the wrong one is invisible because a citation
+    still renders. Adding the environment variable to one copy would have made a
+    third answer.
+    """
+    found = sorted(Path(directory).glob("*.csl"))
+    if found:
+        return found[0]
+    override = os.environ.get(CSL_ENV, "").strip()
+    if override:
+        chosen = Path(override).expanduser()
+        if chosen.exists():
+            return chosen
+    fallback = Path(DEFAULT_CSL).expanduser()
+    return fallback if fallback.exists() else None

@@ -193,15 +193,15 @@ def test_a_multiline_title_with_a_forced_break_is_one_block(tmp_path):
     # estonia-ecm and covet-india's supplement both break the title with `\\`.
     src = (
         "\\documentclass{wlscirep}\n"
-        "\\title{In Sickness and In Health: \\\\ Motivating Improved Care}\n"
+        "\\title{Care Closer to Home: \\\\ Neighborhood Care Teams in Marovia}\n"
         "\\begin{document}\n\\maketitle\n\nBody text.\n\\end{document}\n"
     )
     main = write(tmp_path, "main.tex", src)
     blocks = segment(flatten(main))
     assert blocks[0].source_text == (
-        "\\title{In Sickness and In Health: \\\\ Motivating Improved Care}"
+        "\\title{Care Closer to Home: \\\\ Neighborhood Care Teams in Marovia}"
     )
-    assert blocks_mod.label(blocks[0]) == "In Sickness and In Health: Motivating Improved Care"
+    assert blocks_mod.label(blocks[0]) == "Care Closer to Home: Neighborhood Care Teams in Marovia"
 
 
 def test_titlespacing_in_the_preamble_is_not_a_title(tmp_path):
@@ -733,10 +733,10 @@ def test_a_float_is_named_by_its_own_caption(tmp_path):
         "\\paragraph{Socioeconomic status.}\nProse under the run-in heading.\n\n"
         "\\input{outputs/tab_results}",
         outputs__tab_results=(
-            "\\begin{table}[h!]\n\\caption{Case generation: demographic variation.\n"
+            "\\begin{table}[h!]\n\\caption{Team assignment: household variation.\n"
             "Cells report means.}\n\\label{tab:one}\n\\begin{tabular}{ll}\nA & B \\\\\n"
             "\\end{tabular}\n\\end{table}\n\n"
-            "\\begin{table}[h!]\n\\caption{Demographic variation in conversations.}\n"
+            "\\begin{table}[h!]\n\\caption{Household variation in visit length.}\n"
             "\\begin{tabular}{ll}\nC & D \\\\\n\\end{tabular}\n\\end{table}\n"
         ),
     )
@@ -745,8 +745,8 @@ def test_a_float_is_named_by_its_own_caption(tmp_path):
     assert [b.parent_heading for b in tables] == \
         ["Socioeconomic status.", "Socioeconomic status."], "the heading is shared"
     assert [blocks_mod.label(b) for b in tables] == [
-        "Case generation: demographic variation.",
-        "Demographic variation in conversations.",
+        "Team assignment: household variation.",
+        "Household variation in visit length.",
     ]
 
 
@@ -795,7 +795,7 @@ def test_a_paragraph_label_drops_an_inline_input(tmp_path):
     blocks = seg(
         tmp_path,
         "Referrals reached \\input{exhibits/pval} of the sampled cases.",
-        exhibits__pval="0.096",
+        exhibits__pval="0.372",
     )
     (prose,) = [b for b in blocks if b.kind == "paragraph"]
     assert "\\input" in prose.source_text, "the directive must survive in source"
@@ -821,7 +821,7 @@ def test_a_paragraph_opening_with_an_input_is_named_by_its_words(tmp_path):
 def test_a_paragraph_label_is_stripped_the_way_a_caption_is(tmp_path):
     blocks = seg(
         tmp_path,
-        "Take-up reached $64$\\% \\citep{cook2010}, well above \\textbf{target}.",
+        "Take-up reached $64$\\% \\citep{doe2020example}, well above \\textbf{target}.",
     )
     (prose,) = [b for b in blocks if b.kind == "paragraph"]
     assert blocks_mod.label(prose) == "Take-up reached 64% , well above target."
@@ -843,13 +843,13 @@ def test_a_paragraph_label_drops_a_leading_latex_comment(tmp_path):
     with a shouted drafting note that prints nothing and named the block."""
     blocks = seg(
         tmp_path,
-        "\\section{Introduction}\n%CONTRACTING LITERATURE IS MISSING\n"
-        "The ECM program shifted care from an implicit bargain.",
+        "\\section{Introduction}\n%ROSTER CITATIONS STILL MISSING HERE\n"
+        "The NCT program moved routine visits into the neighborhood.",
     )
     (prose,) = [b for b in blocks if b.kind == "paragraph"]
     assert prose.source_text.startswith("%"), "the comment must be in the block"
     assert blocks_mod.label(prose) == \
-        "The ECM program shifted care from an implicit bargain."
+        "The NCT program moved routine visits into the neighborhood."
 
 
 def test_grouping_braces_go_even_when_a_command_survives_further_on(tmp_path):
@@ -941,10 +941,10 @@ def test_a_caption_is_read_to_its_own_closing_brace(tmp_path):
     """Nested braces are the normal case: a caption carries `\\textbf{}` and math."""
     (table,) = [b for b in seg(
         tmp_path,
-        "\\begin{table}\n\\caption{Effects on \\textbf{women} ($N = 216$).}\n"
+        "\\begin{table}\n\\caption{Effects on \\textbf{women} ($N = 184$).}\n"
         "\\begin{tabular}{l}\nA \\\\\n\\end{tabular}\n\\end{table}",
     ) if b.kind != "heading"]
-    assert table.caption == "Effects on women (N = 216)."
+    assert table.caption == "Effects on women (N = 184)."
 
 
 @pytest.mark.parametrize(
@@ -966,17 +966,18 @@ def test_a_caption_is_read_to_its_own_closing_brace(tmp_path):
         ("\\caption{A caption broken\nacross three\nlines.}", "A caption broken across three lines."),
         # Math keeps its content and loses its delimiters: a `$` on screen is
         # LaTeX leaking into a label, and dropping the group loses the sample.
-        ("\\caption{Case characteristics ($N = 216$).}", "Case characteristics (N = 216)."),
+        ("\\caption{Roster characteristics ($N = 184$).}", "Roster characteristics (N = 184)."),
         ("\\caption{Stars are $p$-values, 90\\% of cases.}", "Stars are p-values, 90% of cases."),
-        # Grouping braces print nothing, and estonia-ecm's third table showed
-        # them: `\\caption{{ECM Impact:} On hospitalizations}`.
-        ("\\caption{{ECM Impact:} On hospitalizations and mortality.}",
-         "ECM Impact: On hospitalizations and mortality."),
+        # Grouping braces print nothing. estonia-ecm's third table wrote its
+        # caption this way, a braced run-in bold label followed by the subject;
+        # the fixture below is that shape with invented wording.
+        ("\\caption{{NCT Impact:} On admissions and referral counts.}",
+         "NCT Impact: On admissions and referral counts."),
         # A citation is attribution, not a name, and cannot be rendered here.
-        # estonia-ecm's mediation flowchart, verbatim.
-        ("\\caption{Mediation analysis flowchart (based on \\citealt{rijnhart_mediation})}",
-         "Mediation analysis flowchart"),
-        ("\\caption{Replicating \\citep{cook2010} across arms.}", "Replicating across arms."),
+        # The shape estonia-ecm's mediation flowchart caption used.
+        ("\\caption{Referral pathway flowchart (based on \\citealt{roe2019sample})}",
+         "Referral pathway flowchart"),
+        ("\\caption{Replicating \\citep{doe2020example} across arms.}", "Replicating across arms."),
         # But not when a command is still holding one of them.
         ("\\caption{Effects, \\textcolor{red}{flagged}.}", "Effects, \\textcolor{red}{flagged}."),
         # An unpaired dollar must not eat the rest of the name.

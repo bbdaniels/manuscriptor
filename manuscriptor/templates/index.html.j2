@@ -33,17 +33,24 @@
   and it is what carries the `data-mx` anchors into real markup where the
   margin can address them.
 
-  The fallback below keeps the older `title` + `manuscript_html` call shape
-  (manuscriptor/evidence/render.py, the static export) rendering a readable
-  page instead of raising. It degrades to an empty inspector, which is honest:
-  that call has no block map to inspect.
+  `ms` IS REQUIRED, AND A CALLER THAT OMITS IT GETS AN EXCEPTION.
+
+  There used to be a `title` + `manuscript_html` fallback here, and it is what
+  hid this repo's longest-lived silent bug. `manuscriptor/evidence/render.py`
+  rendered this template with the evidence export's variables -- claims,
+  citation metadata, four counts -- none of which this file consumes. The
+  fallback caught `manuscript_html`, painted the prose, and produced a page that
+  looked broadly right while dropping the entire extracted payload. It never
+  raised, so for every release since 1af705e the export shipped with no
+  evidence in it, and the docstring here described that as degrading "honestly".
+
+  The export now renders `evidence.html.j2`, which is its own page with its own
+  inline CSS and script. The fallback is gone with it: a template that silently
+  accepts the wrong call shape is how the wrong call shape survives. Anything
+  rendering this file must pass the full `ms` blob, and will fail loudly on the
+  first access if it does not.
 -#}
-{%- set MS = ms if ms is defined and ms else {
-  'title': title | default('Manuscript', true),
-  'html': manuscript_html | default('', true),
-  'blocks': {}, 'outline': [], 'chats': {}, 'queue': [], 'ticker': [],
-  'todos': [], 'activity': [], 'stats': {}
-} -%}
+{%- set MS = ms -%}
 {%- set stats = MS.get('stats', {}) or {} -%}
 {%- set todos = MS.get('todos', []) or [] -%}
 <!DOCTYPE html>

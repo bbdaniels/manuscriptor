@@ -232,7 +232,7 @@ EXHIBIT_PAGES = r"""\documentclass{article}
 A paragraph of ordinary prose, running on long enough to be a real block of text.
 
 \newpage
-\subsection*{Fig. 1. Technical quality of TB care by study round and case}
+\subsection*{Fig. 1. Visit quality by pilot round and household type}
 
 A note under the first exhibit, long enough that pandoc gives it a paragraph.
 
@@ -961,12 +961,12 @@ FLOATED = r"""\documentclass{article}
 The first paragraph, which is above the exhibit and does not move.
 
 \begin{figure}[H]
-\caption{Facility sample and panel retention}
-\label{fig:sampling}
+\caption{Team roster and district coverage}
+\label{fig:roster}
 
-\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+\noindent\includegraphics[width=\textwidth]{roster.pdf}
 
-\noindent\textit{Note: bars show the number of facilities.}
+\noindent\textit{Note: each bar counts one district team.}
 \end{figure}
 
 The paragraph below the exhibit, which does not move either.
@@ -977,21 +977,21 @@ The last paragraph in the document, which must stay last.
 \end{document}
 """
 
-FREESTANDING = r"""\refstepcounter{figure}\label{fig:sampling}
-\subsection*{Figure \thefigure. Facility sample and panel retention}
+FREESTANDING = r"""\refstepcounter{figure}\label{fig:roster}
+\subsection*{Figure \thefigure. Team roster and district coverage}
 
-\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+\noindent\includegraphics[width=\textwidth]{roster.pdf}
 
-\noindent\textit{Note: bars show the number of facilities.}
+\noindent\textit{Note: each bar counts one district team.}
 """
 
 _FLOAT_BLOCK = r"""\begin{figure}[H]
-\caption{Facility sample and panel retention}
-\label{fig:sampling}
+\caption{Team roster and district coverage}
+\label{fig:roster}
 
-\noindent\includegraphics[width=\textwidth]{sampling.pdf}
+\noindent\includegraphics[width=\textwidth]{roster.pdf}
 
-\noindent\textit{Note: bars show the number of facilities.}
+\noindent\textit{Note: each bar counts one district team.}
 \end{figure}
 """
 
@@ -1019,9 +1019,9 @@ def test_a_float_converted_to_a_free_standing_exhibit_stays_where_it_was(tmp_pat
     above = text.index("above the exhibit")
     below = text.index("below the exhibit")
     last = text.index("must stay last")
-    caption = text.index("Facility sample and panel retention")
-    image = out["docHtml"].index("sampling.pdf")
-    note = text.index("bars show the number of facilities")
+    caption = text.index("Team roster and district coverage")
+    image = out["docHtml"].index("roster.pdf")
+    note = text.index("each bar counts one district team")
 
     assert above < caption < below, \
         "the heading did not land between the paragraphs it sits between"
@@ -1039,11 +1039,11 @@ def test_the_converted_exhibit_prints_its_number_on_the_open_page(tmp_path):
     `\\refstepcounter` carried, which is what `render/refs.py` is for.
     """
     (tmp_path / "main.aux").write_text(
-        "\\newlabel{fig:sampling}{{S1}{6}{}{figure.1}{}}\n", encoding="utf-8")
+        "\\newlabel{fig:roster}{{S1}{6}{}{figure.1}{}}\n", encoding="utf-8")
     session, page = served(tmp_path, FLOATED)
     rewrite(tmp_path, _FLOAT_BLOCK, FREESTANDING)
     frames = pushed(session)
 
     out = pagedriver.drive(page, frames, tmp_path=tmp_path)
     text = " ".join(_doc_text(out).split())
-    assert "Figure S1. Facility sample" in text, text[:400]
+    assert "Figure S1. Team roster" in text, text[:400]

@@ -34,7 +34,7 @@ from manuscriptor.source.flatten import flatten
 # ---------------------------------------------------------------- a manuscript
 
 P1 = ("The treatment raised screening rates substantially across every one of the "
-      "three cohorts we were able to follow to the end of the study period.")
+      "three cohorts we were able to follow through to the closing survey.")
 P2 = ("We interpret this as evidence that the contract itself, rather than the "
       "payment attached to it, is what drove the change in provider behaviour.")
 P3 = ("A third paragraph, written out at length so that the neighbour context has "
@@ -713,10 +713,10 @@ def _figure(spec: str, asset: str, caption: str) -> str:
     ])
 
 
-COEF = _figure("[h!]", "fig3_coef_plot.pdf",
-               "Demographic effects by measurement channel. Points are OLS coefficients.")
-ITEMS = _figure("[!htb]", "fig2_gender_items.pdf",
-                "Nine risk-factor items, men against women, in both role-play channels.")
+COEF = _figure("[h!]", "fig3_uptake_plot.pdf",
+               "Uptake by neighborhood team, with district means. Bars are 95 percent intervals.")
+ITEMS = _figure("[!htb]", "fig2_roster_items.pdf",
+                "Seven roster items, morning against evening rounds, in both pilot districts.")
 
 TWO_FIGURES = "\n\n".join([
     r"\documentclass{article}", r"\begin{document}", r"\section{Results}", P1,
@@ -728,9 +728,9 @@ def _figures(tmp_path: Path):
     d, blocks = manuscript(tmp_path, TWO_FIGURES)
     figs = {}
     for b in blocks:
-        if "fig3_coef_plot" in b.source_text:
+        if "fig3_uptake_plot" in b.source_text:
             figs["coef"] = b
-        elif "fig2_gender_items" in b.source_text:
+        elif "fig2_roster_items" in b.source_text:
             figs["items"] = b
     assert len(figs) == 2, "the fixture must give two separately addressable figures"
     return blocks, figs
@@ -749,8 +749,8 @@ def test_a_chat_on_a_deleted_exhibit_does_not_land_on_a_surviving_one(tmp_path):
     from manuscriptor.server import build as build_mod
 
     blocks, figs = _figures(tmp_path)
-    retired = _figure("[h!]", "fig3_heatmap.pdf",
-                      "One demographic factor per panel, all three measurement channels.")
+    retired = _figure("[h!]", "fig3_district_grid.pdf",
+                      "One district per panel, all four quarters of the pilot year.")
     quote = build_mod.flatten_ws(retired)[:120]
 
     # Precondition: the truncated key really does single out the wrong figure.
@@ -767,7 +767,7 @@ def test_a_renamed_asset_still_finds_its_own_exhibit(tmp_path):
     from manuscriptor.server import build as build_mod
 
     blocks, figs = _figures(tmp_path)
-    old_name = COEF.replace("fig3_coef_plot.pdf", "fig2_coef_plot.pdf")
+    old_name = COEF.replace("fig3_uptake_plot.pdf", "fig2_uptake_plot.pdf")
     quote = build_mod.flatten_ws(old_name)[:120]
     assert build_mod.match_by_quote(quote, blocks) == figs["coef"].id
 
@@ -791,8 +791,8 @@ def test_a_verbatim_match_is_not_lost_behind_paragraphs_that_merely_resemble_it(
     real paragraph sorts out of the window. The precondition is asserted below
     rather than assumed, or this test could quietly stop testing anything.
     """
-    quoted = ("the estimate for the pooled sample is reported in the table below with the "
-              "standard errors clustered at the level of the facility")
+    quoted = ("the estimate for the pooled sample appears in the table below with the "
+              "standard errors clustered by neighborhood care team")
     words = quoted.split()
     # Rotated, never by a whole turn: a decoy that came back to the original
     # order would BE the quote, and the test would be measuring a tie.
@@ -1052,7 +1052,7 @@ def test_letters_in_the_right_order_are_not_a_match():
     through the second assertion while proving nothing.
     """
     needle = importer.norm(
-        "changes in the utilization of care services at locations other than the ECM provider")
+        "changes in the use of clinic services at sites other than the assigned NCT team")
     scattered = " ".join(needle.replace(" ", ""))
 
     ungated = sum(b.size for b in difflib.SequenceMatcher(
@@ -1061,8 +1061,8 @@ def test_letters_in_the_right_order_are_not_a_match():
     assert importer.containment(scattered, needle) < 0.05
 
     prose = importer.norm(
-        "The second and third panels investigate changes in the utilization of care services "
-        "at locations other than the ECM provider, which we report separately.")
+        "The second and third panels examine changes in the use of clinic services "
+        "at sites other than the assigned NCT team, which we report separately.")
     assert importer.containment(prose, needle) > importer.STRONG
 
 

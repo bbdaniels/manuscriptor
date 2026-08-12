@@ -5,7 +5,7 @@ A guide for the person writing the paper, not the person maintaining the tool.
 ## Starting
 
 ```bash
-manuscriptor serve ~/Projects/estonia-ecm/latex
+manuscriptor serve examples/demo-paper
 ```
 
 That renders the manuscript, opens it, **and runs the agent**: a Claude Code
@@ -28,10 +28,11 @@ It implies `--no-agent`. With `--no-agent`, comments queue until any Claude
 session in the repo runs "proc the comments". On a machine without the
 `claude` CLI, serve degrades to that mode with a warning.
 
-`~/Projects/manuscriptor-demo` is a copy of estonia-ecm kept as its own git
-repository. Break it however you like and put it back with
-`git -C ~/Projects/manuscriptor-demo checkout .`. Use it to try anything you
-have not tried before.
+`examples/demo-paper` is a small invented paper kept in this repository for
+exactly this purpose. Break it however you like and put it back with
+`git checkout examples/demo-paper`. Use it to try anything you have not tried
+before. For a manuscript you care about, keep a scratch copy under its own git
+repository and point `serve` at the copy.
 
 ## Several documents in one directory
 
@@ -272,7 +273,7 @@ and a session drains them exactly like your own.
 ## The app
 
 ```bash
-cd ~/Projects/manuscriptor/shell && ./build.sh
+cd shell && ./build.sh
 ```
 
 Produces `shell/build/Manuscriptor.app`. Move it to `/Applications` if you want
