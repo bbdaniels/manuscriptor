@@ -47,9 +47,10 @@ examples/demo-paper` puts it back.
 
 The honest limits, all documented in the guide: value descriptions depend on how
 your analysis code names its
-outputs (96 of 128 fragments on qutub-india, 66 of them saying more than where
-the number came from); sixteen blocks in estonia-ecm cannot be anchored; and
-qutub-india does not render at all, because it does not compile.
+outputs (96 of 128 fragments on one test manuscript, 66 of them saying more than
+where the number came from); sixteen blocks in the reference manuscript cannot
+be anchored; and one test manuscript does not render at all, because it does not
+compile.
 
 The thing no amount of testing substitutes for is an afternoon of real writing
 in it.
