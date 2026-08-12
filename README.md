@@ -4,6 +4,8 @@ A live manuscript editor. LaTeX renders to a page where every block knows which 
 
 Replaces the loop of compiling to PDF, marking up the PDF, and typing the markup back into the source.
 
+**[Interface demo](https://bbdaniels.github.io/manuscriptor/interface-mockup.html)**, no install needed. Every word in it is invented.
+
 ## What it does
 
 The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edit it, and watch the change land on disk and redraw the page. Verified in a browser against estonia-ecm, at 368 anchored blocks.
@@ -108,12 +110,15 @@ Client features register through `MSViewer.extend` from their own file under
 `server/producers.py` answers one question: is this `.tex` file written by
 analysis code? A producer scan is definitive and names the owning script; a
 content test covers the files no scan can claim, because manuscripts name their
-outputs inconsistently (estonia-ecm by basename, qutub-india by concatenation).
-Nothing else may decide it from a path. Guessing "generated means not the root
-file" once marked 74% of the reference manuscript uneditable.
+outputs inconsistently. Nothing else may decide it from a path; the reasoning
+is recorded in `CLAUDE.md`.
 
 ## Relationship to cite-evidence
 
 The `cite-evidence` tool is absorbed here rather than depended on, because the flattening pass with a source map is strictly better than its parse stage and both tools want it. Two repos maintaining two LaTeX parsers that must agree is a split that rots quietly and bites mid-revision.
 
 Its `cite-evidence` console script is deliberately not claimed here, so an existing install of that tool keeps working beside this one.
+
+## License and citation
+
+MIT. To cite the software, use the metadata in [CITATION.cff](CITATION.cff); a versioned DOI accompanies each release.
