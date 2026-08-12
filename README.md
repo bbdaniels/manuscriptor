@@ -1,5 +1,7 @@
 # manuscriptor
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.21896241.svg)](https://doi.org/10.5281/zenodo.21896241)
+
 A live manuscript editor. LaTeX renders to a page where every block knows which bytes of which `.tex` file it came from, so you can click a paragraph, read its real source, edit it yourself or leave an instruction, and watch the change land without a rebuild step.
 
 Replaces the loop of compiling to PDF, marking up the PDF, and typing the markup back into the source.
