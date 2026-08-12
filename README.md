@@ -8,22 +8,13 @@ Replaces the loop of compiling to PDF, marking up the PDF, and typing the markup
 
 **[Interface demo](https://bbdaniels.github.io/manuscriptor/demo/)**, no install needed. A synthetic paper, rendered by the real renderer, carrying a real agent session: three comments, two landed edits and an answer about a citation. Every word in it is invented.
 
-## What it does
+## Running it
 
-The loop closes. Serve a manuscript, click a paragraph, read its real LaTeX, edit it, and watch the change land on disk and redraw the page. Verified in a browser against estonia-ecm, at 368 anchored blocks.
+The loop closes. Open a manuscript, click a paragraph, read its real LaTeX, edit it, and watch the change land on disk and redraw the page. Verified in a browser against estonia-ecm, at 368 anchored blocks. Two ways in:
 
-| | |
-|---|---|
-| `manuscriptor serve` | the live editor |
-| `manuscriptor build` | a static anchored page |
-| `manuscriptor blocks` | the block table |
-| `manuscriptor evidence` | the citation evidence pipeline |
-| `manuscriptor repair` / `clean` | fetch the PDFs evidence could not find, and empty the cache |
-| `manuscriptor proc` | the comment queue a drain reads |
-| `manuscriptor compile` | `--pdf`, and `--docx` if the two external pieces below are installed |
-| `manuscriptor import` | reviewer PDFs and tracked changes |
-| `manuscriptor state` | records what happened |
-| `Manuscriptor.app` | a standalone shell, built by `shell/build.sh` |
+**Manuscriptor.app** is a native Mac application: one window and one server per manuscript, so double-clicking a `.tex` file opens the paper and quitting cleans up. Build it once with `bash shell/build.sh`. The server is the product and the app is a client, which means any number of clients (the app, a browser tab, a devtools session) can attach to the same page at once.
+
+**The terminal** runs the same engine with one command:
 
 ```bash
 manuscriptor serve examples/demo-paper                # the example in this repo, edit freely
@@ -79,6 +70,20 @@ Requires `pandoc` and `pdftotext` (poppler) on PATH, the `claude` CLI for the de
 - **A CSL style file**, which decides how the bibliography reads. A `.csl` beside the manuscript is used first; otherwise set `MANUSCRIPTOR_CSL` to one, or put one at `~/.csl/econ.csl`.
 
 If either is missing, `--docx` refuses and names what it could not find. `--pdf` is unaffected.
+
+## Command reference
+
+| | |
+|---|---|
+| `manuscriptor serve` | the live editor |
+| `manuscriptor build` | a static anchored page |
+| `manuscriptor blocks` | the block table |
+| `manuscriptor evidence` | the citation evidence pipeline |
+| `manuscriptor repair` / `clean` | fetch the PDFs evidence could not find, and empty the cache |
+| `manuscriptor proc` | the comment queue a drain reads |
+| `manuscriptor compile` | `--pdf`, and `--docx` with the two external pieces above |
+| `manuscriptor import` | reviewer PDFs and tracked changes |
+| `manuscriptor state` | records what happened |
 
 ## How it fits together
 
