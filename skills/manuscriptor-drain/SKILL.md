@@ -245,6 +245,15 @@ floats, so where the float sits in the source is where the reader meets it. A
 figure left at the end of a subsection reads as unrelated to the sentence that
 introduced it, fifty lines up.
 
+This is *Mode 1* of the two exhibit-flow modes defined in the `write` skill, and
+Manuscriptor is the case that forces it. The other is *Mode 2*, all exhibits at
+the end with every table first and then every figure, which is what most journals
+want at submission. **Never mix them** — in particular, "all at the end in
+reference order", interleaving Table 1, Fig. 1, Table 2, Fig. 2, is not a third
+mode and is always a mistake. If a manuscript you are draining is in Mode 2
+because it is being prepared for submission, leave it in Mode 2 rather than
+dragging individual floats inline; the modes are document-wide, not per-exhibit.
+
 **A file name matches the number the exhibit carries.** `fig3_heatmap.pdf` as
 Figure 2 is a trap for whoever reads the producing script next. Renumbering an
 exhibit means renaming its output, its `\includegraphics`, and the line in the
@@ -261,9 +270,29 @@ or a title that draws the conclusion ("Bias appears only in role-play"). Titles
 name the variables; axis labels name the units and the scale. This is a forbidden
 pattern in every automated exhibit, not a preference to weigh against clarity.
 
-**Notes belong in the caption**, where the renderer keeps them with the exhibit.
-A note written as a separate paragraph after `\end{tabular}` is detached from its
-table the moment anything moves.
+**Notes belong in the caption. NEVER draw a note on the canvas.** This is the
+same rule as the one above and it is just as absolute: a figure script must not
+`fig.text()` a sample size, a clustering statement, an interval construction, a
+"rounds 2014--19 carry the standard case only" clarification, or any other
+sentence onto the image. It goes in the generated caption note the script writes
+beside the exhibit -- and it goes there *computed*, never typed. Observed
+2026-08-03, twice in one figure: the same script drew two explanatory paragraphs
+under its axes, and the author had to ask for each of them separately.
+
+A note on the canvas is worse than misplaced. It cannot be edited without
+regenerating the figure, it is raster text a copy-editor cannot touch, it forces
+the plot area to shrink around it, and it will not reflow when the journal sets
+the figure at a different width. The caption is where the renderer keeps a note
+with its exhibit; the canvas is where it goes stale.
+
+The same applies to a note written as a separate paragraph after `\end{tabular}`,
+which is detached from its table the moment anything moves.
+
+**When you remove one, delete the machinery with it.** The wrapper, the width
+and clearance asserts that existed only to police it, the font-size entry, and
+the bottom margin that was sized to hold it -- all dead. Retune the margin so the
+figure does not ship with a band of empty space, and leave no disabled code path
+or flag behind for someone to switch back on.
 
 **Never hand-edit a generated exhibit.** Edit the script that writes it and
 regenerate; the file itself refuses edits for the reason the standing rule gives.

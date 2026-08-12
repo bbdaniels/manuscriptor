@@ -155,7 +155,7 @@ def test_repair_invokes_the_item_subcommand(tmp_path, monkeypatch):
         def __init__(self, stdout):
             self.stdout = stdout
 
-    answers = ["OK: PDF attached", "NOT_FOUND: no PDF available"]
+    answers = ["FOUND: ATT123", "NOT_FOUND: no PDF available"]
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zotero-cli")
     monkeypatch.setattr(time, "sleep", lambda _: None)
     monkeypatch.setattr(sp, "run",
@@ -167,31 +167,110 @@ def test_repair_invokes_the_item_subcommand(tmp_path, monkeypatch):
     assert calls[0][3] == "KEY123"
 
 
-def test_repair_reports_not_found_as_not_found(tmp_path, monkeypatch, capsys):
-    # `zotero-cli item find-pdf` exits 0 for NOT_FOUND too, so exit status
-    # alone over-reports: the first live run printed "ok" for lookups that
-    # found nothing. The verdict is the first word of stdout.
+class _FakeRun:
+    """One `zotero-cli item find-pdf` invocation's result."""
+    stderr = ""
+
+    def __init__(self, stdout, returncode=0):
+        self.stdout = stdout
+        self.returncode = returncode
+
+
+def _repair_over(tmp_path, monkeypatch, entries, answers):
     from manuscriptor.evidence import repair
     import shutil
     import subprocess as sp
     import time
 
-    (tmp_path / "missing.json").write_text(json.dumps(
-        [{"cite_key": "a", "zotero_key": "K1"},
-         {"cite_key": "b", "zotero_key": "K2"}]), encoding="utf-8")
-
-    class Done:
-        returncode = 0
-        stderr = ""
-
-        def __init__(self, stdout):
-            self.stdout = stdout
-
-    answers = iter(["OK: attached", "NOT_FOUND: nothing open-access"])
+    (tmp_path / "missing.json").write_text(json.dumps(entries), encoding="utf-8")
+    it = iter(answers)
     monkeypatch.setattr(shutil, "which", lambda _: "/usr/bin/zotero-cli")
     monkeypatch.setattr(time, "sleep", lambda _: None)
-    monkeypatch.setattr(sp, "run", lambda argv, **kw: Done(next(answers)))
-    repair.run(build_dir=tmp_path)
+    monkeypatch.setattr(sp, "run", lambda argv, **kw: next(it))
+    return repair.run(build_dir=tmp_path)
+
+
+def test_repair_counts_each_verdict_the_bridge_can_return(tmp_path, monkeypatch, capsys):
+    # The success token is FOUND, not OK. `find_pdf` in the zotero-cli bridge
+    # (cli_anything/zotero/core/jsbridge.py:300) returns FOUND/NOT_FOUND, and
+    # its timeout re-check returns TIMEOUT; only the sibling `attach_pdf`
+    # returns 'OK: '. Matching OK meant a successful fetch was printed as
+    # FAILED and n_fixed could never leave zero.
+    rc = _repair_over(
+        tmp_path, monkeypatch,
+        [{"cite_key": "a", "zotero_key": "K1"},
+         {"cite_key": "b", "zotero_key": "K2"},
+         {"cite_key": "c", "zotero_key": "K3"},
+         {"cite_key": "d", "zotero_key": "K4"},
+         {"cite_key": "e"}],
+        [_FakeRun("FOUND: ATT1"),
+         _FakeRun("NOT_FOUND: nothing open-access"),
+         _FakeRun("ERROR: item K3 not found"),
+         _FakeRun("TIMEOUT: PDF lookup timed out after 30s")])
     out = capsys.readouterr().out
-    assert "fixed: 1   failed: 1" in out
-    assert "NOT_FOUND" in out
+    assert "fixed: 1" in out
+    assert "no open-access copy: 1" in out
+    assert "errors: 2" in out                       # ERROR and TIMEOUT both
+    assert "cannot be fetched (no Zotero item): 1" in out
+    assert "ERROR (ERROR: item K3 not found)" in out
+    assert "TIMEOUT" in out
+    assert "FAILED" not in out                      # none of these is unparsed
+    assert rc == 0                                  # one fetch succeeded
+
+
+def test_repair_distinguishes_a_bridge_fault_from_an_absent_copy(tmp_path, monkeypatch, capsys):
+    # A run where the bridge itself failed must not read as "no open-access
+    # copy" — the author's action differs (retry vs. accept).
+    _repair_over(tmp_path, monkeypatch,
+                 [{"cite_key": "a", "zotero_key": "K1"}],
+                 [_FakeRun("", returncode=1)])
+    out = capsys.readouterr().out
+    assert "no open-access copy: 0" in out
+    assert "errors: 1" in out
+
+
+def test_repair_that_fetched_nothing_returns_nonzero(tmp_path, monkeypatch, capsys):
+    # Zero fetched means nothing downstream can have changed, so the server
+    # must not announce a re-run of the evidence pass (app.py then_rerun
+    # skips it on a non-zero rc).
+    rc = _repair_over(tmp_path, monkeypatch,
+                      [{"cite_key": "a", "zotero_key": "K1"}],
+                      [_FakeRun("NOT_FOUND: nothing open-access")])
+    assert rc == 1
+    assert "nothing was fetched" in capsys.readouterr().out
+
+
+def test_repair_never_attemptable_entries_are_not_failures(tmp_path, monkeypatch, capsys):
+    # gelman2014beyond, world2021engaging and world2022tb have neither a DOI
+    # nor a Zotero key; no lookup is possible, which is not the same as one
+    # that was tried and failed.
+    _repair_over(tmp_path, monkeypatch,
+                 [{"cite_key": "gelman2014beyond"},
+                  {"cite_key": "world2021engaging"},
+                  {"cite_key": "world2022tb"}],
+                 [])
+    out = capsys.readouterr().out
+    assert "cannot be fetched (no Zotero item): 3" in out
+    assert "errors: 0" in out
+    assert "no open-access copy: 0" in out
+
+
+def test_repair_never_passes_a_doi_as_the_find_pdf_target(tmp_path, monkeypatch, capsys):
+    # `item find-pdf` attaches to an item, so it takes a Zotero item key and
+    # nothing else; a DOI returns "ERROR: item 10.x/y not found" with exit 0,
+    # so the failure is invisible in the exit status. The old target expression
+    # was `zot_key or doi`, which sent every keyless entry down that path.
+    #
+    # Nor does repair re-resolve the DOI: resolve.py already ran that lookup
+    # (rung 2, search_by_doi) before writing missing.json, so a DOI arriving
+    # here without a key means the search already came back empty.
+    # An empty answers list makes any subprocess call raise StopIteration, so
+    # a clean run is itself the proof that no lookup was attempted.
+    rc = _repair_over(tmp_path, monkeypatch,
+                      [{"cite_key": "onlydoi", "doi": "10.1/x"}],
+                      [])
+    out = capsys.readouterr().out
+    assert "cannot be fetched (no Zotero item): 1" in out
+    assert "errors: 0" in out
+    assert "10.1/x" not in out                       # never used as a target
+    assert rc == 1                                   # nothing was fetched
