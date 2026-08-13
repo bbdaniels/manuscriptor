@@ -739,7 +739,13 @@ def cmd_drafts(args: argparse.Namespace) -> int:
                 f"be spliced. Its text is intact: use --print {block_id} to read it.",
                 file=sys.stderr)
             return 1
-        smod.splice(block, text, root=root)
+        # A held draft is the editor box's own text, so it carries the same
+        # hazard the box does: the passage in it may have become several blocks
+        # since. `following` is how splice replaces the run rather than the head
+        # of it and leaving the rest standing underneath.
+        here = [b for b in build.blocks if b.file == block.file]
+        smod.splice(block, text, root=root,
+                    following=tuple(here[here.index(block) + 1:]))
         for (doc, b) in list(held):
             if b == block_id:
                 dmod.drop(store, doc=doc, block=b)

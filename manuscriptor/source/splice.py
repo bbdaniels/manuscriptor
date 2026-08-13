@@ -21,6 +21,7 @@ between identical candidates.
 """
 from __future__ import annotations
 
+import difflib
 import fcntl
 import hashlib
 import os
@@ -73,12 +74,19 @@ def _file_lock(path: Path) -> threading.Lock:
         return lock
 
 
-def splice(block, new_source: str, *, root, holder: str | None = None) -> None:
-    """Replace exactly `block`'s byte range in `block.file`.
+def splice(block, new_source: str, *, root, holder: str | None = None,
+           following=()) -> None:
+    """Replace `block`'s byte range in `block.file`, and what it still carries.
 
     `root` is the manuscript directory; a block claiming to live outside it is
     refused rather than followed. `holder` names the writer, and only matters
     when the block is locked.
+
+    `following` is the blocks after this one in the same file, in document
+    order, and it is what an EDITOR BOX passes: see `_carried` for why a save
+    sometimes owns more bytes than its block. A caller that hands one block and
+    nothing else -- every agent write does -- replaces exactly that block, which
+    is the invariant the whole design rests on and is not touched here.
     """
     if not block.editable:
         raise NotEditable(
@@ -127,7 +135,9 @@ def splice(block, new_source: str, *, root, holder: str | None = None) -> None:
                 "something else rewrote it first"
             )
 
-        updated = text[:at] + new_source + text[at + len(block.source_text) :]
+        end = at + len(block.source_text)
+        end += _carried(text, end, new_source, following)
+        updated = text[:at] + new_source + text[end:]
         if crlf:
             updated = updated.replace("\n", "\r\n")
         _atomic_write(path, updated.encode("utf-8"))
@@ -189,6 +199,87 @@ def _across_processes(path: Path):
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
             finally:
                 fh.close()
+
+
+_CARRY_RATIO = 0.9
+_CARRY_MIN = 60
+
+
+def _carried(text: str, end: int, new_source: str, following) -> int:
+    """How many bytes past the block this save also replaces. Usually none.
+
+    A BLOCK IS THE UNIT OF A WRITE. AN EDITOR BOX IS NOT, and the difference is
+    what quadruplicated a passage of qutub-ayush on 2026-08-13. The author typed
+    four paragraphs into one paragraph's box and then formatted them, a blank
+    line and a save at a time. Every save split his block in two. The page
+    renames the box onto the first half -- correctly, and it may not take his
+    text away from him while his cursor is in it -- so from the second save
+    onward the box held a passage the FILE was keeping as several blocks. Each
+    save wrote all of it over the first of them and left the others standing
+    below, one duplicate per save, each with one blank line more than the last.
+    Four copies, in the manuscript, with the server answering `saved` every
+    time.
+
+    Refusing the save was the alternative and it is not one: the author would
+    have been locked out of his own paragraph with no way to see why, and his
+    formatting is not a mistake. So the save keeps what it always kept -- his
+    text, written once -- and the range grows to cover the blocks that text is
+    still carrying.
+
+    Carrying is claimed only for what the save can be SEEN to still hold, and
+    only forward, block by block, stopping at the first one it does not:
+
+      * the blocks must be next in the file, with nothing but the separator
+        between them, or this is not the passage's own tail at all;
+      * `new_source` must END with them, because that is what "the box still
+        holds this paragraph" means. Exactly, when he only added blank lines;
+      * or nearly, when he was also typing in the tail, which is the same
+        paragraph edited rather than a new one. A high ratio and a length floor,
+        because a short block is mostly separator and a `\\clearpage` he typed
+        himself must not eat the `\\clearpage` already there.
+
+    A paragraph he genuinely ADDED matches nothing below it, carries nothing,
+    and is inserted -- which is the other half of the rule and the reason this
+    compares rather than counts.
+    """
+    grew = 0
+    cursor = end
+    for blk in following or ():
+        src = getattr(blk, "source_text", "")
+        if not src:
+            break
+        at = text.find(src, cursor)
+        if at < 0 or text[cursor:at].strip():
+            break                          # not the next thing in the file
+        cursor = at + len(src)
+        # Nothing longer than the save itself can be inside the save. This is
+        # also what ends the walk on a file whose every block is contiguous with
+        # the last, which is most files.
+        if cursor - end > len(new_source):
+            break
+        # The run accumulates, so the question is asked of the whole of it: a
+        # save carrying two paragraphs ends on the SECOND, and asking whether it
+        # ends on the first answers no. A run that does not match is not the end
+        # of the walk for that reason -- only a longer one can match.
+        #
+        # Asked in two parts, and the split is what keeps the fuzzy half honest.
+        # Everything before the last block must be there EXACTLY, which is what
+        # says the save reaches this far and pins where its last paragraph
+        # begins; the last block alone may have been typed in since. Compared as
+        # one string instead, a run of five identical paragraphs and one wrong
+        # one still scores above any ratio worth having, and the save eats the
+        # section heading below it.
+        lead, last = text[end:at], src
+        cut = new_source.rfind(lead)
+        if cut < 0:
+            continue
+        cand = new_source[cut + len(lead):]
+        if cand == last or (
+                len(last) >= _CARRY_MIN
+                and difflib.SequenceMatcher(None, cand, last, autojunk=False)
+                .ratio() >= _CARRY_RATIO):
+            grew = cursor - end
+    return grew
 
 
 def _locate(text: str, block) -> int | None:

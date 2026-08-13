@@ -722,7 +722,7 @@ class Session:
         if block is None:
             return {"type": "held", "block": block_id, "reason": "unknown block"}
         try:
-            block = await asyncio.to_thread(self._current_block, block)
+            block, following = await asyncio.to_thread(self._current_block, block)
         except Exception as exc:                    # a manuscript mid-edit
             return {"type": "held", "block": block_id, "reason": str(exc)[:400]}
         if block is None:
@@ -731,7 +731,8 @@ class Session:
                               "nothing to write it over"}
         try:
             await asyncio.to_thread(
-                splice_mod.splice, block, source, root=self.root, holder=HOLDER
+                splice_mod.splice, block, source, root=self.root, holder=HOLDER,
+                following=following,
             )
         except splice_mod.NotEditable as exc:
             return {"type": "held", "block": block_id, "reason": str(exc)}
@@ -744,7 +745,12 @@ class Session:
         return {"type": "saved", "block": block_id, "at": chat.now()}
 
     def _current_block(self, block):
-        """`block` as the files on disk have it now, or None if it is gone.
+        """`block` as the files on disk have it now, and what follows it there.
+
+        The second half is for `splice`: an editor box can hold a passage the
+        file has since split into several blocks, and only the blocks AFTER the
+        target, in this same fresh cut, can say whether the save is still
+        carrying them. `(None, ())` when the paragraph is gone.
 
         Blocks only, not a build: a save needs to know where a paragraph starts
         and ends, and paying pandoc for that would put a second of rendering in
@@ -773,16 +779,20 @@ class Session:
 
         fresh = build_mod.source_blocks(self.root, self.build.main_tex)
         here = tuple(b for b in fresh if b.file == block.file)
+        def with_tail(b):
+            return b, tuple(here[here.index(b) + 1:])
+
         # Untouched since the build: same name, same words, same file.
         for b in here:
             if b.id == block.id and b.source_text == block.source_text:
-                return b
+                return with_tail(b)
         # Otherwise it was rewritten -- by this page's own last save, most
         # likely -- and an edit renames its block, so follow it through the one
         # thing that maps ids across two cuts.
         was = tuple(b for b in self.build.blocks if b.file == block.file)
         moved = _blocks.rematch(was, here).get(block.id)
-        return next((b for b in here if b.id == moved), None) if moved else None
+        hit = next((b for b in here if b.id == moved), None) if moved else None
+        return with_tail(hit) if hit is not None else (None, ())
 
     def keep_draft(self, block_id: str, source: str) -> dict:
         """Hold unsaved text where a crash cannot take it.
