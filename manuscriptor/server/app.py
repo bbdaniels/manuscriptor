@@ -25,6 +25,7 @@ import hashlib
 import json
 import mimetypes
 import re
+import traceback
 import webbrowser
 from importlib import resources
 from pathlib import Path
@@ -121,6 +122,11 @@ class Session:
         # nothing staged them here, which is a different fact and a different
         # instruction. See `note_asset_miss`.
         self.unstageable_assets: list[str] = []
+        # Tasks started by `spawn` and awaited by nobody. Held because asyncio
+        # keeps only a weak reference to a running task, so an untracked one can
+        # be collected mid-run and simply stop -- the same reason
+        # `compile._RUNNING` exists.
+        self._spawned: set = set()
         self.rebuild()
         self.seen_derived = self._derived()
         # A page is BORN holding the history, the same way it is born holding
@@ -303,6 +309,62 @@ class Session:
             except Exception:
                 pass
 
+    def spawn(self, coro, what: str, *, loop=None):
+        """Start a coroutine nobody will await, and report it if it fails.
+
+        THE ONE LAUNCHER FOR EVERYTHING THE WATCHERS START. `run_coroutine_
+        threadsafe` hands back a `concurrent.futures.Future`, and unlike an
+        `asyncio` one it does not log the exception it is left holding when
+        nobody retrieves it -- so for as long as the watcher called it bare,
+        every failure in a rebuild, an assets refresh or a history push was
+        discarded in complete silence. The observed shape on qutub-ayush: the
+        author deleted a word, the splice reached disk, the server rebuilt, its
+        own page said the new text, the websocket stayed open, and the paragraph
+        on screen never changed. Nothing was written to any log, because there
+        was nothing anywhere whose job was to write it.
+
+        Callers hand a coroutine and the words for what it was doing, and that
+        is the whole contract; `fail` decides what saying so looks like.
+        """
+        import concurrent.futures
+
+        if loop is None:
+            fut = asyncio.get_running_loop().create_task(coro)
+            self._spawned.add(fut)
+            fut.add_done_callback(self._spawned.discard)
+        else:
+            fut = asyncio.run_coroutine_threadsafe(coro, loop)
+
+        def report(f):
+            try:
+                exc = f.exception()
+            except (asyncio.CancelledError, concurrent.futures.CancelledError):
+                return
+            if exc is not None:
+                # Back onto the loop: `fail` broadcasts, and this callback may
+                # be running on the watcher's own thread.
+                asyncio.run_coroutine_threadsafe(
+                    self.fail(what, exc), loop or asyncio.get_event_loop())
+
+        fut.add_done_callback(report)
+        return fut
+
+    async def fail(self, what: str, exc: BaseException) -> None:
+        """Say out loud that something the page was waiting for did not happen.
+
+        BOTH CHANNELS, EVERY TIME. The page gets a frame because the author is
+        looking at the page, and stderr gets the traceback because the author
+        is not the one who can fix it. Reporting to only one of them is how a
+        redraw that never arrived came to look exactly like a redraw that was
+        never needed.
+        """
+        print(f"manuscriptor: {what}: {exc}", flush=True)
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+        try:
+            await self.broadcast({"type": "error", "message": f"{what}: {exc}"[:400]})
+        except Exception:                       # the socket is not the point
+            pass
+
     async def broadcast(self, msg: dict) -> None:
         dead = []
         for ws in self.clients:
@@ -395,10 +457,27 @@ class Session:
         """
         async with self.lock:
             try:
-                previous = self.rebuild()
+                # OFF THE EVENT LOOP, ALWAYS. On a real manuscript this is half
+                # a second of pandoc, hashing and file IO, and called inline it
+                # stops the entire server for that whole stretch -- no `saved`
+                # ack, no frame, no image, no route. The lock still serializes
+                # it against the other writers, so nothing about the ordering
+                # changes; only the thread it burns does. A page with no
+                # figures never noticed, because it asks the server for nothing
+                # while the author types. qutub-ayush's page asks for eight.
+                previous = await asyncio.to_thread(self.rebuild)
             except Exception as exc:  # a manuscript mid-edit may not render
                 await self.broadcast({"type": "error", "message": str(exc)[:400]})
                 return
+            # ANYTHING BELOW THIS LINE THAT RAISES IS REPORTED BY `spawn`, which
+            # is what starts this coroutine, and it is reported nowhere else.
+            # For as long as the watcher started it with a bare
+            # `run_coroutine_threadsafe` there was no reporter at all: nobody
+            # retrieves that future, and a `concurrent.futures.Future` -- unlike
+            # an `asyncio` one -- never logs the exception it ends up holding.
+            # So a failure here left the build advanced, the socket open, the
+            # page still showing the paragraph the author had just rewritten,
+            # and no line of output anywhere saying why.
             patch = _diff(previous, self.build) if previous else None
             # Ids are content-derived, so this rebuild renamed every block it
             # changed. A stored draft left under an old id is a draft nobody
@@ -1536,7 +1615,7 @@ def serve(
             coro = (session.on_log_change() if kind == "log"
                     else session.on_change(refresh_assets=assets) if kind == "source"
                     else session.on_assets_change())
-            asyncio.run_coroutine_threadsafe(coro, loop)
+            session.spawn(coro, f"redraw after a {kind} change", loop=loop)
 
         stop = watch_tree(session.dir, changed)
         # The drain's live feed is generated and hidden, so the tree watcher
@@ -1550,7 +1629,8 @@ def serve(
         # to watch until some other process makes the directory itself.
         stop_feed = watch_file(
             session.feed_file,
-            lambda: asyncio.run_coroutine_threadsafe(session.on_feed_change(), loop),
+            lambda: session.spawn(session.on_feed_change(),
+                                  "push the agent's feed", loop=loop),
             create=not read_only)
         # And the ledger by its own name. The two files move at different
         # moments -- the ring is coalesced to at most one write every 0.4s while
@@ -1559,7 +1639,8 @@ def serve(
         # something else happened to shift the envelope.
         stop_history = watch_file(
             session.history_file,
-            lambda: asyncio.run_coroutine_threadsafe(session.push_history(), loop),
+            lambda: session.spawn(session.push_history(),
+                                  "push the agent's history", loop=loop),
             create=not read_only)
         b = session.build.blob
         print(f"manuscriptor  {url}" + ("   [read-only]" if read_only else ""))
