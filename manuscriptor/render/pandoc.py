@@ -71,6 +71,7 @@ from pathlib import Path
 # the Word submission skills and had already drifted; see that module's
 # docstring and `tests/test_render_tables.py`.
 from manuscriptor.source.flatten import command_re, is_commented
+from manuscriptor.render import graphics
 from manuscriptor.render.tables import (
     declared_column_types,
     group_start,
@@ -157,7 +158,7 @@ class PandocError(RuntimeError):
 def render_document(flat_text: str, *, cwd: Path, bib: Path | None) -> str:
     """Full render. Falls back to `article` class when the real class fails."""
     cwd = Path(cwd)
-    source = normalize_for_pandoc(flat_text)
+    source = normalize_for_pandoc(flat_text, cwd=cwd)
     try:
         return _invoke(source, cwd=cwd, bib=bib)
     except PandocError as first:
@@ -196,21 +197,30 @@ def render_block(block_source: str, *, preamble: str, cwd: Path) -> str:
     supplies that.
     """
     document = f"{preamble}\n\\begin{{document}}\n{block_source}\n\\end{{document}}\n"
-    return _invoke(normalize_for_pandoc(document), cwd=Path(cwd), bib=None)
+    return _invoke(normalize_for_pandoc(document, cwd=cwd), cwd=Path(cwd), bib=None)
 
 
 # --------------------------------------------------------------- internals
 
 
-def normalize_for_pandoc(source: str) -> str:
+def normalize_for_pandoc(source: str, *, cwd: Path | str | None = None) -> str:
     """Neutralize typesetting-only constructs pandoc cannot read.
 
     Not a fallback and not a repair: this always runs, because every construct
     it touches is print geometry with no HTML counterpart, and leaving any of
     them in place costs either the whole render or, worse, one table and no
     error message. Block markers, prose, math, and citations are untouched.
+
+    `cwd` is the manuscript directory, and it is what lets an
+    `\\includegraphics` be resolved against `\\graphicspath` and LaTeX's
+    extension search -- the one place that resolution happens, so everything
+    downstream sees an ordinary relative path (`render/graphics.py`). Without
+    it nothing is resolved, which is right for the Word/compile path: that
+    source is read by LaTeX itself, and LaTeX does its own searching.
     """
     source = _render_frontmatter(source)
+    if cwd is not None:
+        source = graphics.resolve_includes(source, cwd)
     declared = declared_column_types(source)
     source, _ = strip_newcolumntypes(source)
     source = _expand_sym(source)
@@ -331,11 +341,27 @@ def _render_frontmatter(source: str) -> str:
             # on the label it would select a heading around nothing.
             mk = _MARKER_BEFORE_RE.search(before)
             at = mk.start() if mk else m.start()
+            # WHERE THE ABSTRACT STANDS RELATIVE TO THE TITLE, not whether it
+            # stands in the preamble. An abstract written ABOVE `\maketitle` --
+            # in the preamble, as covet-india does, or inside the document, as
+            # qutub-ayush does -- is typeset BELOW the title by every class that
+            # accepts that layout, because such a class captures the abstract
+            # rather than typesetting it where it stands: `wlscirep.cls` reads
+            # `\abstract` as a delimited macro into `\theabstract` and
+            # `\maketitle` sets it under the byline. Render order follows the
+            # compiled document, not the order of the source. Choosing on the
+            # preamble alone put qutub-ayush's abstract above its own title.
+            #
+            # The destination is the title site when there is one, and the top
+            # of the body otherwise -- and it is measured in the POST-EDIT
+            # string, which is what `_apply_edits` returns `after_title` for.
             doc = _live(_BEGIN_DOCUMENT_RE, source)
-            if doc is not None and m.start() < doc.start():
+            site = after_title if after_title is not None else (
+                doc.end() if doc is not None else None)
+            if site is not None and m.start() < site:
                 source = _relocate_abstract(
                     source, at, end.end(), head, mk.group(0) if mk else "",
-                    body, after_title if after_title is not None else doc.end(),
+                    body, site,
                 )
             else:
                 source = (
@@ -348,12 +374,16 @@ def _render_frontmatter(source: str) -> str:
 def _relocate_abstract(
     source: str, at: int, stop: int, head: str, mark: str, body: str, dest: int
 ) -> str:
-    """Move a PREAMBLE abstract into the body, marker and all.
+    """Move an abstract written above the title down to `dest`, marker and all.
 
     covet-india's class (`wlscirep`) takes the abstract as a delimited macro
     read above `\\begin{document}`, so rewriting it where it stands leaves it in
     the preamble -- and pandoc discards every byte above `\\begin{document}`.
-    The abstract rendered nowhere at all.
+    The abstract rendered nowhere at all. qutub-ayush writes the same delimited
+    macro INSIDE the document and still above `\\maketitle`, where rewriting it
+    in place costs not the abstract but its position: it rendered above the
+    paper's own title. One move covers both, because both are the same fact --
+    the class typesets the abstract at `\\maketitle`, wherever it was written.
 
     The MARKER travels with the body, and that is load-bearing rather than
     tidy: the block it names still lives at its original preamble byte range,

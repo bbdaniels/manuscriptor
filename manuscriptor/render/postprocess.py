@@ -41,6 +41,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from manuscriptor.source import anchors
+from manuscriptor.render import graphics
 from manuscriptor.render.refs import resolve
 # The header rows were IDENTIFIED in the LaTeX stage, in `render/tables.py`,
 # where the rules that delimit a header are still visible. This module only
@@ -394,10 +395,16 @@ def manuscript_source(rel: str, manuscript_dir) -> Path | None:
     KIND of miss a 404 is -- a source still sitting on disk means the file was
     never staged here, which is a different fact from a figure the author
     renamed away, and a different instruction to give him.
+
+    Which file a served name refers to is `graphics.source_path`'s question and
+    not a second answer to it: an out-of-tree figure reaches the page under a
+    mapped name (`\\graphicspath{{../outputs/}}` is ordinary in the corpus), and
+    a copy of the arithmetic here would resolve that name to nothing while the
+    copier staged it happily.
     """
     manuscript_dir = Path(manuscript_dir).resolve()
-    source = (manuscript_dir / unquote(raster_source(rel) or rel)).resolve()
-    if manuscript_dir not in source.parents or not source.is_file():
+    source = graphics.source_path(unquote(raster_source(rel) or rel), manuscript_dir)
+    if source is None or not source.is_file():
         return None
     return source
 
@@ -431,6 +438,13 @@ def refresh_asset(rel: str, manuscript_dir, cache_dir) -> bool:
     cache_dir = Path(cache_dir).resolve()
     dest = (cache_dir / rel).resolve()
     if cache_dir not in dest.parents:
+        return False
+    # A BUILD AUTHORIZES AN OUT-OF-TREE READ; A REQUEST NEVER DOES. An external
+    # figure is served under a name that maps back to an absolute path, and a
+    # browser can spell one of those as easily as the build can. Refreshing only
+    # what the cache already holds keeps the route reading exactly the files a
+    # render of the author's own `\graphicspath` resolved, and no others.
+    if graphics.is_external(rel) and not dest.is_file():
         return False
     from_pdf = raster_source(rel)
     if from_pdf is None and rel.lower().endswith(".pdf"):
@@ -488,10 +502,11 @@ def _pdf_figures_to_png(html: str, manuscript_dir: Path, output_dir: Path) -> tu
         if src.startswith(("http:", "https:", "data:", "/")):
             return m.group(0)
         rel = unquote(src)
-        pdf = (manuscript_dir / rel).resolve()
-        # Same containment rule as the asset copier: a src that walks out of
-        # the manuscript directory is left alone, never followed.
-        if manuscript_dir not in pdf.parents or not pdf.exists():
+        # Same question, same answer, same module as the asset copier: a src
+        # that walks out of the manuscript directory is left alone and never
+        # followed, while the mapped name of an out-of-tree figure resolves.
+        pdf = graphics.source_path(rel, manuscript_dir)
+        if pdf is None or not pdf.is_file():
             return m.group(0)
         rel_png = rel + ".png"
         if not ensure_raster(pdf, Path(output_dir) / rel_png):
@@ -871,8 +886,12 @@ def _copy_assets(html: str, manuscript_dir: Path, output_dir: Path) -> list[str]
             continue
         seen.add(rel)
 
-        source = (manuscript_dir / rel).resolve()
-        if not source.is_file():
+        # What file this names is `graphics.source_path`'s answer, everywhere.
+        # It refuses a path climbing out of the manuscript -- which is what the
+        # `../secret.txt` guard has always meant -- and it accepts the mapped
+        # name an out-of-tree figure was rewritten to on the way into pandoc.
+        source = graphics.source_path(rel, manuscript_dir)
+        if source is None or not source.is_file():
             continue
         dest = (output_dir / rel).resolve()
         if out_root not in dest.parents:

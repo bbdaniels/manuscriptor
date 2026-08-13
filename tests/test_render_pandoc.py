@@ -702,6 +702,61 @@ def test_a_preamble_abstract_with_no_maketitle_lands_after_begin_document(tmp_pa
     assert html.find("Only the abstract.") < html.find("Ordinary prose.")
 
 
+# qutub-ayush writes `\begin{abstract}` INSIDE the document but ABOVE
+# `\maketitle`, which is legal and common under a class that captures the
+# abstract rather than typesetting it where it stands: `wlscirep.cls`'s
+# `\abstract` is a delimited macro reading the text into `\theabstract`, and
+# `\maketitle` typesets it below the title and byline. So the compiled PDF reads
+# title, authors, abstract — and the page read abstract, title, authors, because
+# the rewrite was chosen on whether the abstract sat in the PREAMBLE rather than
+# on whether it sat above the title. Render order follows the compiled document,
+# not the source order.
+
+BODY_ABSTRACT_ABOVE_MAKETITLE = """\\documentclass{wlscirep}
+\\begin{document}
+⟦MX00c1⟧\\title{In Sickness and In Health}
+\\author{A.~Author}
+
+⟦MX00c2⟧\\begin{abstract}
+The early abstract text survives into the page.
+\\end{abstract}
+
+⟦MX00c3⟧\\maketitle
+
+⟦MX00c4⟧Ordinary prose follows the front matter.
+\\end{document}
+"""
+
+
+def test_a_body_abstract_above_maketitle_renders_below_the_title(tmp_path):
+    html = render_document(BODY_ABSTRACT_ABOVE_MAKETITLE, cwd=tmp_path, bib=None)
+    at_title = html.find("In Sickness and In Health")
+    at_text = html.find("The early abstract text survives")
+    at_prose = html.find("Ordinary prose follows")
+    assert -1 < at_title < at_text < at_prose
+
+
+def test_a_body_abstract_above_maketitle_carries_its_marker(tmp_path):
+    html = render_document(BODY_ABSTRACT_ABOVE_MAKETITLE, cwd=tmp_path, bib=None)
+    at_marker = html.find("⟦MX00c2⟧")
+    at_text = html.find("The early abstract text survives")
+    assert at_marker != -1
+    assert at_marker < at_text
+    assert html.find("Abstract") < at_marker, "the label heading must precede the anchor"
+    assert at_marker > html.find("In Sickness and In Health")
+
+
+def test_an_abstract_below_maketitle_is_still_rewritten_in_place(tmp_path):
+    # The in-place rewrite is what every other manuscript in the fleet uses, and
+    # nothing about it changes: an abstract written below the title renders
+    # where the author put it.
+    html = render_document(FRONTMATTER, cwd=tmp_path, bib=None)
+    at_title = html.find("In Sickness and In Health")
+    at_text = html.find("The abstract text survives")
+    at_prose = html.find("Ordinary prose follows")
+    assert -1 < at_title < at_text < at_prose
+
+
 def test_a_maketitle_with_no_title_is_left_alone(tmp_path):
     src = "\\documentclass{article}\n\\begin{document}\n\\maketitle\n\nProse.\n\\end{document}\n"
     html = render_document(src, cwd=tmp_path, bib=None)
