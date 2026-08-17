@@ -1036,3 +1036,39 @@ def test_a_spacing_environment_does_not_swallow_the_title(tmp_path):
     html = render_document(src, cwd=tmp_path, bib=None)
     assert "The Paper" in html
     assert "<h1" in html
+
+
+# ------------------------------------------------- unwrapping is closing a group
+
+
+def test_an_unwrapped_environment_closes_the_group_it_was_closing():
+    r"""estonia-ecm opens `\scriptsize{` in a `tablenotes` and closes it nowhere.
+
+    LaTeX is satisfied, because `\end{tablenotes}` shuts the implicit group the
+    environment opened, and the author gets a clean PDF and no way to know. Drop
+    the environment without closing that brace and the text after it is eaten:
+    here `\end{center}` was, and pandoc failed the WHOLE manuscript with
+    `unexpected \end` at a line the author had never touched.
+    """
+    out = normalize_for_pandoc(
+        "\\begin{tablenotes}\n\\scriptsize{Notes: stars.\n\\end{tablenotes}\n\\end{center}\n")
+    assert "\\end{center}" in out
+    assert out.count("{") == out.count("}")
+
+
+def test_an_unwrapped_environment_drops_a_closer_that_opened_nowhere():
+    r"""The same allowance, spent the other way.
+
+    `tableE1_coding`'s notes were commented out one line at a time until only
+    the closing `}` was still live. Unwrapped, it closes a group nobody opened,
+    and pandoc failed the document with `unexpected }`. A comment is not code.
+    """
+    out = normalize_for_pandoc(
+        "\\begin{tablenotes}\n%\\scriptsize{Notes: stars.\n\n}\n\\end{tablenotes}\nAfter.\n")
+    assert "After." in out
+    assert "}" not in out.replace("%\\scriptsize{Notes: stars.", "")
+
+
+def test_a_balanced_body_is_unwrapped_unchanged():
+    out = normalize_for_pandoc("\\begin{tablenotes}\n\\scriptsize{Notes.}\n\\end{tablenotes}\n")
+    assert out == "\\scriptsize{Notes.}\n\n"

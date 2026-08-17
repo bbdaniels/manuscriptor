@@ -807,3 +807,13 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
 .doc figure.ms-table { margin: 0 0 1.15rem; }
 .doc figure.ms-table .table-scroll { margin-bottom: .45rem; }
 .doc figure.ms-table figcaption { font-size: .82rem; line-height: 1.5; color: var(--muted); max-width: 100%; }
+
+/* The exhibit's notes, which used to render at body size outside the card --
+   the same words the PDF sets in \footnotesize under the float, here reading
+   as another paragraph of the paper. `render/cards.py` puts them inside the
+   card; this makes them look subordinate to it, which is the whole reason the
+   author writes them small. */
+.doc figure.ms-exhibit { margin: 0 0 1.15rem; }
+.doc .ms-notes { font-size: .78rem; line-height: 1.5; color: var(--muted); margin: .5rem 0 0; max-width: 100%; }
+.doc .ms-notes + .ms-notes { margin-top: .35rem; }
+.doc figure.ms-table .ms-notes, .doc figure.ms-exhibit .ms-notes { margin-bottom: 0; }

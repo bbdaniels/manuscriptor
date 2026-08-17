@@ -138,8 +138,16 @@ _SCALING_MACROS = {"resizebox": 2, "scalebox": 1}
 # Manuscriptor page, at exit 0, with the block still anchored so the author
 # could click a sliver of nothing. Turning the page is print geometry and an
 # HTML page has no orientation, so unwrapping it costs nothing.
+#
+# `tablenotes` is the same failure a second time, and the loudest of them.
+# Pandoc drops an unknown environment that stands inside a `center` -- and
+# estonia-ecm wraps every one of its tables in exactly that, so twenty tables
+# rendered with their notes GONE: no stars defined, no clustering stated, no
+# sample named, at exit 0 and with the table itself intact so nothing looked
+# wrong. Unwrapped, the note is ordinary prose in the block that owns the
+# table, which is what `render/cards.py` then folds into the card.
 _WRAPPER_ENVS = {
-    "adjustbox": 1, "threeparttable": 0,
+    "adjustbox": 1, "threeparttable": 0, "tablenotes": 0,
     "singlespace": 0, "singlespacing": 0, "onehalfspace": 0,
     "doublespace": 0, "spacing": 1,
     "landscape": 0,
@@ -758,6 +766,47 @@ def _unwrap_macro(source: str, name: str, skip: int) -> str:
     return "".join(out)
 
 
+def _balanced(body: str) -> str:
+    r"""Make an unwrapped body stand on its own, as a group, in both directions.
+
+    LaTeX forgives either half of this because `\begin{env}` and `\end{env}`
+    are themselves a group, and estonia-ecm's appendix tables use up both
+    allowances. `\scriptsize{` is opened in every `tablenotes` and closed in
+    none, and `tableE1_coding`'s notes were commented out one line at a time
+    until only the closing `}` was left live. Unwrapping the environment turns
+    the first into text that swallows `\end{center}` and the second into a
+    brace that closes a group nobody opened; pandoc failed the entire
+    manuscript on each, in turn, at line 1 of nothing the author had touched.
+
+    So: openers with no closer get one where the `\end` stood, and closers with
+    no opener are dropped. Comments are not code -- three of the four braces in
+    that table's notes are behind a `%`.
+    """
+    depth = 0
+    stray: list[int] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "%":
+            nl = body.find("\n", i)
+            i = len(body) if nl == -1 else nl + 1
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            if depth:
+                depth -= 1
+            else:
+                stray.append(i)
+        i += 1
+    for at in reversed(stray):
+        body = body[:at] + body[at + 1:]
+    return body + "}" * depth
+
+
 def _unwrap_environment(source: str, name: str, args: int) -> str:
     """`\\begin{adjustbox}{width=...}TABLE\\end{adjustbox}` becomes `TABLE`."""
     begin = re.compile(r"\\begin\s*\{" + name + r"\}\s*")
@@ -778,7 +827,15 @@ def _unwrap_environment(source: str, name: str, args: int) -> str:
             cursor = m.end()
             continue
         out.append(source[cursor:m.start()])
-        out.append(source[at:closing])
+        # AN ENVIRONMENT IS A GROUP, and unwrapping one has to keep that part.
+        # estonia-ecm opens `\scriptsize{` inside every `tablenotes` and closes
+        # it nowhere: LaTeX is satisfied because `\end{tablenotes}` shuts the
+        # implicit group, and the author has no way to know otherwise. Drop the
+        # environment without closing the brace and everything after it is
+        # swallowed -- here, `\end{center}` was, and pandoc failed the WHOLE
+        # document with `unexpected \end`. One unbalanced brace in one appendix
+        # table, and the manuscript does not render.
+        out.append(_balanced(source[at:closing]))
         cursor = closing + len(end)
 
 

@@ -41,7 +41,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from manuscriptor.source import anchors
-from manuscriptor.render import graphics
+from manuscriptor.render import cards, graphics
 from manuscriptor.render.refs import resolve
 # The header rows were IDENTIFIED in the LaTeX stage, in `render/tables.py`,
 # where the rules that delimit a header are still visible. This module only
@@ -696,8 +696,14 @@ def postprocess(
 
     # Last, so the anchor check above counts data-mx on the real elements
     # rather than on wrappers this adds.
+    #
+    # The notes fold runs AFTER the table wrap and never before it: a captioned
+    # table only becomes a card at that step, and folding first would have the
+    # notes to put somewhere and no card to put them in. What belongs to a card
+    # is `render/cards.py`'s question and this pass only calls it.
+    drawn, _ = cards.fold_exhibit_notes(_wrap_tables(_simple_math_to_html(html)))
     return {
-        "html": _wrap_tables(_simple_math_to_html(html)),
+        "html": drawn,
         "unanchored": unanchored,
         "unresolved_refs": unresolved,
         "assets": assets,
