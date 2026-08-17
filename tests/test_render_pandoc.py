@@ -25,6 +25,7 @@ from manuscriptor.render.pandoc import (
     PandocError,
     extract_preamble,
     normalize_for_pandoc,
+    normalize_for_viewer,
     render_block,
     render_document,
 )
@@ -469,6 +470,76 @@ def test_normalizing_does_not_disturb_block_markers():
     """Markers are injected before the render. Losing one costs an anchor."""
     src = "⟦MXdeadbeef01⟧\\resizebox{\\textwidth}{!}{" + TABULAR + "}"
     assert "⟦MXdeadbeef01⟧" in normalize_for_pandoc(src)
+
+
+# ------------------------------------------------- what each consumer gets
+#
+# Two consumers, one normalization, and only one of them has a postprocess.
+# The page's tokens are read back by `render/postprocess.py` and turned into
+# classes; `server/compile.py` has no such pass, so a token minted for the page
+# rides through pandoc into the `.docx` a journal submission is built from --
+# five literal ⟦MXTHEAD⟧ glyphs inside table header cells, at exit 0, found
+# 2026-08-17. The sentinel brackets are the sweep target because they carry
+# every family: the title block's three and the header mark.
+
+FRONT_MATTER = (
+    "\\documentclass{article}\n"
+    "\\title{A Title}\n\\author{A. Author}\n"
+    "\\begin{document}\n\\maketitle\n"
+    "\\begin{abstract}\nWords about it.\n\\end{abstract}\n"
+)
+
+TWO_ROW_HEADER = (
+    "\\begin{tabular}{lcc}\n\\toprule\n"
+    " & \\multicolumn{2}{c}{Group} \\\\\n"
+    "Name & A & B \\\\\n\\midrule\n"
+    "alpha & 1 & 2 \\\\\n\\bottomrule\n\\end{tabular}\n"
+)
+
+SENTINEL_SOURCE = FRONT_MATTER + TWO_ROW_HEADER + "\\end{document}\n"
+
+
+def test_the_word_path_gets_no_viewer_sentinel_of_any_kind():
+    """The guard. Any future viewer-only marking added to the shared path fails
+    here rather than in a submitted manuscript, and it is written on the
+    brackets rather than on the four tokens known today."""
+    out = normalize_for_pandoc(SENTINEL_SOURCE)
+    assert "⟦" not in out and "⟧" not in out, out
+
+
+def test_the_word_path_still_gets_the_title_the_byline_and_the_abstract():
+    """Only the tokens go. Pandoc reads `\\title` into metadata and an HTML
+    fragment shows metadata nowhere, so dropping the rewrite would drop the
+    paper's title out of the `.docx` entirely."""
+    out = normalize_for_pandoc(SENTINEL_SOURCE)
+    assert "\\section*{A Title}" in out
+    assert "A. Author" in out
+    assert "\\subsection*{Abstract}" in out and "Words about it." in out
+
+
+def test_the_word_path_still_gets_the_table_repairs():
+    """Column types and the rest are not viewer-only: a `.docx` wants a repaired
+    table as much as the page does, and a `\\newcolumntype` aborts pandoc."""
+    src = ("\\newcolumntype{L}[1]{>{\\raggedright\\arraybackslash}p{#1}}\n"
+           "\\begin{tabular}{L{2cm}r}a&b\\\\\\end{tabular}\n")
+    out = normalize_for_pandoc(src)
+    assert "\\newcolumntype" not in out
+    assert "\\begin{tabular}{lr}" in out
+
+
+def test_the_viewer_path_still_marks_its_header_rows_and_front_matter():
+    out = normalize_for_viewer(SENTINEL_SOURCE)
+    assert "⟦MXTITLE⟧A Title" in out
+    assert "⟦MXBYLINE⟧" in out and "⟦MXABSTRACT⟧Abstract" in out
+    # One mark per header CELL: two in the spanning row, three in the row under it.
+    assert out.count("⟦MXTHEAD⟧") == 5
+
+
+def test_the_two_paths_differ_only_in_the_sentinels():
+    viewer = normalize_for_viewer(SENTINEL_SOURCE)
+    for token in ("⟦MXTITLE⟧", "⟦MXBYLINE⟧", "⟦MXABSTRACT⟧", "⟦MXTHEAD⟧"):
+        viewer = viewer.replace(token, "")
+    assert viewer == normalize_for_pandoc(SENTINEL_SOURCE)
 
 
 # ---------------------------------------------------------------- preamble

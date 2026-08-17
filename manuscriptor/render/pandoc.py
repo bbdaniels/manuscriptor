@@ -166,7 +166,7 @@ class PandocError(RuntimeError):
 def render_document(flat_text: str, *, cwd: Path, bib: Path | None) -> str:
     """Full render. Falls back to `article` class when the real class fails."""
     cwd = Path(cwd)
-    source = normalize_for_pandoc(flat_text, cwd=cwd)
+    source = normalize_for_viewer(flat_text, cwd=cwd)
     try:
         return _invoke(source, cwd=cwd, bib=bib)
     except PandocError as first:
@@ -205,7 +205,7 @@ def render_block(block_source: str, *, preamble: str, cwd: Path) -> str:
     supplies that.
     """
     document = f"{preamble}\n\\begin{{document}}\n{block_source}\n\\end{{document}}\n"
-    return _invoke(normalize_for_pandoc(document, cwd=cwd), cwd=Path(cwd), bib=None)
+    return _invoke(normalize_for_viewer(document, cwd=cwd), cwd=Path(cwd), bib=None)
 
 
 # --------------------------------------------------------------- internals
@@ -219,6 +219,19 @@ def normalize_for_pandoc(source: str, *, cwd: Path | str | None = None) -> str:
     them in place costs either the whole render or, worse, one table and no
     error message. Block markers, prose, math, and citations are untouched.
 
+    THIS IS WHAT A CONSUMER WITHOUT A POSTPROCESS GETS, and that is the whole
+    reason the name is not the only entry point. Everything here is universal:
+    a `.docx` wants a repaired table exactly as much as the page does, and a
+    `\\newcolumntype` aborts pandoc for both. What is NOT universal is the
+    marking -- the title-block tokens and the header mark -- because a token is
+    only ever a message to `render/postprocess.py`, and `server/compile.py`
+    runs no such pass. It writes this output to `inter.tex`, hands it to pandoc
+    and on into the Word file a journal receives, so a token minted here ships
+    as a literal glyph in a submission: five ⟦MXTHEAD⟧ inside one two-row
+    header, at exit 0, found 2026-08-17 after the marking had been shared with
+    that path since it was written. The page asks for `normalize_for_viewer`
+    instead, and the difference between the two is exactly the sentinels.
+
     `cwd` is the manuscript directory, and it is what lets an
     `\\includegraphics` be resolved against `\\graphicspath` and LaTeX's
     extension search -- the one place that resolution happens, so everything
@@ -226,7 +239,28 @@ def normalize_for_pandoc(source: str, *, cwd: Path | str | None = None) -> str:
     it nothing is resolved, which is right for the Word/compile path: that
     source is read by LaTeX itself, and LaTeX does its own searching.
     """
-    source = _render_frontmatter(source)
+    return _normalize(source, cwd=cwd, mark=False)
+
+
+def normalize_for_viewer(source: str, *, cwd: Path | str | None = None) -> str:
+    """`normalize_for_pandoc` plus the markings the page's postprocess reads back.
+
+    The front matter is rewritten either way -- pandoc reads `\\title` into
+    document METADATA and a fragment render shows metadata nowhere, so both
+    consumers need it turned into constructs pandoc keeps -- but only the page
+    gets the tokens that say WHICH construct it was, since only the page turns
+    them into classes. The header mark is the page's alone for the same reason:
+    pandoc promotes at most one row into `<thead>` and the rules that say where
+    a header ends are gone by the time it is done, so the rows have to be marked
+    in the LaTeX and carried over. `render/postprocess.py` strips every one of
+    them, which is what makes them safe HERE and unsafe anywhere else.
+    """
+    return _normalize(source, cwd=cwd, mark=True)
+
+
+def _normalize(source: str, *, cwd: Path | str | None, mark: bool) -> str:
+    """The one running order. `mark` is the only thing the two consumers differ by."""
+    source = _render_frontmatter(source, tokens=mark)
     if cwd is not None:
         source = graphics.resolve_includes(source, cwd)
     declared = declared_column_types(source)
@@ -250,7 +284,8 @@ def normalize_for_pandoc(source: str, *, cwd: Path | str | None = None) -> str:
     # declares twice, and the multicolumn rejoin puts a broken spanning cell
     # back on one line. Marking before any of them would be reading a table
     # nobody is going to render.
-    source, _ = mark_header_rows(source)
+    if mark:
+        source, _ = mark_header_rows(source)
     return source
 
 
@@ -268,6 +303,13 @@ def normalize_for_pandoc(source: str, *, cwd: Path | str | None = None) -> str:
 # stylesheet can set them apart from a section heading. The tokens use the
 # sentinel brackets because those are proven to survive pandoc, and they spell
 # no hex, so `anchors.MARKER_RE` can never mistake one for a block marker.
+#
+# THE REWRITE IS FOR BOTH CONSUMERS; THE TOKENS ARE FOR THE PAGE. A Word file
+# needs the title, the byline and the abstract as much as the page does -- drop
+# the rewrite there and pandoc reads them into metadata an HTML fragment never
+# shows, so a journal receives a manuscript with no title on it. But nothing on
+# that path reads a token back, so `tokens=False` writes the same constructs
+# without them.
 
 TITLE_TOKEN = "⟦MXTITLE⟧"
 BYLINE_TOKEN = "⟦MXBYLINE⟧"
@@ -289,7 +331,10 @@ _MARKER_BEFORE_RE = re.compile(r"⟦MX[0-9a-f]+(?:-\d+)?⟧\s*$")
 _MARKER_ONLY_BEFORE_RE = re.compile(r"(⟦MX[0-9a-f]+(?:-\d+)?⟧)\s*$")
 
 
-def _render_frontmatter(source: str) -> str:
+def _render_frontmatter(source: str, *, tokens: bool = True) -> str:
+    title_token = TITLE_TOKEN if tokens else ""
+    byline_token = BYLINE_TOKEN if tokens else ""
+    abstract_token = ABSTRACT_TOKEN if tokens else ""
     after_title: int | None = None
     m = _live(_MAKETITLE_RE, source)
     if m:
@@ -326,9 +371,9 @@ def _render_frontmatter(source: str) -> str:
             # the document -- anchors the empty, zero-height paragraph the
             # author could never click.
             mark, mark_at = _marker_on_title(source)
-            repl = "\\section*{" + TITLE_TOKEN + mark + title + "}"
+            repl = "\\section*{" + title_token + mark + title + "}"
             if byline:
-                repl += "\n\n" + BYLINE_TOKEN + byline + "\n"
+                repl += "\n\n" + byline_token + byline + "\n"
             edits = [(m.start(), m.end(), repl)]
             if mark_at is not None:
                 edits.append((mark_at[0], mark_at[1], ""))
@@ -341,7 +386,7 @@ def _render_frontmatter(source: str) -> str:
         end = _live(_ABSTRACT_END_RE, source, m.end())
         if end:
             body = source[m.end(): end.start()].strip()
-            head = "\\subsection*{" + ABSTRACT_TOKEN + "Abstract}\n\n"
+            head = "\\subsection*{" + abstract_token + "Abstract}\n\n"
             before = source[: m.start()]
             # The block's anchor sits just before `\begin{abstract}`. The label
             # heading goes in FRONT of the marker, so the marker lands on the

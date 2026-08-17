@@ -80,6 +80,24 @@ beta & 2 \\
 \end{table}
 """
 
+# A header two rows deep, which is what 31 of the corpus's 44 rendered tables
+# have. Pandoc promotes at most one row into `<thead>`, so the page needs the
+# rows marked in the LaTeX -- and the Word file needs that marking gone.
+HEADER_TABLE = r"""\begin{table}[h]
+\caption{A small table}\label{tab:one}
+\begin{tabular}{lcc}
+\toprule
+ & \multicolumn{2}{c}{Group} \\
+Name & A & B \\
+\midrule
+alpha & 1 & 2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+"""
+
+TITLE = "\\title{A Title}\n\\author{A. Author}\n"
+
 BIB = """@article{smith2020,
   author = {Jane Smith},
   title = {A title worth citing},
@@ -89,17 +107,22 @@ BIB = """@article{smith2020,
 """
 
 
-def tiny(tmp_path: Path) -> Path:
+def tiny(tmp_path: Path, *, table: str = TABLE, title: bool = False) -> Path:
     """A manuscript small enough to compile in a test and shaped like a real one.
 
     The `\\include` into a subdirectory is the whole point of the fixture: it is
     the construct that fails without the mirrored output tree, and the reference
-    manuscript pulls every table in that way.
+    manuscript pulls every table in that way. `table` and `title` swap in the
+    constructs the front matter and the header marking act on.
     """
     d = tmp_path / "latex"
     (d / "tables").mkdir(parents=True)
-    (d / "main.tex").write_text(MAIN, encoding="utf-8")
-    (d / "tables" / "t.tex").write_text(TABLE, encoding="utf-8")
+    main = MAIN
+    if title:
+        main = main.replace("\\begin{document}\n", "\\begin{document}\n\\maketitle\n")
+        main = main.replace("\\usepackage{array}\n", "\\usepackage{array}\n" + TITLE)
+    (d / "main.tex").write_text(main, encoding="utf-8")
+    (d / "tables" / "t.tex").write_text(table, encoding="utf-8")
     (d / "refs.bib").write_text(BIB, encoding="utf-8")
     return d
 
@@ -546,6 +569,33 @@ def test_word_gets_the_tables_the_include_holds(tmp_path):
         capture_output=True, text=True,
     ).stdout
     assert "alpha" in body and "beta" in body, "the included table did not survive"
+
+
+@pytest.mark.skipif(not (HAS_PANDOC and HAS_SKILL), reason="pandoc or the skill is missing")
+def test_no_sentinel_survives_into_the_word_file(tmp_path):
+    """The page's markings are for the page, and the `.docx` is what a journal
+    receives.
+
+    `normalize_for_pandoc` used to mint the title-block tokens and the header
+    mark unconditionally, and only the viewer's postprocess stripped them, so
+    every Word file the button produced carried literal ⟦MXTHEAD⟧ glyphs inside
+    its table header cells -- five of them on one two-row header, and 31 of the
+    44 tables in the served corpus trigger that marking. The sweep is on the
+    brackets, not on the tokens known today.
+    """
+    d = tiny(tmp_path, table=HEADER_TABLE, title=True)
+    res = compile_mod.compile_docx(d)
+    assert res.ok, res.error
+    out = paths.compile_dir(d)
+    for name in ("inter.tex", "inter.html"):
+        text = (out / name).read_text(encoding="utf-8", errors="replace")
+        assert "⟦" not in text and "⟧" not in text, f"{name} carries a sentinel"
+    body = subprocess.run(
+        ["unzip", "-p", str(res.output), "word/document.xml"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "⟦" not in body and "⟧" not in body
+    assert "Group" in body and "alpha" in body, "the header table did not survive"
 
 
 @pytest.mark.skipif(
