@@ -39,7 +39,7 @@ from manuscriptor.templates.ext import load as _extensions
 # stages them with; see `refresh_asset`. A build only ever refreshes the figures
 # of the document it rendered, so the route is where the question gets asked for
 # every other document sharing the cache.
-from manuscriptor.render import postprocess
+from manuscriptor.render import graphics, postprocess
 from manuscriptor.server import build as build_mod
 from manuscriptor.server import chat
 from manuscriptor.server import compile as compile_mod
@@ -87,6 +87,11 @@ class Session:
         # Fired with the new document root whenever a switch moves it, so the
         # caller (the drain agent in cmd_serve) can follow the current document.
         self._on_switch = on_switch
+        # Fired after every build, so a caller holding watches on the document's
+        # figure directories can re-arm them. A switch reaches a document with
+        # its own `\graphicspath`, and an edit can add or remove an entry, so a
+        # list armed once at boot goes stale without anything saying so.
+        self.after_rebuild = None
         self.clients: set[web.WebSocketResponse] = set()
         self.lock = asyncio.Lock()
         self.seen_chats: dict[str, dict] = {}
@@ -214,6 +219,25 @@ class Session:
         return paths.cache(self.root, read_only=self.read_only)
 
     @property
+    def external_figure_dirs(self) -> list[Path]:
+        r"""The document's figure directories that lie OUTSIDE the served tree.
+
+        WHICH directories a render reads figures from is `graphics.search_dirs`'s
+        answer and not this module's; this only subtracts the ones the tree watch
+        already covers, so nothing is watched twice. qutub-ayush's
+        `\graphicspath{{../outputs/}{figures/}}` leaves exactly one: `figures/`
+        is inside the manuscript and `../outputs/` is not.
+
+        Read off the preamble, which is where a `\graphicspath` is written and
+        the one piece of the document the build already keeps.
+        """
+        if self.build is None:
+            return []
+        served = self.dir
+        return [d for d in graphics.search_dirs(self.build.preamble, self.root)
+                if d != served and served not in d.parents]
+
+    @property
     def current_ref(self) -> str:
         """The current document's tree identifier (its `rel_main`)."""
         return self.current.rel_main if self.current is not None else self.doc
@@ -251,6 +275,15 @@ class Session:
                 target, main=self.current.main, bib=self.bib,
                 read_only=self.read_only)
         self._overlay_tree_docs()
+        if self.after_rebuild is not None:
+            # Never at the cost of the redraw: a watcher that cannot be armed is
+            # a stale figure, and raising here would be a page that never
+            # updates at all.
+            try:
+                self.after_rebuild()
+            except Exception as exc:
+                print(f"manuscriptor: could not watch the figure directories: {exc}",
+                      flush=True)
         return previous
 
     def _migrate(self, root: Path) -> None:
@@ -523,14 +556,21 @@ class Session:
         document's figures and no others. Everything else in the shared cache is
         brought up to date by the assets route, one file at a time, as it is
         asked for.
+
+        AND IT IS `on_change` THAT DOES ALL OF THAT, because "rebuild and tell
+        the page what moved" is one operation and this was a second, thinner
+        implementation of it -- a rebuild whose result was thrown away except
+        for the cache-busting frame. Usually that is harmless, since a
+        regenerated figure changes no HTML. It is not harmless when the figure
+        is APPEARING: an include naming a file that was not on disk resolves to
+        nothing and renders as `<img src="f-did-components">`, and what the
+        export changes is the `src` attribute itself. The server rebuilt it
+        correctly and the open page kept the broken element, on qutub-ayush,
+        until an unrelated `.tex` edit happened to patch the block.
+        `auto_compile` behind it is a no-op unless the numbering signature moved,
+        which a figure cannot do on its own.
         """
-        async with self.lock:
-            try:
-                self.rebuild()
-            except Exception as exc:
-                await self.broadcast({"type": "error", "message": str(exc)[:400]})
-                return
-        await self.broadcast({"type": "assets", "v": chat.now()})
+        await self.on_change(refresh_assets=True)
 
     @property
     def history_file(self) -> Path:
@@ -880,6 +920,68 @@ class Session:
                 "ts": rec["ts"], "state": "queued",
             },
         }
+
+
+# ------------------------------------------------- figures outside the tree
+
+
+class FigureDirWatches:
+    r"""Watches on the figure directories that lie outside the served tree.
+
+    The tree watch covers the manuscript, so an author who keeps his figures in
+    `figures/` needs nothing here. `\graphicspath` is what makes the question
+    real: qutub-ayush's names `../outputs/`, a sibling of the manuscript
+    directory written by the analysis code, and a figure exported into it
+    produced NO EVENT -- so an `\includegraphics` written before its figure
+    existed stayed unresolved on the page indefinitely (2026-08-17).
+
+    Re-armed after every build rather than armed once, because the search list
+    is a property of the document and a switch changes documents. Held by
+    directory so a rebuild that changes nothing re-registers nothing: watchdog
+    keys its fsevents streams globally (see `server/watch.py`), and churning them
+    on every keystroke-triggered rebuild is how a watch goes quietly dead.
+    """
+
+    def __init__(self, session, on_change, *, debounce_ms: int = 250):
+        self.session = session
+        self.on_change = on_change
+        self.debounce_ms = debounce_ms
+        self._stops: dict[Path, callable] = {}
+        # Registered here rather than by the caller: a holder of these watches
+        # that is not re-armed on a rebuild is watching the wrong directories,
+        # so the subscription is part of holding them and not a step a second
+        # call site can forget.
+        session.after_rebuild = self.rearm
+
+    def held(self) -> list[Path]:
+        return list(self._stops)
+
+    def rearm(self) -> None:
+        from manuscriptor.server.watch import watch_tree
+
+        want = list(self.session.external_figure_dirs)
+        for gone in [d for d in self._stops if d not in want]:
+            self._stops.pop(gone)()
+        for d in want:
+            if d not in self._stops:
+                self._stops[d] = watch_tree(d, self.on_change,
+                                            debounce_ms=self.debounce_ms)
+
+    def stop(self) -> None:
+        if self.session.after_rebuild is self.rearm:
+            self.session.after_rebuild = None
+        while self._stops:
+            _d, stop = self._stops.popitem()
+            stop()
+
+
+def watch_figure_dirs(session, on_change, *, debounce_ms: int = 250) -> FigureDirWatches:
+    """Hold watches on `session`'s out-of-tree figure directories.
+
+    Subscribed to the session's rebuilds immediately; `rearm()` arms them for
+    the build the session is already holding.
+    """
+    return FigureDirWatches(session, on_change, debounce_ms=debounce_ms)
 
 
 # --------------------------------------------------------------- the diff
@@ -1628,6 +1730,13 @@ def serve(
             session.spawn(coro, f"redraw after a {kind} change", loop=loop)
 
         stop = watch_tree(session.dir, changed)
+        # And the figure directories the document reaches OUTSIDE that tree. A
+        # `\graphicspath` naming `../outputs/` is a real dependency of the render
+        # -- a figure exported into it changes what an include resolves to -- and
+        # the tree watch cannot see it. Re-armed on every build, so the watches
+        # follow a document switch instead of being frozen at boot.
+        figures = watch_figure_dirs(session, changed)
+        figures.rearm()
         # The drain's live feed is generated and hidden, so the tree watcher
         # skips it on purpose. Watched by name instead, at the path the session
         # itself names -- never a path spelled out here, which is how this came
@@ -1676,6 +1785,7 @@ def serve(
             await asyncio.Event().wait()
         finally:
             stop()
+            figures.stop()
             stop_feed()
             stop_history()
             await runner.cleanup()

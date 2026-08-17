@@ -82,6 +82,50 @@ def graphics_dirs(source: str) -> list[str]:
     return []
 
 
+def _search_order(dirs: list[str], root: Path) -> list[Path]:
+    r"""The directories the graphics package walks, in the order it walks them.
+
+    `\graphicspath`'s entries first, the document's own directory last -- a
+    search list ADDS to TeX's path, it does not replace it. One function because
+    two callers ask: `find`, resolving an include, and `search_dirs`, telling a
+    watcher which directories this document's renders depend on. Two spellings
+    of "and also the manuscript directory" is exactly the divergence that would
+    leave a figure resolvable but its arrival unnoticed.
+    """
+    out: list[Path] = []
+    for where in [*dirs, ""]:
+        d = root / where
+        if d not in out:
+            out.append(d)
+    return out
+
+
+def search_dirs(source: str, manuscript_dir: Path | str) -> list[Path]:
+    r"""Every directory this document reads figures from, absolute and existing.
+
+    A FIGURE APPEARING IS A CHANGE TO THE RENDER, which is why a watcher needs
+    this list and cannot derive it from the manuscript directory alone.
+    `\includegraphics{f-did-components}` written before the script that exports
+    the figure has run resolves to nothing and is left as the author wrote it;
+    when the export lands, the same include resolves to a real file and the
+    page's `<img src>` has to change. qutub-ayush's `\graphicspath` names
+    `../outputs/`, OUTSIDE the manuscript directory and outside the only tree
+    `serve` watches, so that export was not an event and the broken image
+    survived every reload (2026-08-17).
+
+    Directories that do not exist are passed over: a `\graphicspath` entry
+    naming nothing is nothing to watch, and arming a watch on it would create
+    it -- inside the author's tree, from a server that was only asked to read.
+    """
+    root = Path(manuscript_dir).resolve()
+    out: list[Path] = []
+    for d in _search_order(graphics_dirs(source), root):
+        d = d.resolve()
+        if d.is_dir() and d not in out:
+            out.append(d)
+    return out
+
+
 def resolve_includes(source: str, manuscript_dir: Path | str) -> str:
     r"""Rewrite every `\includegraphics` argument to a path we can stage.
 
@@ -123,8 +167,8 @@ def find(arg: str, manuscript_dir: Path, dirs: list[str]) -> Path | None:
         # TeX's job and guessing at it would resolve to the wrong file.
         return None
     root = Path(manuscript_dir).resolve()
-    for where in [*dirs, ""]:
-        base = (root / where / arg) if not Path(arg).is_absolute() else Path(arg)
+    for where in _search_order(dirs, root):
+        base = (where / arg) if not Path(arg).is_absolute() else Path(arg)
         for candidate in (base, *(base.with_name(base.name + e) for e in SEARCH_EXTENSIONS)):
             # `is_file` follows a symlink, so a dangling one is passed over
             # rather than resolved to. qutub-ayush's `figures/` is full of them.
