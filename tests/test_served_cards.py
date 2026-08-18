@@ -129,3 +129,33 @@ def test_the_served_notes_are_inside_the_element_a_click_resolves(page):
 def test_the_served_notes_are_subordinated_rather_than_body_prose(page):
     chain = ancestors(page, "clustered by provider")
     assert any(cards.NOTES_CLASS in classes(n) for n in chain)
+
+
+# ------------------------------------------------ one anatomy for both kinds
+
+def test_both_kinds_of_exhibit_carry_a_title_line(page):
+    for name in ("Impact of PPIA on the Three Outcome Families",
+                 "Component Outcomes by Trial Arm and Round"):
+        chain = ancestors(page, name)
+        assert any(cards.TITLE_CLASS in classes(n) for n in chain), (
+            f"{name!r} is not marked as the exhibit's title")
+
+
+def test_a_caption_carrying_its_notes_is_split_at_the_first_sentence(page):
+    """The figure's caption is a title and a note, not one wall of serif."""
+    title = ancestors(page, "Component Outcomes by Trial Arm and Round")
+    assert all(cards.NOTES_CLASS not in classes(n) for n in title)
+    rest = ancestors(page, "unadjusted for")
+    assert any(cards.NOTES_CLASS in classes(n) for n in rest)
+    assert all(cards.TITLE_CLASS not in classes(n) for n in rest)
+
+
+def test_the_split_moves_words_and_never_drops_them(page):
+    for phrase in ("Component Outcomes by Trial Arm and Round",
+                   "unadjusted for", "ninety-five percent intervals"):
+        assert phrase in page
+
+
+def test_the_figure_notes_stay_inside_the_figure_card(page):
+    chain = ancestors(page, "ninety-five percent intervals")
+    assert any(n.tag == "figure" for n in chain)

@@ -270,7 +270,7 @@ def test_nothing_else_decides_what_belongs_to_an_exhibit_card():
         if path.name == "cards.py":
             continue
         text = path.read_text(encoding="utf-8")
-        for needle in ("ms-notes", "ms-exhibit"):
+        for needle in ("ms-notes", "ms-exhibit", "ms-title"):
             if needle in text:
                 offenders.append(f"{path}: {needle}")
     assert offenders == [], offenders

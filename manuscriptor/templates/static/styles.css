@@ -258,7 +258,8 @@ select.skillmenu { font-size: .75rem; max-width: 9.5rem; }
 .doc h2 .lbl { font-family: var(--mono); font-size: .62rem; color: var(--faint); display: block; text-transform: uppercase; letter-spacing: .1em; font-weight: 500; margin-bottom: .3rem; }
 .doc img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
 .doc figure { margin: 0 0 1.15rem; }
-.doc figcaption { font-family: var(--serif); font-size: .85rem; color: var(--muted); margin-top: .5rem; }
+/* figcaption is the exhibit's TITLE LINE, styled with the rest of the card
+   anatomy further down -- one rule for a figure and a table alike. */
 .doc code, .doc kbd { font-family: var(--mono); font-size: .85em; }
 .doc blockquote { margin: 0 0 1.15rem; padding-left: .9rem; border-left: 2px solid var(--rule); color: var(--muted); }
 .doc ul, .doc ol { font-family: var(--serif); font-size: 1.0625rem; line-height: 1.68; padding-left: 1.4rem; }
@@ -806,7 +807,16 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    sentence defining the q-values was the one you had to hunt for. */
 .doc figure.ms-table { margin: 0 0 1.15rem; }
 .doc figure.ms-table .table-scroll { margin-bottom: .45rem; }
-.doc figure.ms-table figcaption { font-size: .82rem; line-height: 1.5; color: var(--muted); max-width: 100%; }
+
+/* ONE CARD ANATOMY FOR BOTH KINDS OF EXHIBIT: a title line, then notes. A
+   table's caption used to be small and muted while a figure's was body-size
+   serif carrying its notes inside it -- hundreds of words of them, in four of
+   the seven manuscripts -- so a figure card read as a picture over a wall of
+   text and a table card read as something else entirely. `render/cards.py`
+   splits the caption at its first sentence and marks the name; these two rules
+   are all that is left to say, and they say it once for both. */
+.doc figcaption, .doc .ms-title { font-family: var(--serif); font-size: .86rem; line-height: 1.45;
+  font-weight: 600; color: var(--ink); margin-top: .5rem; max-width: 100%; }
 
 /* The exhibit's notes, which used to render at body size outside the card --
    the same words the PDF sets in \footnotesize under the float, here reading
@@ -814,6 +824,6 @@ pre .hl { background: var(--computed-soft); border-left: 2px solid var(--compute
    card; this makes them look subordinate to it, which is the whole reason the
    author writes them small. */
 .doc figure.ms-exhibit { margin: 0 0 1.15rem; }
-.doc .ms-notes { font-size: .78rem; line-height: 1.5; color: var(--muted); margin: .5rem 0 0; max-width: 100%; }
+.doc .ms-notes { font-family: var(--serif); font-size: .78rem; line-height: 1.5; color: var(--muted); margin: .5rem 0 0; max-width: 100%; }
 .doc .ms-notes + .ms-notes { margin-top: .35rem; }
 .doc figure.ms-table .ms-notes, .doc figure.ms-exhibit .ms-notes { margin-bottom: 0; }

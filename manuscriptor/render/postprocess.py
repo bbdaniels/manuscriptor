@@ -697,11 +697,12 @@ def postprocess(
     # Last, so the anchor check above counts data-mx on the real elements
     # rather than on wrappers this adds.
     #
-    # The notes fold runs AFTER the table wrap and never before it: a captioned
-    # table only becomes a card at that step, and folding first would have the
-    # notes to put somewhere and no card to put them in. What belongs to a card
-    # is `render/cards.py`'s question and this pass only calls it.
-    drawn, _ = cards.fold_exhibit_notes(_wrap_tables(_simple_math_to_html(html)))
+    # The card shaping runs AFTER the table wrap and never before it: a
+    # captioned table only becomes a card at that step, and folding first would
+    # have the notes to put somewhere and no card to put them in. What a card is
+    # made of -- what belongs in it, and which of that is the title -- is
+    # `render/cards.py`'s question and this pass only calls it.
+    drawn, _, _ = cards.shape_cards(_wrap_tables(_simple_math_to_html(html)))
     return {
         "html": drawn,
         "unanchored": unanchored,

@@ -49,6 +49,8 @@ from dataclasses import dataclass, field
 # has no card of its own to fold into.
 NOTES_CLASS = "ms-notes"
 CARD_CLASS = "ms-exhibit"
+# The exhibit's NAME, which every card carries and both kinds style alike.
+TITLE_CLASS = "ms-title"
 
 # Elements that ARE the exhibit. `table-scroll` is the container
 # `postprocess._wrap_tables` gives an uncaptioned table, and it is an exhibit
@@ -187,6 +189,19 @@ def _classed(html: str, node: _Node) -> str:
             + html[node.inner: node.end])
 
 
+def shape_cards(html: str) -> tuple[str, int, int]:
+    """One card anatomy for every exhibit: a title line, then notes.
+
+    The two halves in the order they have to run. The fold decides what is IN
+    the card; the split decides what inside it is the exhibit's NAME and what is
+    its notes. Splitting first would leave a caption-borne note outside a card
+    that had not been drawn yet.
+    """
+    html, folded = fold_exhibit_notes(html)
+    html, split = split_caption_titles(html)
+    return html, folded, split
+
+
 def fold_exhibit_notes(html: str) -> tuple[str, int]:
     """Put every exhibit's notes inside the exhibit's card. Returns the count.
 
@@ -304,3 +319,146 @@ def _fold_siblings(html: str, roots: list[_Node], edits: list) -> int:
     folded += flush()
     return folded
 
+
+# --------------------------------------------------------------- the title line
+
+# Words that end in a period without ending a sentence. A caption reading
+# "Panel A. vs. Panel B. Shares are unweighted." has its first boundary at the
+# THIRD period, and a split at the second would name the exhibit "Panel A. vs."
+_ABBREVIATIONS = {
+    "e.g", "i.e", "cf", "vs", "al", "fig", "figs", "tab", "tabs", "no", "nos",
+    "dr", "prof", "mr", "mrs", "ms", "st", "approx", "ca", "eq", "eqs", "sec",
+    "secs", "pp", "ref", "refs", "ed", "eds", "vol", "col", "cols", "resp",
+    "incl", "est", "min", "max", "s.d", "s.e", "u.s", "u.k",
+}
+_SENTENCE_PUNCT = ".?!"
+_CLOSERS = "'’\"”)]}"
+_WORD_RE = re.compile(r"[\w.'’-]+$")
+
+
+def split_caption_titles(html: str) -> tuple[str, int]:
+    r"""Give every caption one anatomy: a title line, then notes-styled prose.
+
+    ORCHESTRATOR-APPROVED DESIGN DECISION, DELIBERATELY EASY TO REVISIT, AND THE
+    AUTHOR HAS NOT SEEN THIS SPECIFIC RULE. A table's notes are their own
+    paragraph in the source, so the fold above is enough for them. A figure's
+    are not: across qutub-ayush, qutub-india, estonia-qbs and dsp-bias the whole
+    note lives INSIDE `\caption{}`, hundreds of words of it, so the card read as
+    a picture over an undifferentiated wall of body-size serif while the table
+    beside it had a small muted caption and a separate notes block. Same
+    manuscript, two anatomies.
+
+    THE RULE: the caption's FIRST SENTENCE is the exhibit's title; everything
+    after it is notes. It matches the author's house style -- "Component
+    Outcomes by Trial Arm and Round. Share of TB standardized patient
+    interactions ..." -- and it is one function, so revisiting it is editing
+    `_caption_split` and nothing else. A single-sentence caption stays a title
+    with no notes block, which is every caption in a manuscript that keeps its
+    notes outside the caption.
+
+    NOTHING IS DROPPED AND NOTHING IS REWORDED. The split moves a byte range
+    from one element into another; the words on the page are the caption's own,
+    in the caption's own order.
+
+    The title carries `ms-title` whether or not it split, because the point is
+    that a figure and a table are styled by the same two rules. Returns the
+    number of captions that split.
+    """
+    roots = _parse(html)
+    edits: list[tuple[int, int, str]] = []
+    split = 0
+    for node in _walk(roots):
+        if node.tag != "figcaption":
+            continue
+        if TITLE_CLASS not in node.attrs:
+            edits.append((node.start, node.inner, _with_class(html, node, TITLE_CLASS)))
+        inner = html[node.inner: node.close]
+        at = _caption_split(inner)
+        if at is None:
+            continue
+        edits.append((node.inner, node.close, inner[:at].rstrip()))
+        edits.append((node.end, node.end,
+                      f'<p class="{NOTES_CLASS}">{inner[at:].strip()}</p>'))
+        split += 1
+    if not edits:
+        return html, 0
+    out = html
+    for start, end, text in sorted(edits, key=lambda e: e[0], reverse=True):
+        out = out[:start] + text + out[end:]
+    return out, split
+
+
+def _walk(nodes: list[_Node]):
+    for node in nodes:
+        yield node
+        yield from _walk(node.children)
+
+
+def _with_class(html: str, node: _Node, cls: str) -> str:
+    open_tag = html[node.start: node.inner]
+    if 'class="' in open_tag:
+        return open_tag.replace('class="', f'class="{cls} ', 1)
+    return open_tag[:-1].rstrip() + f' class="{cls}">'
+
+
+def _caption_split(inner: str) -> int | None:
+    """Where the first sentence ends, or None if the caption is one sentence.
+
+    Depth-aware, because a boundary found inside a nested element would cut the
+    markup in half: the remainder would carry a close tag whose open tag stayed
+    behind in the title. Only a boundary at the caption's own level splits.
+    """
+    depth = 0
+    i = 0
+    while i < len(inner):
+        ch = inner[i]
+        if ch == "<":
+            m = _TAG_RE.match(inner, i)
+            if m is None:
+                i += 1
+                continue
+            name = m.group(2).lower()
+            if not (name in _VOID or m.group(4)):
+                depth += -1 if m.group(1) else 1
+            i = m.end()
+            continue
+        if depth or ch not in _SENTENCE_PUNCT:
+            i += 1
+            continue
+        end = i + 1
+        while end < len(inner) and inner[end] in _CLOSERS:
+            end += 1
+        rest = end
+        while rest < len(inner) and inner[rest].isspace():
+            rest += 1
+        if rest == end:          # no space after it: a decimal, or mid-word
+            i += 1
+            continue
+        if _abbreviation(inner[:i]) or not _opens_a_sentence(inner[rest:]):
+            i += 1
+            continue
+        title, notes = _words(inner[:end]), _words(inner[rest:])
+        # A one-word title is a label rather than a name, and a one-word
+        # remainder is a stray "Ibid." -- neither is the shape this splits.
+        if len(title) < 2 or len(notes) < 3:
+            i += 1
+            continue
+        return rest
+    return None
+
+
+def _abbreviation(before: str) -> bool:
+    m = _WORD_RE.search(_TEXT_RE.sub("", before))
+    if m is None:
+        return False
+    word = m.group(0).rstrip(".").lower()
+    return word in _ABBREVIATIONS or len(word) == 1
+
+
+def _opens_a_sentence(after: str) -> bool:
+    text = _TEXT_RE.sub("", after).lstrip(_CLOSERS + "'‘\"“").lstrip()
+    return bool(text) and (text[0].isupper() or text[0].isdigit())
+
+
+def _words(fragment: str) -> list[str]:
+    return _TEXT_RE.sub(" ", fragment).split()
