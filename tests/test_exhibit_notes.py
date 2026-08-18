@@ -144,6 +144,51 @@ def test_a_captionless_table_gets_a_card_of_its_own():
     assert out.count('data-mx="b-1"') == 1
 
 
+# ------------------------------------------------- the shape pandoc 3.1.1 emits
+
+# What `\label{tab:main}` inside a table float comes back as on pandoc 3.1.1 --
+# the binary the author's own server resolves, because `/usr/local/bin` precedes
+# `/opt/homebrew/bin` on his PATH -- after `_wrap_tables` has made the card. The
+# label becomes a `<div>` AROUND the table, so the block's `data-mx` lands on the
+# div and the exhibit is its grandchild, while the notes are the div's sibling.
+# On 3.10.1 the same source puts the id on the `<table>` and no div exists at
+# all. Two element trees, one manuscript: the fold matched only the second, so
+# qutub-ayush's `tab:main` notes sat outside the card on the machine the author
+# was reading, under a corpus check that reported them folded.
+WRAPPED = (
+    '<div id="tab:main" data-mx="b-1">\n'
+    '<figure class="ms-table"><div class="table-scroll">'
+    "<table><tbody><tr><td>1</td></tr></tbody></table></div>"
+    "<figcaption>Impact of PPIA</figcaption></figure>\n"
+    "</div>"
+)
+
+
+def test_notes_fold_when_pandoc_wraps_the_exhibit_in_a_labelled_div():
+    out, n = fold_exhibit_notes(WRAPPED + notes() + body())
+    assert n == 1, "the exhibit is a grandchild of the block element, not a root sibling"
+    assert out.index("clustered by provider") < out.index("</figure>")
+
+
+def test_the_wrapped_notes_land_inside_both_the_card_and_the_block_element():
+    """The two containments the author sees: the frame, and the click target."""
+    out, _ = fold_exhibit_notes(WRAPPED + notes() + body())
+    anchor = out.index('data-mx="b-1"')
+    card = out.index('<figure class="ms-table"')
+    assert anchor < card < out.index("clustered by provider") < out.index("</figure>")
+    assert out.index("</figure>") < out.index("</div>", out.index("</figure>"))
+    assert 'class="ms-notes"' in out
+
+
+def test_a_wrapper_holding_prose_of_its_own_is_not_reached_into():
+    """A div the author built with text beside the table is his layout, not ours."""
+    html = ('<div data-mx="b-1">Framing sentence.'
+            '<figure class="ms-table"><div class="table-scroll">'
+            "<table><tbody><tr><td>1</td></tr></tbody></table></div>"
+            "<figcaption>C</figcaption></figure></div>" + notes())
+    assert fold_exhibit_notes(html) == (html, 0)
+
+
 def test_the_fold_is_idempotent():
     once, _ = fold_exhibit_notes(TABLE + notes())
     twice, n = fold_exhibit_notes(once)

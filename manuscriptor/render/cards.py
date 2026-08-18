@@ -119,6 +119,52 @@ def _is_exhibit(node: _Node) -> bool:
     return node.tag in _EXHIBIT_TAGS or "table-scroll" in node.attrs
 
 
+# Elements pandoc mints AROUND an exhibit rather than as one. A `\label` inside
+# a table float comes back as `<div id="tab:main">` wrapping the table on pandoc
+# 3.1.1 and as an `id` on the `<table>` itself on 3.10.1 -- the same manuscript,
+# the same source bytes, two element trees.
+_WRAPPER_TAGS = {"div", "center", "section"}
+
+
+def _own_text(html: str, node: _Node) -> bool:
+    """Text belonging to this element rather than to a descendant."""
+    at = node.inner
+    for child in node.children:
+        if _TEXT_RE.sub("", html[at: child.start]).strip():
+            return True
+        at = child.end
+    return bool(_TEXT_RE.sub("", html[at: node.close]).strip())
+
+
+def _exhibit_within(html: str, node: _Node) -> _Node | None:
+    """The exhibit this root node PRESENTS, itself or through a wrapper.
+
+    A run of notes follows the thing the reader sees, and what the reader sees
+    is the exhibit however many elements pandoc wrapped around it. This descent
+    is why the fold does not depend on a pandoc version: the author's server
+    resolves `pandoc` to 3.1.1, which wraps a LABELLED table float in a
+    `<div id="tab:main">`, so the block's `data-mx` lands on the div and the
+    exhibit is its grandchild while the notes are the DIV's next sibling.
+    Matching the exhibit at root level alone found neither, and qutub-ayush's
+    `tab:main` -- the case the fold was written for -- stayed outside the card
+    on the author's own machine while the corpus check, run against 3.10.1,
+    reported it folded.
+
+    Conservative on purpose: only a wrapper holding the exhibit and nothing
+    else. A `div` with prose of its own beside a table is a layout the author
+    wrote, and reaching inside it to move a paragraph would be rewriting his
+    page on a guess.
+    """
+    if _is_exhibit(node):
+        return node
+    if node.tag not in _WRAPPER_TAGS or _own_text(html, node):
+        return None
+    kids = [c for c in node.children if _has_text(html, c) or _is_exhibit(c)]
+    if len(kids) != 1:
+        return None
+    return _exhibit_within(html, kids[0])
+
+
 def _is_notes(html: str, node: _Node) -> bool:
     """A loose paragraph with words in it.
 
@@ -246,9 +292,10 @@ def _fold_siblings(html: str, roots: list[_Node], edits: list) -> int:
         if bid is not None and bid != owner:
             folded += flush()
             owner = bid
-        if _is_exhibit(node):
+        found = _exhibit_within(html, node)
+        if found is not None:
             folded += flush()
-            exhibit = node
+            exhibit = found
             continue
         if exhibit is not None and _is_notes(html, node) and bid is None:
             run.append(node)
@@ -256,3 +303,4 @@ def _fold_siblings(html: str, roots: list[_Node], edits: list) -> int:
         folded += flush()
     folded += flush()
     return folded
+
