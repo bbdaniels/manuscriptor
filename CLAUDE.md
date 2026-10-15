@@ -1,6 +1,6 @@
 # manuscriptor
 
-obsidian: `/Users/bbdaniels/Documents/Obsidian/Manuscriptor`
+obsidian: `/Users/bbdaniels/Projects/obsidian/Manuscriptor`
 
 Read `Manuscriptor/Tasks.md` at session start. The design is `Manuscriptor/plans/2026-07-22 - Phase 1 Design.md`; verified findings and decision rationale are in `Manuscriptor/Technical Notes.md`. Read the design before implementing a milestone, because most of the non-obvious constraints are recorded there rather than in the code.
 
