@@ -820,14 +820,8 @@ def test_the_agent_needs_claude_on_the_path(tmp_path, monkeypatch):
     assert "claude" in str(e.value)
 
 
-def test_the_agent_runs_in_the_manuscript_directory(tmp_path):
-    """It must inherit the author's CLAUDE.md and skills, which means its cwd is
-    the manuscript rather than wherever serve was invoked."""
+def test_the_agent_log_lives_in_the_private_agent_directory(tmp_path):
     (tmp_path / "main.tex").write_text(DOC, encoding="utf-8")
-    script = cli.agent_loop_script(tmp_path, claude="/usr/bin/claude", manuscriptor="/usr/bin/manuscriptor")
-    assert "/usr/bin/manuscriptor" in script and "--wait" in script
-    assert "/usr/bin/claude" in script
-    assert str(tmp_path.resolve()) in script
     log = cli.agent_log_path(tmp_path)
     assert log.parent.is_dir()
     assert log.parent == paths.agent_dir(tmp_path)
@@ -880,65 +874,6 @@ def test_the_loop_reaches_manuscriptor_even_when_it_is_not_on_the_path(tmp_path)
     p = subprocess.run([cmd, "--version"], capture_output=True, text=True)
     assert p.returncode == 0, p.stderr
     assert "manuscriptor" in p.stdout
-
-
-def test_one_session_starts_at_once_and_works_what_arrives(tmp_path):
-    """The persistent loop's control flow, with a stand-in for the session.
-
-    The old design started a session per wake and guarded hard against
-    starting one for an empty queue or a broken build, because each start
-    cost a ~90 second boot. The persistent design inverts it: ONE session
-    starts immediately (empty queue and all: it parks), works anything
-    already pending, and is restarted by the shell when it exits. The
-    stand-in mimics a session that drains once and parks once, then exits;
-    the shell restarts it, which is also how the ~20-wake refresh works.
-    """
-    d, _, b = setup(tmp_path)                    # c-0001 already pending
-    ms = shutil.which("manuscriptor")
-    if not ms:
-        pytest.skip("manuscriptor console script not on PATH")
-
-    calls = tmp_path / "calls.txt"
-    fake = tmp_path / "fake-claude"
-    fake.write_text(
-        "#!/bin/sh\n"
-        f"echo call >> {calls}\n"
-        f'for id in $("{ms}" proc "{tmp_path}" --json | grep \'"chat_id"\' | cut -d\'"\' -f4); do\n'
-        f'  "{ms}" state "{tmp_path}" "$id" done\n'
-        "done\n"
-        f'"{ms}" proc "{tmp_path}" --wait\n',
-        encoding="utf-8",
-    )
-    fake.chmod(0o755)
-
-    log = tmp_path / "agent.log"
-    script = tmp_path / "loop.sh"
-    script.write_text(cli.agent_loop_script(tmp_path, claude=str(fake), manuscriptor=ms),
-                      encoding="utf-8")
-    proc = cli.spawn_group(["/bin/sh", str(script)], cwd=tmp_path, log_path=log)
-
-    def wait_until(pred, secs, what):
-        end = time.time() + secs
-        while time.time() < end:
-            if pred():
-                return
-            time.sleep(0.2)
-        pytest.fail(f"{what}; log:\n{log.read_text(encoding='utf-8') if log.exists() else '(none)'}")
-
-    def closed(cid):
-        return cid not in {c.id for c in chat.pending(paths.comments(tmp_path))}
-
-    try:
-        wait_until(lambda: closed("c-0001"), 45,
-                   "the comment waiting before the loop started was never worked")
-        assert calls.read_text(encoding="utf-8").count("call") >= 1
-        comment_on(tmp_path, b.blocks, 0, "c-0002", "and tighten this one")
-        wait_until(lambda: closed("c-0002"), 45,
-                   "the restarted session never worked the next comment")
-        assert proc.poll() is None, "the shell loop exited instead of restarting"
-    finally:
-        cli.terminate_group(proc)
-    assert proc.poll() is not None
 
 
 def test_the_agent_log_is_invisible_to_the_manuscript_repository(tmp_path):
@@ -1491,28 +1426,13 @@ def test_a_regenerated_figure_reaches_the_page(tmp_path):
 
 
 # ------------------------------------------------------- the persistent agent
-#
-# A cold `claude -p` per wake cost ~90 seconds of boot before the first
-# visible state. Verified 2026-07-23 that a print-mode session survives
-# parking a background task and is re-woken when it finishes, so the loop is
-# now ONE persistent session that parks `proc --wait` and wakes per comment;
-# the shell only restarts it when it exits (fresh after ~20 wakes, or a
-# crash).
-
-
-def test_the_agent_session_is_persistent_and_parks_on_the_log(tmp_path):
-    script = cli.agent_loop_script(tmp_path, claude="/u/claude", manuscriptor="/u/ms")
-    assert "while :" in script, "no restart loop; a crashed session would end the workflow"
-    assert "/u/claude" in script and "/u/ms" in script
-    assert "--wait" in script, "nothing parks on the log"
-    assert "BACKGROUND" in script, "the park must be a background task, or the turn never ends"
-    assert "working" in script, "marking working first is the latency fix"
 
 
 def test_the_agent_reaches_the_producing_scripts(tmp_path):
     # analysis/ lives beside paper/ in the repo, and a session scoped to
     # paper/ was blocked from the very script a figure comment names. The
     # repo root rides along as an added directory.
+    from manuscriptor.server import supervisor as sup
     (tmp_path / ".git").mkdir()
     ms = tmp_path / "paper"
     ms.mkdir()
@@ -1521,16 +1441,19 @@ def test_the_agent_reaches_the_producing_scripts(tmp_path):
     sp.run(["git", "-C", str(tmp_path), "init", "-q"], capture_output=True)
     root = cli.repo_root(ms)
     assert root is not None and root.name == tmp_path.name
-    script = cli.agent_loop_script(ms, claude="c", manuscriptor="m",
-                                   add_dirs=[str(root)])
-    assert "--add-dir" in script and str(root) in script
+    s = sup.Session(ms, feed=sup.Feed(path=tmp_path / "f.json"), manuscriptor="m",
+                    claude="c", add_dirs=[root])
+    argv = s.argv()
+    assert argv[argv.index("--add-dir") + 1] == str(root)
 
 
 def test_a_manuscript_outside_any_repo_adds_nothing(tmp_path):
+    from manuscriptor.server import supervisor as sup
     ms = tmp_path / "loose"
     ms.mkdir()
-    script = cli.agent_loop_script(ms, claude="c", manuscriptor="m", add_dirs=[])
-    assert "--add-dir" not in script
+    s = sup.Session(ms, feed=sup.Feed(path=tmp_path / "f.json"), manuscriptor="m",
+                    claude="c", add_dirs=[])
+    assert "--add-dir" not in s.argv()
 
 
 def test_the_park_returns_at_once_when_work_is_already_pending(tmp_path):
