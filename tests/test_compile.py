@@ -533,10 +533,10 @@ def test_a_broken_manuscript_reports_the_latex_error(tmp_path):
 
 
 def test_the_skill_is_named_rather_than_reimplemented():
-    """The Word conversion delegates to `~/.claude/skills/pandoc-docx`, which
+    """The Word conversion delegates to `~/.claude/skills/submission` (the pandoc-docx scripts), which
     carries a great deal of hard-won work. What this module owns is the running
     order; the transforms are the skill's."""
-    assert compile_mod.SKILL_DIR.name == "pandoc-docx"
+    assert compile_mod.SKILL_DIR.name == "submission"
     assert compile_mod.SKILL_SCRIPTS["format"].name == "format_docx.py"
     assert compile_mod.SKILL_SCRIPTS["merge_bib"].name == "merge_csl_bib.py"
 

@@ -254,13 +254,13 @@ def test_the_skills_carry_no_copy_of_their_own():
     )
 
 
-@pytest.mark.skipif(not (SKILLS / "pandoc-docx" / "scripts" / "tex_tables.py").is_file(),
-                    reason="pandoc-docx skill not installed")
+@pytest.mark.skipif(not (SKILLS / "scripts" / "tex_tables.py").is_file(),
+                    reason="submission skill not installed")
 def test_the_skill_entry_point_resolves_to_this_module():
     """Not merely "no copy present": the names must resolve back here."""
     import importlib.util
 
-    path = SKILLS / "pandoc-docx" / "scripts" / "tex_tables.py"
+    path = SKILLS / "scripts" / "tex_tables.py"
     spec = importlib.util.spec_from_file_location("_skill_tex_tables", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

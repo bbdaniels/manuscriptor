@@ -16,7 +16,7 @@ that fenced off the header.
 
 This module is the ONE implementation of both. `render/pandoc.py`
 calls it on the way into every HTML render, and the Word submission skills
-(`~/.claude/skills/submission/pandoc-docx`, `docx-package`) import it rather
+(`~/.claude/skills/submission/scripts`) import it rather
 than carrying a copy. There was a second copy, standalone, in the skills; it had
 already drifted, and the drift is recorded below under THE DIVERGENCE.
 

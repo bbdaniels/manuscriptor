@@ -65,7 +65,7 @@ PANDOC_DOCX_DIR_ENV = "MANUSCRIPTOR_PANDOC_DOCX_DIR"
 
 # The default, which is where the author's own copy lives. The environment
 # variable overrides it; nothing else does.
-SKILL_DIR = Path("~/.claude/skills/pandoc-docx").expanduser()
+SKILL_DIR = Path("~/.claude/skills/submission").expanduser()
 
 # What the conversion needs from that directory, and where inside it each piece
 # sits. One list, so `skill_scripts()` and the default map below cannot drift.

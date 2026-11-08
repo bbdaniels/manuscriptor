@@ -66,7 +66,7 @@ Requires `pandoc` and `pdftotext` (poppler) on PATH, the `claude` CLI for the de
 
 `manuscriptor compile --pdf` needs a TeX installation and nothing else. `--docx` needs two more things, and neither of them ships with this package:
 
-- **The pandoc-docx conversion scripts.** Pandoc's own LaTeX to Word output is rejected by Word, so the conversion goes through HTML and is then repaired at the OOXML level by scripts this tool shells out to. Set `MANUSCRIPTOR_PANDOC_DOCX_DIR` to the directory holding them; without it the tool looks in `~/.claude/skills/pandoc-docx`.
+- **The pandoc-docx conversion scripts.** Pandoc's own LaTeX to Word output is rejected by Word, so the conversion goes through HTML and is then repaired at the OOXML level by scripts this tool shells out to. Set `MANUSCRIPTOR_PANDOC_DOCX_DIR` to the directory holding them; without it the tool looks in `~/.claude/skills/submission`.
 - **A CSL style file**, which decides how the bibliography reads. A `.csl` beside the manuscript is used first; otherwise set `MANUSCRIPTOR_CSL` to one, or put one at `~/.csl/econ.csl`.
 
 If either is missing, `--docx` refuses and names what it could not find. `--pdf` is unaffected.
