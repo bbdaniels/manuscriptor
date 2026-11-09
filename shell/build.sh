@@ -30,7 +30,7 @@ printf 'APPL????' > "$APP/Contents/PkgInfo"
 # the login keychain will do; a Developer ID is only needed to hand the app to
 # someone else. Ad-hoc stays as the fallback so a machine without the certificate
 # still builds an app that launches.
-IDENTITY="${MANUSCRIPTOR_SIGN_IDENTITY:-ClaudeHUD Dev}"
+IDENTITY="${MANUSCRIPTOR_SIGN_IDENTITY:-Topaz Dev}"
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$IDENTITY"; then
   codesign --force --sign "$IDENTITY" "$APP" >/dev/null
 else
